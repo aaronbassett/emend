@@ -16,6 +16,11 @@ description = "Emend core engine: files, watching, indexing, Markdown parsing, s
 # the core MUST NOT depend on `uniffi` (Constitution V); the uniffi projection
 # lives in emend-ffi.
 thiserror.workspace = true
+# Atomic+durable writes (FR-009a, research §B4): a sibling temp file in the
+# target's directory is fsync'd then `persist`ed (atomic rename) over the target.
+# Pure Rust, no `unsafe` at our call sites; the macOS durability guarantee comes
+# from std `File::sync_all` → `fcntl(F_FULLFSYNC)` on Apple targets (see fs.rs).
+tempfile.workspace = true
 
 [lints]
 workspace = true

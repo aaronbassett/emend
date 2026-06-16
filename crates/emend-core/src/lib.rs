@@ -15,6 +15,10 @@
 
 pub mod error;
 
+/// Atomic+durable writes and tolerant reads — the byte gateway to notes on disk
+/// (research §B4, FR-003a/FR-009a). Used by the document/autosave layer.
+pub mod fs;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;
