@@ -41,8 +41,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T005 Configure App Sandbox entitlements in `app/Emend/Emend/Emend.entitlements`: `com.apple.security.app-sandbox`, `...files.user-selected.read-write`, `...files.bookmarks.app-scope` (research §A4)
 - [x] T006 [P] Vendor offline preview assets into `app/Emend/Emend/Resources/preview/` (Mermaid.js, KaTeX JS/CSS/fonts, `theme.css`, `template.html`) with a CSP that blocks remote loads (research §C2)
 - [x] T007 [GIT] Commit: add bench crate, Xcode app target, entitlements, and bundled preview assets
-- [ ] T008 [GIT] Push branch to origin (ensure pre-push hooks pass) and open the PR to `main` titled "Emend: Setup complete"
-- [ ] T009 [GIT] Verify all CI checks pass; report PR ready status
+- [x] T008 [GIT] Push branch to origin (ensure pre-push hooks pass) and open the PR to `main` titled "Emend: Setup complete"
+- [x] T009 [GIT] Verify all CI checks pass; report PR ready status
 
 **Checkpoint**: Both toolchains build; app target exists; assets bundled.
 
@@ -54,8 +54,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **⚠️ CRITICAL**: No user-story work begins until this phase is complete.
 
-- [ ] T010 Create `specs/001-markdown-editor/retro/P2.md` from the retro template
-- [ ] T011 [GIT] Commit: initialize Phase 2 retro
+- [x] T010 Create `specs/001-markdown-editor/retro/P2.md` from the retro template
+- [x] T011 [GIT] Commit: initialize Phase 2 retro
 
 ### FFI boundary & error model
 
