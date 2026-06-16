@@ -8,6 +8,7 @@ resolver = "2"
 members = [
     "crates/emend-core",
     "crates/emend-ffi",
+    "crates/emend-bench",
 ]
 
 [workspace.package]
@@ -48,6 +49,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # FFI binding generator (only emend-ffi depends on this)
 uniffi = "0.31"
+# benchmarking harness (dev-only, used by emend-bench; perf budgets are tracked
+# but non-blocking — see constitution). Stay on 0.7.x: 0.8+ raises the MSRV to
+# 1.86, above the workspace's pinned rust-version = "1.85".
+criterion = "0.7"
 
 # ---------------------------------------------------------------------------
 # Shared lint policy (NFR-003 / research §B7): no panics in the core.
