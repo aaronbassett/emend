@@ -59,12 +59,12 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 ### FFI boundary & error model
 
-- [ ] T012 Wire UniFFI in `crates/emend-ffi`: add `uniffi.workspace = true` + build dep, call `uniffi::setup_scaffolding!()`, export `core_abi_version` (use devs:rust-dev agent)
-- [ ] T013 Migrate `crates/emend-core/src/error.rs` `EmendError` to `thiserror`; add its `#[derive(uniffi::Error)]` projection in `crates/emend-ffi/src/error.rs` with all variants from contracts/ffi-interface.md (use devs:rust-dev agent)
-- [ ] T014 [P] Implement panic-containment posture in `crates/emend-ffi/src/lib.rs`: `catch_unwind` wrappers for spawned tokio tasks; document UniFFI's per-export containment (NFR-003) (use devs:rust-dev agent)
-- [ ] T015 [P] [test] Unit test in `crates/emend-ffi/tests/panic_containment.rs`: a forced `panic!` in an export surfaces as `EmendError`, process survives (use devs:rust-dev agent)
-- [ ] T016 Make `scripts/build-xcframework.sh` produce real bindings + `EmendCore.xcframework`; enable the `binaryTarget`/`EmendCoreFFI` target in `swift/EmendCore/Package.swift` with `SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated` (research §A1/§C9)
-- [ ] T017 [GIT] Commit: UniFFI wiring, error model, panic containment, XCFramework build
+- [x] T012 Wire UniFFI in `crates/emend-ffi`: add `uniffi.workspace = true` + build dep, call `uniffi::setup_scaffolding!()`, export `core_abi_version` (use devs:rust-dev agent)
+- [x] T013 Migrate `crates/emend-core/src/error.rs` `EmendError` to `thiserror`; add its `#[derive(uniffi::Error)]` projection in `crates/emend-ffi/src/error.rs` with all variants from contracts/ffi-interface.md (use devs:rust-dev agent)
+- [x] T014 [P] Implement panic-containment posture in `crates/emend-ffi/src/lib.rs`: `catch_unwind` wrappers for spawned tokio tasks; document UniFFI's per-export containment (NFR-003) (use devs:rust-dev agent)
+- [x] T015 [P] [test] Unit test in `crates/emend-ffi/tests/panic_containment.rs`: a forced `panic!` in an export surfaces as `EmendError`, process survives (use devs:rust-dev agent)
+- [x] T016 Make `scripts/build-xcframework.sh` produce real bindings + `EmendCore.xcframework`; enable the `binaryTarget`/`EmendCoreFFI` target in `swift/EmendCore/Package.swift` with `SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated` (research §A1/§C9)
+- [x] T017 [GIT] Commit: UniFFI wiring, error model, panic containment, XCFramework build
 
 ### Core text document substrate (UTF-16 boundary)
 
