@@ -15,7 +15,7 @@ pre-commit:
       glob: "*.swift"
       run: |
         if command -v swiftformat >/dev/null 2>&1; then
-          swiftformat --lint {staged_files}
+          swiftformat {staged_files} --lint
         else
           echo "swiftformat not installed — skipping (brew install swiftformat)"
         fi
@@ -23,7 +23,7 @@ pre-commit:
       glob: "*.swift"
       run: |
         if command -v swiftlint >/dev/null 2>&1; then
-          swiftlint lint --quiet
+          swiftlint lint --quiet --strict
         else
           echo "swiftlint not installed — skipping (brew install swiftlint)"
         fi

@@ -8,16 +8,23 @@ included:
 # Generated UniFFI bindings + build output are not ours to lint.
 excluded:
   - swift/EmendCore/Sources/EmendCoreFFI
+  - swift/EmendCore/.build
   - DerivedData
   - .build
+  - "**/.build"
   - "**/*.generated.swift"
+
+# SwiftFormat owns formatting; disable lint rules that would fight it
+# (it manages trailing commas via `--commas inline` and import order via
+# `--importgrouping testable-bottom`).
+disabled_rules:
+  - trailing_comma
 
 opt_in_rules:
   - empty_count
   - force_unwrapping          # no force-unwraps (mirrors Rust no-unwrap policy)
   - implicitly_unwrapped_optional
   - closure_spacing
-  - sorted_imports
   - first_where
   - contains_over_first_not_nil
 

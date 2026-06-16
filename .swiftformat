@@ -11,5 +11,8 @@
 --wrapparameters before-first
 --wrapcollections before-first
 
+# Keep intentional long doc/comment lines as written (don't auto-rewrap prose).
+--disable wrapSingleLineComments
+
 # Exclude generated UniFFI bindings and build output.
 --exclude swift/EmendCore/Sources/EmendCoreFFI,DerivedData,.build

@@ -33,14 +33,18 @@ bench:
 xcframework:
     ./scripts/build-xcframework.sh
 
-# Lint + format-check Swift (no-op if tools absent)
+# Lint + format-check Swift (skips gracefully if tools absent; mirrors CI --strict)
 swift-lint:
-    @command -v swiftformat >/dev/null && swiftformat --lint app swift || echo "install swiftformat"
-    @command -v swiftlint   >/dev/null && swiftlint lint || echo "install swiftlint"
+    @if command -v swiftformat >/dev/null; then swiftformat app swift --lint; else echo "swiftformat not installed — skipping (brew install swiftformat)"; fi
+    @if command -v swiftlint   >/dev/null; then swiftlint lint --strict;       else echo "swiftlint not installed — skipping (brew install swiftlint)"; fi
 
-# Build & test the macOS app (requires the Xcode project; see quickstart.md)
-app-test:
-    xcodebuild test -scheme Emend -destination 'platform=macOS,arch=arm64' | xcpretty || true
+# Generate the Xcode project from app/Emend/project.yml (reproducible; the .xcodeproj is git-ignored)
+xcodeproj:
+    xcodegen generate --spec app/Emend/project.yml --project app/Emend
+
+# Build & test the macOS app (regenerates the project first)
+app-test: xcodeproj
+    xcodebuild test -project app/Emend/Emend.xcodeproj -scheme Emend -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO
 
 # --- Everything ----------------------------------------------------------
 # The full pre-push gate (mirrors CI)

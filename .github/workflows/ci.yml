@@ -37,16 +37,24 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.2.app || true
       - name: Install Swift tooling
-        run: brew install swiftformat swiftlint
+        run: brew install swiftformat swiftlint xcodegen
       - name: SwiftFormat (lint)
-        run: swiftformat --lint app swift
+        run: swiftformat app swift --lint
       - name: SwiftLint
         run: swiftlint lint --strict
-      # The app build/test step is enabled once the Xcode project exists (see quickstart.md):
-      # - name: Build core XCFramework
-      #   run: ./scripts/build-xcframework.sh
-      # - name: Build & test app
-      #   run: xcodebuild test -scheme Emend -destination 'platform=macOS,arch=arm64'
+      # App build/test — enabled now that the Xcode project exists (T004).
+      # The project is generated reproducibly from app/Emend/project.yml; the
+      # standalone EmendTests bundle runs headless (no GUI launch / signing).
+      # The XCFramework build step is added in Phase 2 once UniFFI is wired.
+      - name: Generate Xcode project
+        run: xcodegen generate --spec app/Emend/project.yml --project app/Emend
+      - name: Build & test app
+        run: |
+          xcodebuild test \
+            -project app/Emend/Emend.xcodeproj \
+            -scheme Emend \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGNING_ALLOWED=NO
 
   # ---- Conventional Commits (DS-007) ----
   commits:

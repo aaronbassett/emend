@@ -19,7 +19,7 @@ let package = Package(
     name: "EmendCore",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "EmendCore", targets: ["EmendCore"]),
+        .library(name: "EmendCore", targets: ["EmendCore"])
     ],
     targets: [
         // .binaryTarget(
@@ -35,6 +35,6 @@ let package = Package(
             name: "EmendCore"
             // dependencies: ["EmendCoreFFI"]
         ),
-        .testTarget(name: "EmendCoreTests", dependencies: ["EmendCore"]),
+        .testTarget(name: "EmendCoreTests", dependencies: ["EmendCore"])
     ]
 )
