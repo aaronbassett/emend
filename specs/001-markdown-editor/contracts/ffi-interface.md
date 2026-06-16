@@ -9,7 +9,7 @@ Emend exposes no network API; the integration contract is the **UniFFI boundary*
 - **Ranges are UTF-16 code units** (`U16Range { start: u32, len: u32 }`) — matches `NSRange`. (A2)
 - **Every fallible call returns `Result<_, EmendError>`** → Swift `throws`. No panic may cross the boundary (NFR-003 / B7).
 - **Hot path is synchronous** (`pushEdit`, span queries); **async** is reserved for AI + search (A1). Async functions are cancellable only via returned **handles**, not Swift `Task` cancellation.
-- **Streaming** (AI tokens, incremental search results) is delivered through **foreign-trait callbacks** the Swift side implements.
+- **Streaming & callback semantics**: AI tokens and incremental search results are delivered through **foreign-trait callbacks** (`AiSink`/`SearchSink`/`DocObserver`) the Swift side implements. Exactly **one terminal callback** occurs per stream (`on_done` on success, `on_error` on failure). After `cancel()`/supersede, the terminal is `on_error(AiCancelled)` and **no further** `on_token`/`on_results` fire. Streamed tokens are **complete UTF-8 strings** — the SSE parser buffers partial bytes across chunks and never emits a split code point. Callbacks are **non-reentrant**: the foreign side MUST NOT call back into the core from within a callback (queue the work instead).
 - The **API key is never stored or logged** in the core; it is passed per-request as a transient argument (C5/NFR-006).
 
 ---
@@ -162,3 +162,4 @@ Each maps to a spec requirement and is mechanically checkable:
 8. Cancelling `AiHandle` resolves promptly as `AiCancelled` with no further `on_token` (FR-036a).
 9. `render_preview_html` terminates on an embed cycle within max depth (FR-021a).
 10. Captured logs during an AI auth error contain no API-key substring (NFR-006).
+11. Streaming terminal semantics: a cancelled `AiSink` receives exactly one `on_error(AiCancelled)` and zero subsequent `on_token`; a recorded SSE stream split mid-code-point still yields only complete UTF-8 tokens; a callback that re-enters the core is rejected/queued, not run reentrantly (I1).

@@ -156,9 +156,12 @@ emend/
 |------|----------------|--------|
 | Max supported note size (FR-027a) | Full rich editing ≤ ~5 MB; beyond → open read-only with notice | perf headroom of TextKit 2 + incremental parse |
 | Max embed depth (FR-021a) | 8, with cycle detection | prevents runaway recursion |
-| "20+" highlighted languages (FR-025) | syntect default set, trimmed to ~30 common langs shipped in the binary dump | B6 |
+| "20+" highlighted languages (FR-025) | **30-language v1 default set** (below), shipped in the binary syntect dump | B6 |
 | Autosave debounce (FR-009) | flush on 1.5 s idle, hard cap 5 s; `F_FULLFSYNC` on flush/close | B4, SC-005 |
 | Reading speed (FR-029) | 200 wpm; code blocks & frontmatter excluded | spec Assumptions |
 | Watcher debounce (FR-006) | 400 ms | B3 |
+
+**v1 default syntax-highlight language set (30)** — the binary syntect dump is trimmed to exactly these (FR-025; satisfies "20+"):
+Rust, Swift, JavaScript, TypeScript, Python, Go, C, C++, C#, Java, Kotlin, Ruby, PHP, Objective-C, Shell/Bash, SQL, HTML, CSS, SCSS, JSON, YAML, TOML, XML, Markdown, Dockerfile, Makefile, Lua, Haskell, Diff, plain-text. Additional languages are a post-v1 enhancement (load more from the full syntect set on demand).
 
 These are recorded so `/sdd:tasks` can encode them as constants; none blocks planning. Run `/sdd:clarify` only if you want to lock different values.

@@ -140,7 +140,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [ ] T053 [P] [US2] [test] `crates/emend-core/tests/watcher.rs`: `git mv` → one rename event; autosave → zero external-change callbacks; 10k-file burst is bounded (FR-006a/b) (use devs:rust-dev agent)
 - [ ] T054 [P] [US2] [test] `crates/emend-core/tests/workspace_ops.rs`: collision-safe create/rename/move; conflict truth table (clean→reload, dirty→preserve) (FR-004a/FR-006c) (use devs:rust-dev agent)
 - [ ] T055 [P] [US2] [test] `crates/emend-core/tests/index.rs`: single create/rename/delete updates the index in O(1), no full rescan (FR-017a) (use devs:rust-dev agent)
-- [ ] T056 [US2] Implement `crates/emend-core/src/workspace.rs`: locations add/remove/list, `list_children`, file ops, favorites/pins/icons/child-order store (use devs:rust-dev agent)
+- [ ] T055a [P] [US2] [test] `crates/emend-core/tests/concurrency.rs`: parallel watcher events + user create/rename/delete + search queries leave the index/workspace model consistent — no corruption, no panic (NFR-004) (use devs:rust-dev agent)
+- [ ] T055b [P] [US2] [test] `crates/emend-core/tests/path_identity.rs`: traversal terminates on a symlink cycle; the same physical file via two paths is indexed once; correct behavior on case-insensitive and case-sensitive volumes (NFR-007) (use devs:rust-dev agent)
+- [ ] T056 [US2] Implement `crates/emend-core/src/workspace.rs`: locations add/remove/list, `list_children`, file ops, favorites/pins/icons/child-order store; canonicalize paths and bound traversal depth for symlink-cycle/case-fold safety (NFR-007) (use devs:rust-dev agent)
 - [ ] T057 [US2] Implement `crates/emend-core/src/watcher.rs`: notify + debouncer-full, self-write suppression registry, move detection, conflict state (research §B3) (use devs:rust-dev agent)
 - [ ] T058 [US2] Implement `crates/emend-core/src/index.rs`: nucleo haystack + pathMap + nameMap; incremental updates (research §B2) (use devs:rust-dev agent)
 - [ ] T059 [US2] Export workspace/watcher/file-op functions + `DocObserver`/conflict APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
@@ -190,7 +192,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [ ] T081 [US4] Create `retro/P6.md`; [GIT] commit
 - [ ] T082 [P] [US4] [test] `crates/emend-core/tests/preview_render.rs`: comrak HTML has `data-line` anchors + syntect classed code; tables render (use devs:rust-dev agent)
 - [ ] T083 [P] [US4] [test] `crates/emend-core/tests/preview_offline.rs`: rendering performs zero network access (SC-008) (use devs:rust-dev agent)
-- [ ] T084 [US4] Implement `crates/emend-core/src/parse/preview.rs` (comrak + line anchors) and `crates/emend-core/src/parse/code_highlight.rs` (syntect classed HTML, binary dump load) (research §B1/§B6) (use devs:rust-dev agent)
+- [ ] T083a [US4] Generate & vendor the binary syntect `SyntaxSet`/`ThemeSet` dump for the 30-language v1 set (research §D) into `crates/emend-core/assets/`; assert lazy load ≤23ms at startup, never raw-YAML on the hot path (research §B6) (use devs:rust-dev agent)
+- [ ] T084 [US4] Implement `crates/emend-core/src/parse/preview.rs` (comrak + line anchors) and `crates/emend-core/src/parse/code_highlight.rs` (syntect classed HTML, lazy binary-dump load from T083a) (research §B1/§B6) (use devs:rust-dev agent)
 - [ ] T085 [US4] Export `render_preview_html`/`preview_assets_dir` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [ ] T086 [GIT] Commit: core preview rendering + FFI
 - [ ] T087 [US4] Implement `app/Emend/Emend/Preview/PreviewWebView.swift` (WKWebView, offline CSP, nonPersistent store, navigation-blocking delegate, Mermaid/KaTeX) (research §C2)

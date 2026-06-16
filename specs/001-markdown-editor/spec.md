@@ -187,7 +187,7 @@ A user adjusts curated typography (font, size, spacing) and the app honors light
 
 - **FR-016**: Users MUST be able to open multiple files in tabs within a window.
 - **FR-017**: Users MUST be able to invoke Quick Open (⌘P) to fuzzy-search files and folders across the workspace by name/path, with each result showing its folder breadcrumb, and open a result.
-- **FR-017a**: System MUST maintain an index of note names/paths supporting Quick Open and wiki-link resolution. After any file create/rename/move/delete (internal or external), the index MUST reflect the change within 2 seconds, and index updates MUST be incremental (a single change MUST NOT require a full workspace rescan). Quick Open matches file/folder name and path (not full document content) in v1.
+- **FR-017a**: System MUST maintain an index of note names/paths supporting Quick Open and wiki-link resolution. After any file create/rename/move/delete (internal or external), the index MUST reflect the change within 2 seconds, and index updates MUST be incremental (a single change MUST NOT require a full workspace rescan). Quick Open matches file/folder name and path (not full document content) in v1: a query is matched as a fuzzy subsequence against (a) the item basename and (b) its relative path from the location root — e.g., `foo` matches `notes/foo.md`, and `nt/foo` matches `notes/foo.md` — with ranking favoring basename matches and shorter paths.
 - **FR-018**: System MUST keep Quick Open responsive (see SC-004) as workspace size grows into the tens of thousands of files.
 
 **Linking**
@@ -203,7 +203,7 @@ A user adjusts curated typography (font, size, spacing) and the app honors light
 
 - **FR-023**: System MUST provide a faithful preview, available alongside or toggled with the source editor.
 - **FR-024**: System MUST synchronize scrolling between source editor and preview.
-- **FR-025**: System MUST apply syntax highlighting to fenced code blocks for at least 20 common programming languages.
+- **FR-025**: System MUST apply syntax highlighting to fenced code blocks for at least 20 common programming languages (the v1 default language set is enumerated in research.md §D).
 - **FR-026**: System MUST render Markdown tables, Mermaid diagrams, and mathematical notation (LaTeX-style math).
 - **FR-027**: System MUST render large documents quickly, with no perceptible lag while scrolling or typing.
 - **FR-027a**: System MUST define a maximum supported note size; beyond it, behavior MUST be graceful (e.g., open read-only or refuse with a clear message) rather than hang or exhaust memory. Editing MUST use incremental re-parsing so a single edit does not re-parse the entire document.
@@ -292,6 +292,7 @@ These are engineering/process requirements for the project, distinct from the us
 - Autosave uses a short debounce (target ≤ 2 seconds after the last edit).
 - The app requests the macOS file-access permissions required to read/write user-selected folders.
 - A single primary window with tabs is the default; multiple windows are permitted but not required for v1.
+- **Resolved v1 configuration defaults** (decided during planning; see research.md §D, surfaced here for testability): maximum note size for full editing ≈ 5 MB (larger opens read-only with a notice, FR-027a); maximum embed depth = 8 with cycle detection (FR-021a); autosave flushes on ~1.5 s idle with a 5 s hard cap and `F_FULLFSYNC` on flush/close (FR-009); external-change watcher debounce ≈ 400 ms (FR-006). These are tunable but fixed for v1.
 
 ## Out of Scope
 
