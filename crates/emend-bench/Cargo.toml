@@ -1,0 +1,24 @@
+[package]
+name = "emend-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Criterion micro-benchmarks for emend-core (perf budgets are tracked, non-blocking). Not published; carries no FFI dependency."
+publish = false
+
+[dependencies]
+emend-core = { path = "../emend-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+# Smoke bench verifying the Criterion pipeline compiles & runs. Real benches
+# (e.g. benches/highlight.rs, benches/quick_open.rs) land in later phases.
+[[bench]]
+name = "smoke"
+harness = false
+
+[lints]
+workspace = true

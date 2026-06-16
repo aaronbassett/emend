@@ -1,0 +1,21 @@
+[package]
+name = "emend-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Thin UniFFI shim over emend-core. The ONLY crate that depends on uniffi; keep it free of business logic (research §B8)."
+
+[lib]
+# staticlib for the XCFramework consumed by the Swift app; cdylib for bindgen.
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dependencies]
+emend-core = { path = "../emend-core" }
+# Wired by /sdd:implement (offline skeleton omits uniffi until then):
+#   uniffi.workspace = true
+# plus a build-dependency on uniffi and `uniffi::setup_scaffolding!()`.
+
+[lints]
+workspace = true

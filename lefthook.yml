@@ -1,0 +1,37 @@
+# Lefthook git hooks (DS-003 pre-commit, DS-007 conventional commits).
+# Install once:  lefthook install
+# Swift tools are skipped gracefully if not yet installed (brew install swiftformat swiftlint).
+
+pre-commit:
+  parallel: true
+  commands:
+    rust-fmt:
+      glob: "*.rs"
+      run: cargo fmt --check
+    rust-clippy:
+      glob: "*.rs"
+      run: cargo clippy --all-targets --offline -- -D warnings
+    swift-format:
+      glob: "*.swift"
+      run: |
+        if command -v swiftformat >/dev/null 2>&1; then
+          swiftformat {staged_files} --lint
+        else
+          echo "swiftformat not installed — skipping (brew install swiftformat)"
+        fi
+    swift-lint:
+      glob: "*.swift"
+      run: |
+        if command -v swiftlint >/dev/null 2>&1; then
+          swiftlint lint --quiet --strict
+        else
+          echo "swiftlint not installed — skipping (brew install swiftlint)"
+        fi
+
+commit-msg:
+  commands:
+    conventional-commits:
+      # DS-007: enforce Conventional Commits on the subject line.
+      run: |
+        head -1 "{1}" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+' \
+          || { echo "Commit message must follow Conventional Commits, e.g. 'feat(editor): add task toggle'"; exit 1; }

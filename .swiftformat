@@ -1,0 +1,18 @@
+# SwiftFormat config for the Emend macOS app (DS-002).
+# Run:  swiftformat app swift   |   lint: swiftformat --lint app swift
+--swiftversion 6.0
+--maxwidth 100
+--indent 4
+--self remove
+--importgrouping testable-bottom
+--commas inline
+--trailingclosures
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+
+# Keep intentional long doc/comment lines as written (don't auto-rewrap prose).
+--disable wrapSingleLineComments
+
+# Exclude generated UniFFI bindings and build output.
+--exclude swift/EmendCore/Sources/EmendCoreFFI,DerivedData,.build

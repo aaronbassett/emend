@@ -1,0 +1,30 @@
+# Rust
+/target
+**/*.rs.bk
+# Cargo.lock IS committed — this workspace builds an app binary.
+
+# Rust → Swift build output
+/xcframework/
+/swift/EmendCore/Artifacts/
+*.xcframework
+
+# Swift / Xcode
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+.swiftpm/
+.build/
+# The Xcode project is generated reproducibly from app/Emend/project.yml (XcodeGen).
+*.xcodeproj/
+
+# Tooling
+.lefthook-local.yml
+node_modules/
+
+# Secrets — never commit (AI key lives in Keychain, but guard anyway)
+*.env
+.env*
+secrets.*
