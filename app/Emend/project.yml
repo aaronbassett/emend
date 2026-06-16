@@ -1,0 +1,88 @@
+# XcodeGen spec for the Emend macOS app (T004).
+#
+# The .xcodeproj is GENERATED from this file (reproducible builds, Constitution VII)
+# and is git-ignored. Regenerate with:  just xcodeproj   (or: xcodegen generate)
+#
+# Apple Silicon, macOS 14+, Swift 6. Depends on the local EmendCore SwiftPM package
+# (which wraps the Rust core XCFramework once it is built — research §C9).
+
+name: Emend
+options:
+  bundleIdPrefix: com.aaronbassett
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: true
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  EmendCore:
+    path: ../../swift/EmendCore
+
+targets:
+  Emend:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Emend
+        excludes:
+          - "Resources/preview/**"
+      # Folder reference (not a group): the vendored Mermaid/KaTeX tree is copied
+      # into the bundle preserving its structure, so template.html's relative
+      # `katex/…`, `theme.css`, `mermaid.min.js` paths and KaTeX's `fonts/…` URLs
+      # resolve offline. Phase 6 points the WKWebView baseURL at this folder.
+      - path: Emend/Resources/preview
+        type: folder
+    dependencies:
+      - package: EmendCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aaronbassett.Emend
+        PRODUCT_NAME: Emend
+        GENERATE_INFOPLIST_FILE: true
+        ENABLE_HARDENED_RUNTIME: true
+        CODE_SIGN_ENTITLEMENTS: Emend/Emend.entitlements
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_KEY_CFBundleDisplayName: Emend
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+
+  # Standalone logic-test bundle (no app host) so headless core/logic tests run
+  # fast and reliably in CI without launching a GUI app. App-hosted tests can be
+  # added later if app-internal symbols ever need `@testable import Emend`.
+  EmendTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: EmendTests
+    dependencies:
+      - package: EmendCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aaronbassett.EmendTests
+        GENERATE_INFOPLIST_FILE: true
+
+schemes:
+  Emend:
+    build:
+      targets:
+        Emend: all
+        EmendTests: [test]
+    test:
+      targets:
+        - EmendTests
+      gatherCoverageData: false

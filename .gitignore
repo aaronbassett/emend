@@ -17,7 +17,8 @@ build/
 xcuserdata/
 .swiftpm/
 .build/
-/app/**/*.xcodeproj/project.xcworkspace/xcuserdata/
+# The Xcode project is generated reproducibly from app/Emend/project.yml (XcodeGen).
+*.xcodeproj/
 
 # Tooling
 .lefthook-local.yml
