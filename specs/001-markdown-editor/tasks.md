@@ -74,9 +74,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 ### Atomic file IO + tolerant reads
 
-- [ ] T021 [P] [test] Tests in `crates/emend-core/tests/fs_atomic.rs`: kill-between-temp-and-persist leaves target intact; reader never sees partial; BOM/CRLF/non-UTF-8 read tolerantly (FR-003a/FR-009a) (use devs:rust-dev agent)
-- [ ] T022 Implement `crates/emend-core/src/fs.rs`: atomic+durable write (tempfile→`sync_all`→persist→dir fsync, `F_FULLFSYNC`) and tolerant read (research §B4) (use devs:rust-dev agent)
-- [ ] T023 [GIT] Commit: atomic durable writes + tolerant reads
+- [x] T021 [P] [test] Tests in `crates/emend-core/tests/fs_atomic.rs`: kill-between-temp-and-persist leaves target intact; reader never sees partial; BOM/CRLF/non-UTF-8 read tolerantly (FR-003a/FR-009a) (use devs:rust-dev agent)
+- [x] T022 Implement `crates/emend-core/src/fs.rs`: atomic+durable write (tempfile→`sync_all`→persist→dir fsync, `F_FULLFSYNC`) and tolerant read (research §B4) (use devs:rust-dev agent)
+- [x] T023 [GIT] Commit: atomic durable writes + tolerant reads
 
 ### Runtime, cancellation, streaming scaffolding
 
