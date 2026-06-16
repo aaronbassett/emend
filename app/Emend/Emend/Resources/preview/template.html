@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    Offline-only preview shell (Constitution II / SC-008).
+
+    The CSP forbids every remote origin: `default-src 'none'` plus only `'self'`
+    for the locally-bundled script/style/font/img assets. `connect-src 'none'`
+    blocks all network fetch / XHR / WebSocket. The `'unsafe-inline'` /
+    `'unsafe-eval'` tokens are local-execution concessions Mermaid needs — they
+    do NOT permit remote loads. Two further privacy layers are enforced by the
+    WKWebView host in Phase 6 (T087): a non-persistent data store and a
+    navigation delegate that cancels any non-file:/about: navigation.
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: file:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <link rel="stylesheet" href="katex/katex.min.css">
+  <link rel="stylesheet" href="theme.css">
+  <title>Emend Preview</title>
+</head>
+<body>
+  <article id="emend-content" class="markdown-body">
+    <!-- comrak-rendered HTML is injected here by the WKWebView host (Phase 6). -->
+  </article>
+  <script src="katex/katex.min.js"></script>
+  <script src="mermaid.min.js"></script>
+  <script>
+    // Mermaid + KaTeX run locally only. Diagram/math rendering and bidirectional
+    // scroll-sync anchors are wired in Phase 6 (T087/T088); here we only set a
+    // conservative, no-auto-run baseline.
+    if (window.mermaid) {
+      window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+    }
+  </script>
+</body>
+</html>
