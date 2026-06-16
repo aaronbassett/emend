@@ -1,0 +1,67 @@
+# Emend — Rust workspace
+# Core engine (file IO, watching, indexing, Markdown parsing, search, AI client)
+# behind a thin UniFFI shim consumed by the Swift/SwiftUI macOS app.
+# See specs/001-markdown-editor/research.md (§B8) for the layout rationale.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/emend-core",
+    "crates/emend-ffi",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Emend"]
+repository = ""
+
+# ---------------------------------------------------------------------------
+# Centralized, pinned dependency catalog (verified mid-2026 — see research.md).
+# These are INERT until a member opts in via `dep.workspace = true`, so the
+# skeleton builds offline. /sdd:implement wires them into emend-core as features
+# land. DO NOT bump from memory — verify with `cargo update`/`npm view`-equivalent.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# async runtime + cancellation
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+# errors
+thiserror = "2"
+# markdown: incremental editor highlight + canonical preview
+tree-sitter = "0.25"
+tree-sitter-md = "0.5"
+comrak = "0.52"
+# code highlighting
+syntect = "5.3"
+# fuzzy search / quick open
+nucleo = "0.5"
+# file watching (stay on 8.x; 9.0 is RC)
+notify = "8.2"
+notify-debouncer-full = "0.7"
+# atomic+durable writes
+tempfile = "3"
+# AI / HTTP (BYOM, OpenAI-compatible, SSE streaming)
+reqwest = { version = "0.13", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# FFI binding generator (only emend-ffi depends on this)
+uniffi = "0.31"
+
+# ---------------------------------------------------------------------------
+# Shared lint policy (NFR-003 / research §B7): no panics in the core.
+# Inherited by each crate via `[lints] workspace = true`.
+# ---------------------------------------------------------------------------
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[workspace.lints.rust]
+unsafe_code = "warn"        # emend-ffi will locally allow where UniFFI requires it
+missing_debug_implementations = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

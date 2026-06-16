@@ -1,0 +1,34 @@
+# SwiftLint config for the Emend macOS app (DS-002).
+# Run:  swiftlint   |   autofix: swiftlint --fix
+
+included:
+  - app
+  - swift
+
+# Generated UniFFI bindings + build output are not ours to lint.
+excluded:
+  - swift/EmendCore/Sources/EmendCoreFFI
+  - DerivedData
+  - .build
+  - "**/*.generated.swift"
+
+opt_in_rules:
+  - empty_count
+  - force_unwrapping          # no force-unwraps (mirrors Rust no-unwrap policy)
+  - implicitly_unwrapped_optional
+  - closure_spacing
+  - sorted_imports
+  - first_where
+  - contains_over_first_not_nil
+
+line_length:
+  warning: 100
+  error: 140
+  ignores_comments: true
+  ignores_urls: true
+
+identifier_name:
+  min_length: 2          # allow ⌘-style short names like `id`, `ui`
+
+force_cast: error
+force_try: error
