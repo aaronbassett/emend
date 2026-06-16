@@ -29,3 +29,8 @@ cp k/package/dist/fonts/*         "$DEST/katex/fonts/"
 
 To bump a version, change it here and in the command above, re-run, and confirm
 the offline preview still renders (Phase 6 test T083: zero network access).
+
+> **CSP caveat:** the preview CSP uses `font-src 'self'` and `connect-src 'none'`.
+> A future KaTeX bump must keep loading fonts via relative `fonts/…` URLs — if a
+> release switches to `data:`-embedded or remote fonts, the CSP would silently
+> break math rendering and would need updating in `template.html`.
