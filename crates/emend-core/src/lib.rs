@@ -15,6 +15,10 @@
 
 pub mod error;
 
+/// The crate's primary error type, re-exported at the root for ergonomic use
+/// (`emend_core::EmendError`) by the FFI shim and callers.
+pub use error::EmendError;
+
 /// UTF-16 code-unit text range — the canonical range unit crossing the FFI
 /// boundary so it maps 1:1 onto `NSRange` (research §A2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

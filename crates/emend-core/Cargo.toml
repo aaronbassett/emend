@@ -7,10 +7,15 @@ license.workspace = true
 authors.workspace = true
 description = "Emend core engine: files, watching, indexing, Markdown parsing, search, AI client. No FFI dependency — fully testable with `cargo test`."
 
-# NOTE: dependency-free skeleton so the workspace builds/tests offline.
-# /sdd:implement adds members of the catalog in the root [workspace.dependencies],
+# NOTE: kept lean so the workspace builds/tests offline with no FFI toolchain.
+# /sdd:implement adds further members of the catalog in the root
+# [workspace.dependencies] as features land,
 # e.g.:  tokio.workspace = true   comrak.workspace = true   nucleo.workspace = true
 [dependencies]
+# Error type ergonomics (Display/Error derive). Pure-Rust, no FFI dependency —
+# the core MUST NOT depend on `uniffi` (Constitution V); the uniffi projection
+# lives in emend-ffi.
+thiserror.workspace = true
 
 [lints]
 workspace = true
