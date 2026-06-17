@@ -2,14 +2,14 @@
 
 > **Purpose**: Document directory layout, module boundaries, and where to add new code.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-18 (incremental: US6 info sidebar + BYOM AI summary)
+> **Last Updated**: 2026-06-19 (incremental: US7 typography & appearance settings)
 
 ## Directory Layout
 
 ```
 emend/
 ├── crates/                          # Rust workspace
-│   ├── emend-core/                  # Core engine: files, documents, parsing, search, AI, stats/outline
+│   ├── emend-core/                  # Core engine: files, documents, parsing, search, AI, stats/outline, typography settings
 │   │   ├── Cargo.toml               # Core manifest (NO FFI dep, NO tokio/reqwest)
 │   │   ├── src/
 │   │   │   ├── lib.rs               # Module map + U16Range type
@@ -27,22 +27,25 @@ emend/
 │   │   │   │   ├── code_highlight.rs # syntect classed code coloring (US4 · T084)
 │   │   │   │   └── embed.rs         # Embed resolution + inlining (US5 · T097)
 │   │   │   ├── derived.rs           # **Per-document link/task scanning + stats/outline (US5 · T097 / US6 · T111)**
-│   │   │   └── **ai.rs**            # **Pure SSE parser + request builder + secret redaction (US6 · T112)**
+│   │   │   ├── ai.rs                # **Pure SSE parser + request builder + secret redaction (US6 · T112)**
+│   │   │   └── **settings.rs**      # **Global typography settings with in-memory store + clamping (US7 · T124)**
 │   │   └── tests/                   # Integration tests (cargo test)
-│   │       └── search_supersede.rs  # Quick Open batching + supersede (US3)
+│   │       ├── search_supersede.rs  # Quick Open batching + supersede (US3)
+│   │       └── **settings.rs**      # **Typography clamping + store tests (US7 · T124)**
 │   │
-│   ├── emend-ffi/                   # UniFFI shim (thin projection of core + streaming orchestration)
+│   ├── emend-ffi/                   # UniFFI shim (thin projection of core + streaming orchestration + settings)
 │   │   ├── Cargo.toml
 │   │   └── src/
-│   │       ├── lib.rs               # #[uniffi::export] entry points
+│   │       ├── lib.rs               # #[uniffi::export] entry points (new_settings, get_typography, set_typography)
 │   │       ├── error.rs             # FfiError projection of EmendError
 │   │       ├── panic.rs             # Panic containment hook
 │   │       ├── document.rs          # OpenDocHandle + document ops; **stats/outline (US6 · T111)**; render_preview_html (US4); extract_links, toggle_task, store_attachment (US5)
 │   │       ├── workspace.rs         # WorkspaceHandle + file ops; resolve_wikilink, wikilink_suggestions, resolve_embed_source (US5)
 │   │       ├── search.rs            # SearchHandle + quick_open_query (US3 · T074)
 │   │       ├── watcher.rs           # WatchHandle + conflict model
-│   │       ├── **ai.rs**            # **Network streaming orchestration + reqwest (US6 · T112/T113); ONLY place reqwest lives**
-│   │       └── handles.rs           # Async runtime + cancellation + **DocStats/OutlineItem/AiHandle projections (US6)**
+│   │       ├── ai.rs                # **Network streaming orchestration + reqwest (US6 · T112/T113); ONLY place reqwest lives**
+│   │       ├── **settings.rs**      # **FFI projection of TypographySettings + SettingsHandle (US7 · T124)**
+│   │       └── handles.rs           # Async runtime + cancellation + **DocStats/OutlineItem/AiHandle projections (US6)** + SettingsHandle (US7)
 │   │
 │   └── emend-bench/                 # Criterion benchmarks
 │       ├── Cargo.toml
@@ -69,7 +72,7 @@ emend/
 │       ├── Emend/                   # App sources
 │       │   ├── EmendApp.swift       # @main entry point
 │       │   ├── Shell/
-│       │   │   └── MainWindow.swift # **Four-pane layout (US6)**: sidebar | editor | preview | info sidebar. ⌘P button, Export PDF, Settings menu
+│       │   │   └── MainWindow.swift # **Four-pane layout (US6)** + **Settings menu (US7)**: sidebar | editor | preview | info. ⌘P button, Export PDF, Typography Settings
 │       │   ├── Platform/
 │       │   │   ├── SecurityScopedBookmarks.swift
 │       │   │   ├── FsObserver.swift # FS event → @MainActor callback bridge
@@ -95,15 +98,19 @@ emend/
 │       │   │   ├── **AIConfig.swift**        # **AIConfigStore: base URL, model, timeout config (persisted); test_ai_config button**
 │       │   │   ├── **AISettingsView.swift**  # **Modal for AI config input**
 │       │   │   └── **SummaryView.swift**     # **Streaming summary display + SummaryModel**
+│       │   ├── **Settings/**                 # **Typography & appearance settings (US7)**
+│       │   │   ├── **Typography.swift**      # **Helper: Swift enum wrapping FFI TypographySettings**
+│       │   │   ├── **TypographyModel.swift** # **@MainActor: owns core SettingsHandle, persists to UserDefaults, replays on launch**
+│       │   │   └── **TypographySettingsView.swift** # **SwiftUI settings sheet: sliders + font picker + Reset (US7 · T124)**
 │       │   ├── Preview/                      # Live preview pane (US4)
-│       │   │   ├── PreviewModel.swift        # @MainActor: debounced render state; calls renderPreviewHtmlResolving (US5)
-│       │   │   ├── PreviewWebView.swift      # NSViewRepresentable wrapping offline WKWebView
+│       │   │   ├── PreviewModel.swift        # @MainActor: debounced render state; calls renderPreviewHtmlResolving (US5); **applies typography CSS (US7)**
+│       │   │   ├── PreviewWebView.swift      # NSViewRepresentable wrapping offline WKWebView; **injects typography via CSS (US7)**
 │       │   │   ├── ScrollSync.swift          # Bidirectional editor ↔ preview scroll sync (FR-024, research §C3)
-│       │   │   └── PDFExport.swift           # Off-screen PDF render + NSPrintOperation paginate (FR-026, research §C4)
+│       │   │   └── PDFExport.swift           # Off-screen PDF render + NSPrintOperation paginate (FR-026, research §C4); **uses PreviewModel.css for typography matching (US7)**
 │       │   ├── Editor/                       # Editor pane (US1)
-│       │   │   ├── MarkdownEditorView.swift     # NSViewRepresentable over TextKit 2
+│       │   │   ├── MarkdownEditorView.swift     # NSViewRepresentable over TextKit 2; **registers observer on TypographyModel to apply NSFont (US7)**
 │       │   │   ├── MarkdownTextView.swift       # NSTextView subclass + list/format keys
-│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate; **signals InfoModel.refresh() (US6)**; owns workspace (US5)
+│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate; **signals InfoModel.refresh() (US6)**; owns workspace (US5); **applies EditorFont transforms from TypographyModel (US7)**
 │       │   │   ├── SyntaxAttributing.swift      # Pure: spans → attributes
 │       │   │   ├── SmartLists.swift             # Pure transforms: newline/renumber/indent/outdent
 │       │   │   ├── FormattingCommands.swift     # Pure transforms: bold/italic/link/task
@@ -143,7 +150,7 @@ emend/
 │       ├── research.md              # Architecture rationale (read-first); includes §B1 (two engines), §B5 (AI SSE), §B6 (syntect), §C3 (scroll sync), §C4 (PDF), §C5 (Keychain)
 │       ├── data-model.md            # Document/state schema
 │       ├── contracts/
-│       │   └── ffi-interface.md     # UniFFI export signatures (§3: document; §6: preview US4; §5: links/tasks/embeds US5; §4: stats/outline US6; §7: AI US6)
+│       │   └── ffi-interface.md     # UniFFI export signatures (§3: document; §6: preview US4; §5: links/tasks/embeds US5; §4: stats/outline US6; §7: AI US6; **§8: settings US7**)
 │       ├── checklists/              # Phase-by-phase acceptance criteria
 │       └── retro/                   # Phase retrospectives
 │
@@ -188,38 +195,41 @@ emend/
 | `watcher.rs` | File watching + self-write suppression + conflict model | `FsWatcher`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
 | `parse.rs` | **Two-engine Markdown parsing** | **Module map: `highlight`, `preview`, `code_highlight`, `embed`** |
 | `parse/highlight.rs` | **Incremental tree-sitter for editor (advisory)** | **`Highlighter`, `highlight_range()`** |
-| `parse/preview.rs` | **Authoritative comrak HTML + scroll-sync anchors (US4 · T084)** | **`render_preview_html()`, `render_preview_html_with_embeds()` (US5)**
+| `parse/preview.rs` | **Authoritative comrak HTML + scroll-sync anchors (US4 · T084)** | **`render_preview_html()`, `render_preview_html_with_embeds()` (US5)** |
 | `parse/code_highlight.rs` | **syntect classed HTML code colouring (US4 · T084)** | **`theme_css()`, `SyntaxHighlighterAdapter`** |
 | `parse/embed.rs` | **Embed resolution + content inlining (US5 · T097)** | **`resolve_and_inline_embed(resolver)`, recursive depth guard** |
 | `derived.rs` | **Per-document link/task scanning + FR-019a resolution + stats/outline (US5 · T097 / US6 · T111)** | **`extract_links()`, `resolve_wikilink()`, `wikilink_suggestions()`, `toggle_task()`, `stats()`, `outline()`** |
-| **`ai.rs`** | **Pure SSE parser + request builder + secret redaction (US6 · T112)** | **`SseParser`, `ApiKey`, `check_input_size()`, `build_request_body()`, `build_auth_header()`** |
+| `ai.rs` | **Pure SSE parser + request builder + secret redaction (US6 · T112)** | **`SseParser`, `ApiKey`, `check_input_size()`, `build_request_body()`, `build_auth_header()`** |
+| **`settings.rs`** | **Global typography preferences + in-memory store with clamping (US7 · T124)** | **`TypographySettings`, `TypographyStore`, `TypographyStore::get()`, `set()`, `clamped()`** |
 
 **Naming conventions**:
-- **Modules**: snake_case (e.g., `document`, `error`, `fs`, `parse`, `derived`, `ai`)
-- **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`, `LinkRef`, `DocStats`, `OutlineItem`, `ApiKey`)
+- **Modules**: snake_case (e.g., `document`, `error`, `fs`, `parse`, `derived`, `ai`, `settings`)
+- **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`, `LinkRef`, `DocStats`, `OutlineItem`, `ApiKey`, **`TypographySettings`, `TypographyStore`**)
 - **Enums**: PascalCase (e.g., `EmendError`, `ChangeEvent`, `LinkKind`, `SseEvent`)
 - **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`, `extract_links`, `resolve_wikilink`, `toggle_task`, `stats`, `outline`)
-- **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`, `DEFAULT_SUMMARY_SYSTEM_PROMPT`)
+- **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`, `DEFAULT_SUMMARY_SYSTEM_PROMPT`, **`MIN_FONT_SIZE_PT`, `MAX_FONT_SIZE_PT`, `DEFAULT_FONT_SIZE_PT`**)
 
 ### `crates/emend-core/tests/` — Core Integration Tests
 
 | File | Purpose |
 |---|---|
 | `search_supersede.rs` | **US3: Quick Open batching + cancel flag behavior (T073)** |
+| **`settings.rs`** | **US7: Typography clamping + store round-trip tests (T124)** |
 
 ### `crates/emend-ffi/src/` — FFI Projection
 
 | File | Purpose | Key Types/Functions |
 |---|---|---|
-| `lib.rs` | `#[uniffi::export]` entry points; `uniffi::setup_scaffolding!()` | `read_file_at()`, `core_abi_version()`, `preview_theme_css()` (US4) |
+| `lib.rs` | `#[uniffi::export]` entry points; **`new_settings()`, `get_typography()`, `set_typography()`** (US7); `uniffi::setup_scaffolding!()` | `read_file_at()`, `core_abi_version()`, `preview_theme_css()` (US4); **`new_settings()`, `get_typography()`, `set_typography()` (US7)** |
 | `error.rs` | `#[derive(uniffi::Error)] FfiError` — mirror of `EmendError` | `FfiError` (exhaustive From impls) |
 | `panic.rs` | Custom panic hook for debugging (if needed) | (reserved) |
 | `document.rs` | Document FFI ops: open, close, push_edit, highlight, **stats, outline (US6)**, render_preview_html, extract_links, toggle_task, store_attachment (US5), flush | `OpenDocHandle`, `open_document()`, `push_edit()`, **`stats()`, `outline()`** |
 | `workspace.rs` | Workspace + index FFI ops: locations, file ops, search; resolve_wikilink, wikilink_suggestions, resolve_embed_source (US5) | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()`, `quick_open_query()` (US3) |
 | `search.rs` | **FFI Quick Open async shim (US3 · T074)** | **`SearchHandle` (Arc<Self>, UniFFI Object), `start_query()`, `SharedIndex`** |
 | `watcher.rs` | Watcher FFI ops: start watching, track self-writes, resolve conflicts | `WatchHandle`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
-| **`ai.rs`** | **FFI streaming AI client (US6 · T112/T113); ONLY place reqwest + tokio network orchestration** | **`summarize_document()`, `test_ai_config()`, `AiHandle.cancel()`, per-chunk timeout orchestration** |
-| `handles.rs` | tokio runtime, `CancellationToken`, foreign-trait sinks, **DocStats/OutlineItem/AiHandle projections (US6)** | `SearchHit`, **`DocStats`, `OutlineItem`, `AiHandle`**, `DocObserver`, `SearchSink`, **`AiSink`** |
+| `ai.rs` | **FFI streaming AI client (US6 · T112/T113); ONLY place reqwest + tokio network orchestration** | **`summarize_document()`, `test_ai_config()`, `AiHandle.cancel()`, per-chunk timeout orchestration** |
+| **`settings.rs`** | **FFI projection of typography settings (US7 · T124); exhaustive From impls** | **`TypographySettings` (uniffi::Record), `SettingsHandle` (uniffi::Object), `get_typography()`, `set_typography()`** |
+| `handles.rs` | tokio runtime, `CancellationToken`, foreign-trait sinks, **DocStats/OutlineItem/AiHandle/SettingsHandle projections** | `SearchHit`, **`DocStats`, `OutlineItem`, `AiHandle`**, `DocObserver`, `SearchSink`, **`AiSink`, `SettingsHandle`** |
 
 **Rule**: Keep FFI free of business logic (except streaming orchestration, which is unavoidable).
 
@@ -244,7 +254,7 @@ emend/
 | Directory | Purpose | Key Components |
 |---|---|---|
 | `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Shell/` | Window and pane structure | `MainWindow: View` (**four-pane layout US6**: sidebar \| editor \| preview \| info); ⌘P shortcut button (US3); Export PDF button (US4); Settings menu (AI config) |
+| `Shell/` | Window and pane structure | `MainWindow: View` (**four-pane layout US6**: sidebar \| editor \| preview \| info); ⌘P shortcut button (US3); Export PDF button (US4); **Settings menu (US7)** |
 | `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift`, **`KeychainStore.swift` (US6)** |
 | `Sidebar/` | Workspace outline + navigation | `WorkspaceModel` (@MainActor), `WorkspaceOutlineView` (NSViewRepresentable over NSOutlineView), `WorkspaceNode` (outline item), `OutlineDragDrop`, `FolderIconPicker` |
 | `Tabs/` | Open-document management | `TabModel` (@MainActor), `TabBarView` (tab bar UI) |
@@ -252,8 +262,9 @@ emend/
 | **`Links/`** | **Wiki-link completion + navigation (US5)** | **`WikiLinkAutocomplete` (pure helpers)** |
 | **`Info/`** | **Info sidebar (US6)** | **`InfoModel` (@MainActor, stats + outline), `InfoSidebarView` (stats grid + heading tree)** |
 | **`AI/`** | **BYOM AI summary (US6)** | **`AIConfig.swift` (AIConfigStore + test button), `AISettingsView` (config modal), `SummaryView` (streaming summary display + SummaryModel)** |
-| **`Preview/`** | **Live preview pane (US4)** | **`PreviewModel` (@MainActor, debounced render, embed resolution US5), `PreviewWebView` (NSViewRepresentable over offline WKWebView), `ScrollSync` (bidirectional scroll), `PDFExport` (async multi-page)** |
-| `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator` (owns workspace for wiki-link resolution US5; signals `InfoModel.refresh()` US6), `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController`, **`TaskCheckbox`, `ImageDrop`** (US5) |
+| **`Settings/`** | **Typography & appearance settings (US7 · T124)** | **`Typography.swift` (helper enum), `TypographyModel` (@MainActor, persists to UserDefaults), `TypographySettingsView` (settings sheet with sliders + Reset)** |
+| **`Preview/`** | **Live preview pane (US4)** | **`PreviewModel` (@MainActor, debounced render, embed resolution US5, **typography CSS injection US7**), `PreviewWebView` (NSViewRepresentable over offline WKWebView), `ScrollSync` (bidirectional scroll), `PDFExport` (async multi-page, **uses PreviewModel.css for typography matching US7**)** |
+| `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator` (owns workspace for wiki-link resolution US5; signals `InfoModel.refresh()` US6; **applies EditorFont transforms from TypographyModel US7**), `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController`, **`TaskCheckbox`, `ImageDrop`** (US5) |
 | `Screens/` (US2+) | Major feature screens | (to be implemented) |
 | `Models/` (US2+) | SwiftUI `@Observable` state | (to be implemented) |
 | `Bindings/` (US2+) | Rust↔Swift type adapters | (to be implemented) |
@@ -263,11 +274,21 @@ emend/
 
 **Naming conventions**:
 - **Views**: PascalCase (e.g., `MainWindow`, `EditorPane`, `WorkspaceOutlineView`)
-- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `PreviewModel`, `InfoModel`, `SummaryModel`)
+- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `PreviewModel`, `InfoModel`, `SummaryModel`, **`TypographyModel`**)
 - **Controllers**: PascalCase + `Controller` suffix (e.g., `ConflictController`, `AutosaveController`)
 - **Observers**: PascalCase + `Observer` suffix (e.g., `FsObserver`)
 - **Config/Store**: PascalCase + suffix (e.g., `AIConfigStore`, `KeychainStore`)
 - **Pure helpers**: PascalCase, no suffix (e.g., `WikiLinkAutocomplete`, `TaskCheckbox`, `ImageDrop`)
+
+### `app/Emend/Emend/Settings/` — Typography Settings (US7)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| **`Typography.swift`** | **Helper enum wrapping FFI `TypographySettings` (US7 · T124)** | **`Typography` enum: constructors `.font(family, size)`, helpers for NSFont + paragraph styles** |
+| **`TypographyModel.swift`** | **@MainActor: owns core `SettingsHandle`, persists to UserDefaults, replays on launch (US7 · T124)** | **`TypographyModel: ObservableObject`, `@Published settings`, `apply()`, `reset()`** |
+| **`TypographySettingsView.swift`** | **SwiftUI settings sheet: sliders + font picker + Reset (US7 · T124)** | **`TypographySettingsView: View`, observes TypographyModel** |
+
+**Data flow**: User adjusts typography in `TypographySettingsView` → calls `TypographyModel.apply(newSettings)` → core clamps via `set_typography()` → `apply()` reads back clamped result → publishes @Published settings → editor/preview observe and reflow → persists to UserDefaults for next launch.
 
 ### `app/Emend/Emend/Sidebar/` — Workspace Navigation (US2)
 
@@ -344,16 +365,16 @@ emend/
 
 | File | Purpose | Key Types |
 |---|---|---|
-| `PreviewModel.swift` | **@MainActor: debounced render state (FR-022/FR-025); calls renderPreviewHtmlResolving for embeds (US5)** | **`PreviewModel: ObservableObject`, `@Published html`, `@Published version`, `scheduleRefresh()`** |
-| `PreviewWebView.swift` | **NSViewRepresentable wrapping offline WKWebView (privacy SC-008/FR-035)** | **`PreviewWebView: NSViewRepresentable`, `Coordinator: WKNavigationDelegate`, bundled Mermaid+KaTeX, CSP blocking remotes** |
+| `PreviewModel.swift` | **@MainActor: debounced render state (FR-022/FR-025); calls renderPreviewHtmlResolving for embeds (US5); **applies typography via CSS injection (US7)****  | **`PreviewModel: ObservableObject`, `@Published html`, `@Published version`, `scheduleRefresh()`** |
+| `PreviewWebView.swift` | **NSViewRepresentable wrapping offline WKWebView (privacy SC-008/FR-035); **injects typography via CSS (US7)****  | **`PreviewWebView: NSViewRepresentable`, `Coordinator: WKNavigationDelegate`, bundled Mermaid+KaTeX, CSP blocking remotes** |
 | `ScrollSync.swift` | **Bidirectional editor ↔ preview scroll sync (FR-024, research §C3)** | **`ScrollSync: ObservableObject`, `attachEditor()`, `attachPreview()`, mute window 160 ms** |
-| `PDFExport.swift` | **Off-screen multi-page PDF render + NSPrintOperation (FR-026, research §C4)** | **`PDFExport` enum, `OffscreenPrintHost: WKNavigationDelegate`, `runModal` for pagination** |
+| `PDFExport.swift` | **Off-screen multi-page PDF render + NSPrintOperation (FR-026, research §C4); **uses PreviewModel.css with typography for matching (US7)****  | **`PDFExport` enum, `OffscreenPrintHost: WKNavigationDelegate`, `runModal` for pagination** |
 
-**Data flow (preview render with embeds)**: `EditorCoordinator` signals `PreviewModel.scheduleRefresh()` → debounce 150 ms → `Task.detached` calls `document.renderPreviewHtmlResolving(workspace)` → core resolves embeds via workspace index → HTML with inlined embedded notes + `data-line` anchors → `@Published html` bumps `version` → `PreviewWebView.updateNSView()` injects via `window.__emendRender` → template.html re-renders → bridge.js builds anchor table and syncs scroll from editor.
+**Data flow (preview render with embeds & typography)**: `EditorCoordinator` signals `PreviewModel.scheduleRefresh()` → debounce 150 ms → `Task.detached` calls `document.renderPreviewHtmlResolving(workspace)` → core resolves embeds via workspace index → HTML with inlined embedded notes + `data-line` anchors → `@Published html` bumps `version` → `PreviewWebView.updateNSView()` injects via `window.__emendRender` → template.html re-renders → **CSS includes typography (font-family, size, line-height, paragraph spacing from TypographyModel)** → bridge.js builds anchor table and syncs scroll from editor.
 
 **Data flow (scroll sync)**: Editor scrolls (NSTextView delegate observed) → `ScrollSync.editorScrolled()` unmuted → maps top visible line → `evaluateJavaScript("window.__emendScrollToLine(line)")` → bridge.js interpolates anchors → smooth scroll preview → page fires `window.__emendOnScroll` → JS message handler calls `ScrollSync.previewScrolled()` → scrolls editor + mutes 160 ms → editor's scroll fires again but mute rejects it.
 
-**Data flow (PDF export)**: User clicks "Export PDF" → `MainWindow` calls `PDFExport.export(html:css:to:)` async → `OffscreenPrintHost` spins up off-screen window → loads template + grants read access to `preview/` → injects html+css via `__emendRender` → waits for Mermaid layout (async JS) → builds `NSPrintInfo` with `@media print` rules → `NSPrintOperation.runModal` (NOT `run()`, which deadlocks) → multi-page PDF respects pagination rules.
+**Data flow (PDF export with typography)**: User clicks "Export PDF" → `MainWindow` calls `PDFExport.export(html:css:to:)` async → `OffscreenPrintHost` spins up off-screen window → loads template + grants read access to `preview/` → injects html+**css (from PreviewModel, includes typography)** via `__emendRender` → waits for Mermaid layout (async JS) → builds `NSPrintInfo` with `@media print` rules → `NSPrintOperation.runModal` (NOT `run()`, which deadlocks) → multi-page PDF respects pagination rules **and typography matches preview**.
 
 ### `app/Emend/Emend/Editor/` — Live Editor Pane (US1)
 
@@ -361,7 +382,7 @@ emend/
 |---|---|---|
 | `MarkdownEditorView.swift` | NSViewRepresentable, builds TextKit 2 stack | `MarkdownEditorView: NSViewRepresentable` |
 | `MarkdownTextView.swift` | NSTextView subclass, intercepts list/format keys; integrates task checkbox clicking and image drag-drop (US5) | `MarkdownTextView: NSTextView` |
-| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop; **signals PreviewModel.scheduleRefresh() and InfoModel.refresh()**; owns workspace for wiki-link resolution (US5) | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
+| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop; **signals PreviewModel.scheduleRefresh() and InfoModel.refresh()**; owns workspace for wiki-link resolution (US5); **applies EditorFont transforms from TypographyModel (US7)** | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
 | `SyntaxAttributing.swift` | Pure: spans → attributes | `SyntaxAttributing` (enum with static methods) |
 | `SmartLists.swift` | Pure transforms: newline/renumber/indent/outdent | `SmartLists` (enum with static methods) |
 | `FormattingCommands.swift` | Pure transforms: bold/italic/link/task | `FormattingCommands` (enum with static methods) |
@@ -370,11 +391,13 @@ emend/
 | **`TaskCheckbox.swift`** | **Pure helpers: task checkbox detection + toggle edit (US5 · T097)** | **`TaskCheckbox` enum: `checkboxRange()`, `toggleEdit()`** |
 | **`ImageDrop.swift`** | **Pure helpers: image drag-drop URL filtering + Markdown generation (US5 · T097)** | **`ImageDrop` enum: `imageFileURLs()`, `markdown()`** |
 
-**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → signals `PreviewModel.scheduleRefresh()` + **`InfoModel.refresh()` (US6)** → `AutosaveController` rearms debounce.
+**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → signals `PreviewModel.scheduleRefresh()` + **`InfoModel.refresh()` (US6)** + **applies `EditorFont` transforms from TypographyModel (US7)** → `AutosaveController` rearms debounce.
 
 **Formatting & list commands** are **pure functions**: no access to editor state. They take `(text: NSString, selection: NSRange)` and return an `Edit`. This makes them unit-testable without a window (Constitution VII).
 
 **Task checkbox & image drop** are **pure helpers**: detect the feature (checkbox line, image URLs) and return the edit or data. Swift-side integration (clicking, dragging) drives them.
+
+**Typography application (US7)**: `EditorCoordinator` observes `TypographyModel.settings` and applies changes to `NSTextView` by updating the font (NSFont from family + size) and paragraph style (line height multiplier, paragraph spacing) on the text storage. Changes are immediately visible as the text reflows.
 
 ### `app/Emend/Emend/Resources/preview/` — Bundled Preview Assets (US4)
 
@@ -423,6 +446,8 @@ emend_core::ai::ApiKey                             // **Public (US6 · T112)**
 emend_core::ai::check_input_size()                 // **Public (US6 · T112)**
 emend_core::ai::build_request_body()               // **Public (US6 · T112)**
 emend_core::ai::build_auth_header()                // **Public (US6 · T112)**
+emend_core::settings::TypographySettings           // **Public (US7 · T124)**
+emend_core::settings::TypographyStore              // **Public (US7 · T124)**
 emend_core::U16Range              // Public (boundary type)
 ```
 
@@ -444,6 +469,22 @@ pub fn preview_theme_css() -> String {
 #[uniffi::export]
 pub fn new_workspace() -> Arc<WorkspaceHandle> {
     Arc::new(WorkspaceHandle::new())
+}
+
+#[uniffi::export]
+pub fn new_settings() -> Arc<SettingsHandle> {  // **US7 · T124**
+    Arc::new(SettingsHandle::new())
+}
+
+#[uniffi::export]
+impl SettingsHandle {  // **US7 · T124**
+    pub fn get_typography(&self) -> TypographySettings {
+        // T124: returns always-clamped settings
+    }
+
+    pub fn set_typography(&self, settings: TypographySettings) -> Result<(), FfiError> {
+        // T124: clamps on set, infallible (no error path)
+    }
 }
 
 #[uniffi::export]
@@ -529,6 +570,7 @@ Consumers import it as:
 import EmendCore
 let version = EmendCore.abiVersion()
 let workspace = EmendCore.newWorkspace()
+let settings = EmendCore.newSettings()  // **US7 · T124**
 let searchHandle = workspace.quickOpenQuery(query: "foo", sink: mySink)
 let html = try openDocHandle.renderPreviewHtml()  // US4 · T084
 let htmlWithEmbeds = try openDocHandle.renderPreviewHtmlResolving(workspace: workspace)  // US5 · T097
@@ -541,6 +583,8 @@ let resolved = try workspace.resolveWikilink(target: "Launch Plan", fromNote: "/
 let suggestions = try workspace.wikiLinkSuggestions(partial: "Launch")  // US5 · T097
 let aiHandle = summarizeDocument(doc, config, key, sink)  // **US6 · T112**
 try testAiConfig(config, key)  // **US6 · FR-037**
+let typo = settings.getTypography()  // **US7 · T124**
+try settings.setTypography(newSettings)  // **US7 · T124**
 ```
 
 ### App Layer
@@ -557,6 +601,27 @@ final class WorkspaceModel: ObservableObject {
     // ...
 }
 
+// app/Emend/Emend/Settings/TypographyModel.swift (US7)
+@MainActor
+final class TypographyModel: ObservableObject {
+    @Published var settings: TypographySettings
+    private let handle: EmendCore.SettingsHandle  // **US7 · T124**
+    // ...
+    init(defaults: UserDefaults = .standard) {
+        handle = EmendCore.newSettings()  // **US7 · T124**
+        if let stored = load(from: defaults) {
+            try? handle.setTypography(settings: stored)  // **US7 · T124**
+        }
+        settings = handle.getTypography()  // **US7 · T124**
+    }
+    
+    func apply(_ new: TypographySettings) {
+        try? handle.setTypography(settings: new)  // **US7 · T124**
+        settings = handle.getTypography()  // **US7 · T124** — read back clamped
+        save(settings, to: defaults)
+    }
+}
+
 // app/Emend/Emend/QuickOpen/QuickOpenModel.swift
 @MainActor
 final class QuickOpenModel: ObservableObject {
@@ -565,7 +630,7 @@ final class QuickOpenModel: ObservableObject {
     // ...
 }
 
-// app/Emend/Emend/Preview/PreviewModel.swift (US4/US5)
+// app/Emend/Emend/Preview/PreviewModel.swift (US4/US5/US7)
 @MainActor
 final class PreviewModel: ObservableObject {
     @Published private(set) var html = ""
@@ -573,6 +638,7 @@ final class PreviewModel: ObservableObject {
     let themeCSS = EmendCore.previewThemeCss()  // US4
     private var handle: OpenDocHandle?
     // Calls handle.renderPreviewHtmlResolving(workspace) for embeds (US5)
+    // **Injects typography CSS from TypographyModel (US7)**
 }
 
 // **app/Emend/Emend/Info/InfoModel.swift (US6)**
@@ -588,13 +654,14 @@ final class InfoModel: ObservableObject {
     // Calls handle.stats() / handle.outline() off-main
 }
 
-// app/Emend/Emend/Editor/EditorCoordinator.swift (US5/US6)
+// app/Emend/Emend/Editor/EditorCoordinator.swift (US5/US6/US7)
 @MainActor
 final class EditorCoordinator: NSTextStorageDelegate {
     var workspace: WorkspaceHandle?  // For wiki-link resolution (US5)
     var notePath = ""  // Current note's path (US5)
     var onOpenLink: ((URL) -> Void)?  // Tab-opening callback (US5)
     var infoModel: InfoModel?  // **For stats/outline refresh (US6)**
+    var typographyModel: TypographyModel?  // **For EditorFont application (US7)**
 }
 ```
 
@@ -612,11 +679,13 @@ final class EditorCoordinator: NSTextStorageDelegate {
 | **Core embed logic** (US5) | `crates/emend-core/src/parse/embed.rs` | Embed resolution, content inlining, recursion guards |
 | **Core link/task/stats/outline logic** (US5/US6) | `crates/emend-core/src/derived.rs` | Link extraction, resolution, suggestions, task toggle, stats, outline |
 | **Core AI logic** (US6) | `crates/emend-core/src/ai.rs` | SSE parsing, request building, secret redaction (pure, no tokio/reqwest) |
+| **Core typography logic** (US7) | **`crates/emend-core/src/settings.rs`** | **TypographySettings struct, clamping logic, TypographyStore.set/get (pure, no uniffi/tokio)** |
 | **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/{module}.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
 | **FFI value type projection** | `crates/emend-ffi/src/{module}.rs` (with exhaustive From impl) | `#[derive(uniffi::Record)] pub struct MyRecord { ... }` |
 | **FFI async shim** (tokio, cancellation, streaming) | `crates/emend-ffi/src/search.rs` or `ai.rs` or `handles.rs` | Extend `pub struct SearchHandle`, foreign-trait sinks, async orchestration |
+| **FFI settings shim** (US7) | **`crates/emend-ffi/src/settings.rs`** | **TypographySettings record projection, SettingsHandle object, exhaustive From impls** |
 | **Core benchmark** | `crates/emend-bench/benches/{name}.rs` | Performance-sensitive paths (e.g., Quick Open SC-004) |
-| **Core integration test** | `crates/emend-core/tests/{name}.rs` | Testable decision logic (e.g., `search_supersede.rs`, link resolution, AI streaming) |
+| **Core integration test** | `crates/emend-core/tests/{name}.rs` | Testable decision logic (e.g., `search_supersede.rs`, link resolution, AI streaming, **typography clamping US7**) |
 | **Swift wrapper** (idiomatic adapters over UniFFI bindings) | `swift/EmendCore/Sources/EmendCore/*.swift` | `extension EmendCore`, `struct AsyncStreamAdapter` |
 | **App-level state model** | `app/Emend/Emend/{Feature}Model.swift` (e.g., Sidebar/WorkspaceModel.swift) | `@MainActor final class WorkspaceModel: ObservableObject` |
 | **App-level controller** | `app/Emend/Emend/Editor/{Feature}Controller.swift` | `@MainActor final class ConflictController: ObservableObject` |
@@ -625,6 +694,8 @@ final class EditorCoordinator: NSTextStorageDelegate {
 | **Preview UI view** (US4) | `app/Emend/Emend/Preview/{FeatureName}.swift` | Preview pane views, scroll-sync, PDF export coordination |
 | **Info UI view** (US6) | **`app/Emend/Emend/Info/{FeatureName}.swift`** | **Info sidebar stats, outline tree, headings** |
 | **AI UI view** (US6) | **`app/Emend/Emend/AI/{FeatureName}.swift`** | **Settings modal, summary display, progress** |
+| **Settings model** (US7) | **`app/Emend/Emend/Settings/{FeatureName}Model.swift`** | **@MainActor state owner (e.g., TypographyModel)** |
+| **Settings UI view** (US7) | **`app/Emend/Emend/Settings/{FeatureName}SettingsView.swift`** | **SwiftUI sheet or modal for configuring settings** |
 | **Link UI helpers** (US5) | `app/Emend/Emend/Links/{FeatureName}.swift` | Pure helpers: `WikiLinkAutocomplete`, link styling |
 | **Pure transform** (formatting, lists, etc.) | `app/Emend/Emend/Editor/SmartLists.swift` or `FormattingCommands.swift` | `static func indent(in:selection:) -> Edit?` |
 | **Pure helper** (task checkbox, image drop, etc.) (US5) | `app/Emend/Emend/Editor/{FeatureName}.swift` | `static func checkboxRange()`, `static func imageFileURLs()` |
@@ -649,6 +720,7 @@ use crate::parse::code_highlight; // US4 · T084
 use crate::parse::embed;        // US5 · T097
 use crate::derived;             // US5 · T097 / US6 · T111
 use crate::ai;                  // **US6 · T112**
+use crate::settings;            // **US7 · T124**
 use crate::U16Range;  // Re-exported from lib.rs
 
 // Outside emend-core, import like any Rust crate
@@ -659,6 +731,7 @@ use emend_core::parse::code_highlight::theme_css; // US4
 use emend_core::parse::embed;  // US5 · T097
 use emend_core::derived::{extract_links, resolve_wikilink, LinkKind, LinkRef, stats, outline};  // **US5/US6 · T097/T111**
 use emend_core::ai::{SseParser, ApiKey, check_input_size, build_request_body};  // **US6 · T112**
+use emend_core::settings::{TypographySettings, TypographyStore};  // **US7 · T124**
 ```
 
 ### FFI Imports
@@ -673,6 +746,7 @@ use emend_core::parse::code_highlight;       // US4 · T084
 use emend_core::parse::embed;                // US5 · T097
 use emend_core::derived::{extract_links, resolve_wikilink, stats, outline};  // **US5/US6 · T097/T111**
 use emend_core::ai::{SseParser, ApiKey, check_input_size, build_request_body};  // **US6 · T112**
+use emend_core::settings::{TypographySettings as CoreTypographySettings, TypographyStore};  // **US7 · T124**
 
 // Export via UniFFI
 #[uniffi::export]
@@ -683,6 +757,22 @@ pub fn read_file_at(path: String) -> Result<String, FfiError> {
 #[uniffi::export]
 pub fn preview_theme_css() -> String {  // US4
     emend_core::parse::code_highlight::theme_css().to_owned()
+}
+
+#[uniffi::export]
+pub fn new_settings() -> Arc<SettingsHandle> {  // **US7 · T124**
+    Arc::new(SettingsHandle::new())
+}
+
+#[uniffi::export]
+impl SettingsHandle {  // **US7 · T124**
+    pub fn get_typography(&self) -> TypographySettings {
+        // T124: returns always-clamped settings
+    }
+
+    pub fn set_typography(&self, settings: TypographySettings) -> Result<(), FfiError> {
+        // T124: clamps on set, infallible
+    }
 }
 
 #[uniffi::export]
@@ -752,6 +842,9 @@ let stats = try openDocHandle.stats()  // **US6 · T111**
 let outline = try openDocHandle.outline()  // **US6 · T111**
 let resolved = try workspace.resolveWikilink(target: target, fromNote: notePath)  // US5 · T097
 let suggestions = try workspace.wikiLinkSuggestions(partial: partial)  // US5 · T097
+let settings = EmendCore.newSettings()  // **US7 · T124**
+let typo = settings.getTypography()  // **US7 · T124**
+try settings.setTypography(newTypo)  // **US7 · T124**
 ```
 
 ### App Swift Imports
@@ -764,7 +857,10 @@ import EmendCore
 let workspace: EmendCore.WorkspaceHandle = EmendCore.newWorkspace()
 let searchHandle: EmendCore.SearchHandle = workspace.quickOpenQuery(query: query, sink: sink)
 
-// Preview model (US4/US5)
+// **Settings model (US7)**
+let settings: EmendCore.SettingsHandle = EmendCore.newSettings()  // **US7 · T124**
+
+// Preview model (US4/US5/US7)
 let preview: PreviewModel  // @StateObject
 let html = try preview.handle?.renderPreviewHtml()  // US4
 let htmlWithEmbeds = try preview.handle?.renderPreviewHtmlResolving(workspace: workspace)  // US5 · T097
@@ -779,18 +875,25 @@ let aiConfig: AIConfigStore  // **Persisted config**
 let key = KeychainStore.read()  // **Read key transiently**
 let aiHandle = summarizeDocument(doc, aiConfig.config, key, sink)  // **US6 · T112**
 
-// Editor coordinator (US5/US6)
+// **Typography model (US7)**
+let typography: TypographyModel  // **@StateObject**
+let currentTypo = typography.settings  // **US7 · T124**
+typography.apply(newTypo)  // **US7 · T124** — clamps via core, publishes, persists
+
+// Editor coordinator (US5/US6/US7)
 let editor: EditorCoordinator
 editor.workspace = workspace
 editor.notePath = "/notes/meeting.md"
 editor.infoModel = infoModel  // **For refresh signals (US6)**
+editor.typographyModel = typographyModel  // **For EditorFont application (US7)**
 let links = try editor.handle.extractLinks()  // US5 · T097
 
 // Views read model state
 @State var model: WorkspaceModel
 @State var quickOpen: QuickOpenModel
-@ObservedObject var preview: PreviewModel  // US4/US5
+@ObservedObject var preview: PreviewModel  // US4/US5/US7
 @ObservedObject var info: InfoModel  // **US6**
+@ObservedObject var typography: TypographyModel  // **US7**
 ```
 
 ## Generated Files
@@ -818,8 +921,9 @@ Files that are auto-generated and should NOT be manually edited:
 | `app/Emend/Emend/Preview/PreviewModel.swift` | **Preview render state owner (US4/US5)** | **MainWindow** |
 | **`app/Emend/Emend/Info/InfoModel.swift`** | **Info sidebar state owner (US6)** | **MainWindow** |
 | **`app/Emend/Emend/AI/AIConfig.swift`** | **AI config holder (US6)** | **Settings menu** |
+| **`app/Emend/Emend/Settings/TypographyModel.swift`** | **Typography settings state owner (US7)** | **Settings menu** |
 | `app/Emend/Emend/Editor/MarkdownEditorView.swift` | Live editor pane | MainWindow |
-| `app/Emend/Emend/Editor/EditorCoordinator.swift` | **Per-keystroke editor loop; wiki-link resolution (US5); info refresh signal (US6)** | **MarkdownEditorView** |
+| `app/Emend/Emend/Editor/EditorCoordinator.swift` | **Per-keystroke editor loop; wiki-link resolution (US5); info refresh signal (US6); **typography application (US7)****  | **MarkdownEditorView** |
 
 ## Phase Milestones
 
@@ -833,7 +937,8 @@ Structure changes as phases land:
 | **3 (complete · US4)** | **`app/Emend/Preview/`, `app/Emend/Resources/preview/`** | **`parse/preview` (T084: comrak HTML), `parse/code_highlight` (syntect)** | **`render_preview_html` (T084), `preview_theme_css` (T084)** | **`PreviewModel`, `PreviewWebView`, `ScrollSync`, `PDFExport`; bundled Mermaid + KaTeX** |
 | **4 (complete · US5)** | **`app/Emend/Links/`** | **`parse/embed` (T097: embed resolution), `derived` (T097: links/tasks)** | **`render_preview_html_resolving`, `extract_links`, `toggle_task`, `store_attachment`, `resolve_wikilink`, `wikilink_suggestions`, `resolve_embed_source` (all US5 · T097)** | **`WikiLinkAutocomplete`, `TaskCheckbox`, `ImageDrop`; PreviewModel embed resolution (US5)** |
 | **5 (complete · US6)** | **`app/Emend/Info/`, `app/Emend/AI/`, `app/Emend/Platform/KeychainStore`** | **`derived::stats()`, `derived::outline()` (T111), `ai` (T112: SSE parser + request builder)** | **`stats()`, `outline()`, `summarize_document()`, `test_ai_config()` (US6 · T111/T112/T113)** | **`InfoModel`, `InfoSidebarView`, `AIConfigStore`, `AISettingsView`, `SummaryView`, `SummaryModel`, `KeychainStore`; EditorCoordinator signals InfoModel** |
-| 6+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
+| **6 (complete · US7)** | **`app/Emend/Settings/`** | **`settings` (T124: typography store + clamping)** | **`new_settings()`, `get_typography()`, `set_typography()` (US7 · T124)** | **`TypographyModel`, `TypographySettingsView`, `Typography` helper; EditorCoordinator + PreviewModel apply typography** |
+| 7+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
 
 ---
 
@@ -842,7 +947,7 @@ Structure changes as phases land:
 ```
    App (Swift/SwiftUI)
     ↑
-    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync, InfoModel, AIConfigStore (@MainActor models)
+    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync, InfoModel, AIConfigStore, **TypographyModel** (@MainActor models)
     │  ↑
     │  └─ EmendCore (package)
     │     ↑
@@ -854,6 +959,7 @@ Structure changes as phases land:
     │           ├─ parse::embed (T097, embed resolution + inlining)
     │           ├─ derived (T097/T111, link extraction + stats + outline)
     │           ├─ ai (T112, streaming orchestration + reqwest)
+    │           ├─ **settings (T124, typography store projection)**
     │           ├─ search (T073, tokio-free)
     │           ├─ index (search index)
     │           ├─ workspace, watcher, parse, etc.

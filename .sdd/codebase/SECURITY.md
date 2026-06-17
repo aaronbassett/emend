@@ -2,11 +2,11 @@
 
 > **Purpose**: Document authentication, authorization, security controls, and vulnerability status.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6 Phase 8 complete — AI summary with BYOM endpoint; zero outbound network unless configured and invoked; key redaction + max-input guard before any send)
+> **Last Updated**: 2026-06-17 (US7 Phase 9 complete — typography settings with core clamping to prevent malicious layout values; zero new security concerns)
 
 ## Overview
 
-Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US6 Phase 8 (complete)**: AI summary feature with API key redaction (all logs/messages render `***`), max-input guard (bytes validated before send, FR-036a), and zero outbound network without explicit user invocation (SC-008).
+Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US7 Phase 9 (complete)**: Typography settings (font family, size, line height, paragraph spacing) persisted Swift-side (UserDefaults) with all values clamped in the core to prevent a malicious/bad value from producing a broken or maliciously-large layout. **Zero new security surface**: typography is non-sensitive local preference data, no network, no secrets, clamping enforced.
 
 ---
 
@@ -259,6 +259,24 @@ US6 introduces the first outbound-network feature: **summarize_document** (FFI c
 
 ---
 
+## Typography Settings (US7)
+
+### Typography Preferences Storage & Clamping
+
+Typography settings (font family, size, line height, paragraph spacing) are **non-sensitive local preference data** with **no security implications**:
+
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **Storage** | Swift-side UserDefaults under `com.aaronbassett.Emend.typography` | `app/Emend/Emend/Settings/TypographyModel.swift` + UserDefaults persistence |
+| **Core in-memory store** | `emend_core::settings::TypographyStore` holds settings in memory; no persistence (Swift replays on launch) | `crates/emend-core/src/settings.rs` |
+| **Value clamping** | All values clamped on `set_typography()` to prevent malicious/bad values from producing broken layout: `font_size_pt` (8–48 pt), `line_height` (1.0–3.0), `paragraph_spacing_pt` (0–64 pt), blank `font_family` → system default | `crates/emend-ffi/src/settings.rs::SettingsHandle::set_typography()` (lines 126–140) |
+| **No "invalid value" error** | Out-of-range values are **clamped**, never rejected (so a bad value can't produce a broken layout or surface as an error) | `crates/emend-core/src/settings.rs` (core clamping logic) |
+| **Light/dark appearance** | Typography applies to both editor (`NSTextView`) and preview (`WKWebView` CSS). Light/dark mode follows the system automatically via `NSAppearance` + CSS `prefers-color-scheme`. | `app/Emend/Emend/Settings/Typography.swift` + `app/Emend/Emend/Preview/PreviewModel.swift` |
+
+**Security posture**: Typography is offline, locally-persisted preference data. No network access, no secrets, no user-sensitive data. Core clamping ensures a malicious UserDefaults entry or a UI bug cannot produce a broken or maliciously-large layout.
+
+---
+
 ## File System Integrity (Atomic & Durable Writes)
 
 ### Autosave Implementation
@@ -336,6 +354,7 @@ All fallible operations return `Result<T, EmendError>`:
 | **Embed cycles** | Max depth of 8 enforced; cycles detected and stopped; unresolved embeds render as visible placeholders | `crates/emend-core/src/parse/embed.rs` | ✅ US5 (implemented) |
 | **Embed targets** | Normalized (lowercased, trimmed) before lookup; resolver closure fails gracefully (returns `None`) if unresolved | `crates/emend-core/src/parse/embed.rs::normalize_target()` | ✅ US5 (implemented) |
 | **Attachment names** | Sanitized: only the final path component used (strip directory parts), empty/extension-only names use fallback stem | `crates/emend-core/src/fs.rs::sanitize_attachment_name()` | ✅ US5 (implemented) |
+| **Typography values** | All values clamped into sane bounds on `set_typography()` (size, spacing, line height); no range check failures | `crates/emend-ffi/src/settings.rs::SettingsHandle::set_typography()` | ✅ US7 (implemented) |
 
 ### AI Input (US6: Implemented)
 
@@ -421,7 +440,7 @@ The following are pinned but **not used in code** until Phase 1 features land:
 - `nucleo` (Phase 1 T074–T076)
 - `notify`, `notify-debouncer-full` (Phase 1 T065–T067)
 
-This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed). **US6 imports**: `reqwest`, `serde_json`, `futures-util` (SSE client, serialization, streaming).
+This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed). **US6 imports**: `reqwest`, `serde_json`, `futures-util` (SSE client, serialization, streaming). **US7 (typography)**: no new deps.
 
 ---
 
@@ -431,6 +450,7 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 |-------|-------------|-----------|--------|
 | **File operations** | Path, operation (read/write/delete), success/error | In-app debug logs (opt-in) | ✅ Implemented (fs.rs, error handling) |
 | **AI requests** | Endpoint, model, request/response size, latency, error (**never key**, redacted via `ApiKey` newtype + error detail redaction) | In-app debug logs (opt-in) | ✅ US6 (implemented) |
+| **Typography changes** | None (local preference, no audit trail) | N/A | ✅ US7 (local-only) |
 | **Security sandbox** | Bookmark grant/revoke events (via OS log) | System logs | Native (Security framework) |
 
 **Notes**: All logs are development/diagnostic; no telemetry is sent off-device. Logs are cleared on app exit unless explicitly persisted to a debug file. AI errors are redacted: `AiHttp` carries only status + canonical reason (never URL or header); transport errors mapped to generic descriptions.
@@ -465,6 +485,8 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | **AI max-input guard** | Document exceeding `max_input_bytes` rejected locally with `AiOversizedInput`, no request sent | `crates/emend-core/tests/ai_privacy.rs` + `crates/emend-ffi/tests/ai.rs` | ✅ US6 T110 (implemented) |
 | **AI cancellation** | Cancelling in-flight request yields `AiCancelled` terminal, no tokens or success | `crates/emend-ffi/tests/ai.rs::test_ai::cancel_before_send_resolves_as_cancelled` | ✅ US6 (implemented) |
 | **AI error redaction** | HTTP errors carry status + reason phrase only (never URL, header, or key); transport errors use generic descriptions | `crates/emend-ffi/src/ai.rs::transport_error()` (lines 467–477) | ✅ US6 (code review verified) |
+| **Typography clamping** | Out-of-range values clamped on `set_typography()` (size 8–48, line height 1.0–3.0, spacing 0–64); blank family → system default | `crates/emend-ffi/src/settings.rs::tests::set_clamps_out_of_range_values()` | ✅ US7 (implemented) |
+| **Typography round-trip** | In-range values round-trip verbatim; clamped values are persisted correctly | `crates/emend-ffi/src/settings.rs::tests::get_returns_defaults_then_round_trips_set()` | ✅ US7 (implemented) |
 
 ---
 

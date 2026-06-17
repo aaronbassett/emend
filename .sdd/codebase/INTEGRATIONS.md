@@ -2,7 +2,7 @@
 
 > **Purpose**: Document all external services, APIs, databases, and third-party integrations.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6 additions: AI summary streaming, info sidebar stats/outline, BYOM key storage)
+> **Last Updated**: 2026-06-17 (US6 additions: AI summary streaming, info sidebar stats/outline, BYOM key storage); 2026-06-17 (US7 additions: typography settings storage + clamping)
 
 ## Data Stores
 
@@ -72,7 +72,45 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 | Service | Type | Purpose | Configuration |
 |---------|------|---------|----------------|
 | macOS Keychain | Secure Storage | AI API key (transient to Rust, never logged/persisted) | macOS Security framework (`SecKeychain` C APIs via Swift FFI); user enters key once in app settings; app retrieves plaintext for Rust, wraps it in redacting `ApiKey` newtype, uses only on `Authorization` header, never logs |
-| `NSUserDefaults` | Local Preferences | Editor state, location tree favorites, folder icons, typography settings, AI config metadata (base URL, model ID, request timeout, max input size), tab state | Standard macOS app preferences (per-user, non-synced) |
+| `NSUserDefaults` | Local Preferences | Editor state, location tree favorites, folder icons, **typography settings** (font family, font size, line height, paragraph spacing), AI config metadata (base URL, model ID, request timeout, max input size), tab state | Standard macOS app preferences (per-user, non-synced); typography persisted and replayed to core on launch via `SettingsHandle.set_typography()` |
+
+### Typography Settings (US7)
+
+| Component | Type | Purpose | Implementation |
+|-----------|------|---------|-----------------|
+| `settings.rs` (emend-core) | In-memory store | Global `TypographySettings` (font family, font size in points, line height multiplier, paragraph spacing in points); thread-safe `TypographyStore` with `get()`/`set()` | Pure `std::Mutex`; values clamped on `set()` so broken layouts impossible; no persistence layer (Swift owns persistence via `NSUserDefaults` and replays on launch); size `8..=48` pt, line height `1.0..=3.0`, paragraph spacing `0..=64` pt, blank font family → system default |
+| `settings.rs` (emend-ffi) | FFI projection | `SettingsHandle` object (Arc-wrapped) exported to Swift; `get_typography()` / `set_typography()` (FFI contract §8, FR-038/FR-039) | `#[uniffi::Record]` mirror of core type; exhaustive `From` conversions; clamping idempotent; `set_typography` infallible (out-of-range values clamped, not rejected); new_settings() constructor |
+
+**FFI Exports (US7, FFI contract §8):**
+
+- [`new_settings() → Arc<SettingsHandle>`](crates/emend-ffi/src/settings.rs) — construct a fresh handle seeded with system-appropriate defaults; called once per app session
+- [`SettingsHandle::get_typography() → TypographySettings`](crates/emend-ffi/src/settings.rs) — returns current settings (always in range); infallible
+- [`SettingsHandle::set_typography(settings: TypographySettings) → Result<(), FfiError>`](crates/emend-ffi/src/settings.rs) — update settings (clamped into sane bounds); out-of-range inputs repaired, not rejected; only fails on poisoned lock (unreachable, NFR-003)
+
+**App-side Integration (Swift, US7):**
+
+- `TypographyPanel.swift` — settings UI (font picker via `NSFontManager`, size slider, line height slider, paragraph spacing slider)
+- `EditorCoordinator.swift` — on `SettingsHandle` callback, applies new size + line height to `NSTextView` via `NSParagraphStyle` (first paragraph margin, etc.)
+- `PreviewWebView.swift` — on `SettingsHandle` callback, injects CSS (`font-size`, `line-height`, `margin-bottom`) into preview template
+- Launch sequence — `AppDelegate`/`AppState` initializes `SettingsHandle`, reads persisted typography from `NSUserDefaults`, calls `set_typography()` to seed the core, then binds to the handle for live updates
+
+**Clamping & Safety (US7):**
+
+- **Font size**: `0` or negative → 8 pt (minimum readable); `9999` → 48 pt (maximum sensible); `NaN`/`±∞` → 14 pt (default)
+- **Line height**: `0` or `< 1.0` → 1.0 (single-spacing minimum to avoid crush); `> 3.0` → 3.0 (triple-spacing maximum); `NaN`/`±∞` → 1.4 (default 1.4×)
+- **Paragraph spacing**: negative → 0 pt (no upward spacing); `> 64` → 64 pt (caps excessive gaps); `NaN`/`±∞` → 8 pt (default)
+- **Font family**: blank/whitespace → `-apple-system` (system font, resolves to SF on both AppKit and CSS sides)
+- Clamping applied **on every `set_typography()` call** so `get_typography()` can never return an unclamped value
+
+**Data Flow:**
+
+1. User changes font size in settings UI → Swift updates `NSUserDefaults`
+2. Swift calls `SettingsHandle.set_typography()` with new `TypographySettings`
+3. Core clamps the value, stores in `TypographyStore`
+4. `get_typography()` returns the clamped value
+5. Editor listens to changes, updates `NSTextView` + `NSParagraphStyle`
+6. Preview listens to changes, injects new CSS into `WKWebView`
+7. On app relaunch: Swift reads persisted `TypographySettings` from `NSUserDefaults`, calls `set_typography()` to replay into core (core never persists, Swift owns persistence per US2 guardrail)
 
 ---
 
@@ -265,8 +303,9 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 - **Scroll sync**: `bridge.js` handles editor ↔ preview scroll linking via `data-line` anchors (research §C3).
 - **CSP**: Blocks inline `<script>`, external `src=`, and all `fetch()`; enforced by `theme.css` `<meta>` headers.
 - **User data only**: Renders note HTML; no AI-generated content, no ambient telemetry.
+- **Typography applied via CSS injection (US7)**: Preview template receives clamped `font-size`, `line-height`, `margin-bottom` injected from `TypographySettings` on every change.
 
-**Implementation Status**: Phase 6 US4 (wired preview); Phase 7 US5 (embeds); scroll-sync in `PreviewModel.swift`
+**Implementation Status**: Phase 6 US4 (wired preview); Phase 7 US5 (embeds); scroll-sync in `PreviewModel.swift`; typography injection in `PreviewWebView.swift` (US7)
 
 **Code Location:**
 
@@ -336,6 +375,7 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 | NSPrintOperation | Paginated PDF export | AppKit | **WIRED** — Phase 6 US4 (`PDFExport.swift`) |
 | Pasteboard | Copy/paste support + drag-drop for attachments | `NSPasteboard` API | **WIRED** phase 7 US5 (drop→`store_attachment`); copy/paste planned phase 1–2 |
 | Security-scoped bookmarks | Persistent folder access permission | AppKit / Swift Security Framework | **WIRED** — Phase 0, research §A4; resolves on launch to a usable filesystem path |
+| NSFontManager / NSFont / NSParagraphStyle | Typography controls for editor (font picker, paragraph styling) | AppKit | **WIRED** — Phase 9 US7 (typography UI, font picker, paragraph spacing) |
 
 ---
 
@@ -383,6 +423,7 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | Preview WebView crashes | Internal WebKit failure | Error logged; fall back to plain-text preview or re-render |
 | Syntax highlighting lagging | Tree-sitter reparse exceeds 50ms budget | Fall back to previous highlight spans; no visual stutter (advisory-only styling) |
 | Info sidebar stats/outline stale | Observer fires late or document changes fast | Re-pull triggered by observer callback (≤300ms latency); sidebar shows most recent pull |
+| Typography settings malformed | Font family blank, size/spacing out of range | Core clamps on `set_typography()` before storing; no error, values repair to safe bounds (e.g., 0 → 8 pt, blank → system font) |
 
 ---
 
@@ -398,4 +439,4 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 
 ---
 
-*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, PDF export, or document analytics (stats/outline/observer).*
+*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, PDF export, document analytics (stats/outline/observer), or typography settings storage/clamping.*

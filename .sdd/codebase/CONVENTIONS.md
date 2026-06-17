@@ -2,7 +2,7 @@
 
 > **Purpose**: Document code style, naming conventions, error handling, and common patterns.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6 Phase 8)
+> **Last Updated**: 2026-06-17 (US7 Phase 9)
 
 ## Overview
 
@@ -72,7 +72,7 @@ All fallible operations return `Result<_, EmendError>` using the `thiserror` cra
 | Type | Convention | Example |
 |------|------------|---------|
 | Crate root | lowercase snake_case | `emend-core`, `emend-ffi` |
-| Module files | lowercase snake_case | `error.rs`, `document.rs`, `ai.rs` |
+| Module files | lowercase snake_case | `error.rs`, `document.rs`, `ai.rs`, `settings.rs` |
 | Test integration | `tests/` subdirectory | `crates/emend-core/tests/` |
 | Benchmark crate | Separate workspace member | `crates/emend-bench/` |
 
@@ -81,9 +81,9 @@ All fallible operations return `Result<_, EmendError>` using the `thiserror` cra
 | Type | Convention | Example |
 |------|------------|---------|
 | Variables | camelCase | `docPath`, `newText` |
-| Constants | SCREAMING_SNAKE_CASE | `MAX_NOTE_SIZE`, `DEFAULT_BUFFER_SIZE` |
+| Constants | SCREAMING_SNAKE_CASE | `MAX_NOTE_SIZE`, `DEFAULT_BUFFER_SIZE`, `MIN_FONT_SIZE_PT` |
 | Functions | snake_case, verb-prefix when changing state | `open_document()`, `push_edit()`, `len_utf16()`, `check_input_size()` |
-| Structs | PascalCase | `Document`, `EmendError`, `U16Range`, `ApiKey` |
+| Structs | PascalCase | `Document`, `EmendError`, `U16Range`, `ApiKey`, `TypographySettings` |
 | Enums | PascalCase, singular variant names | `LineCol`, `FileWatchEvent`, `LinkKind`, `SseEvent` |
 | Trait names | PascalCase, often verb adjectives | `AiSink`, `SearchSink` |
 
@@ -113,15 +113,11 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 //! 2. **A rename leaves old links unresolved (FR-019a, v1).**
 ```
 
-**Example** (from `tests/ai_privacy.rs`, US6):
+**Example** (from `tests/settings.rs`, US7):
 ```rust
-//! T110 — AI **privacy / secret-hygiene** invariants enforced in the pure core
-//! (US6 · FR-035/036a, NFR-006, SC-008).
-//!
-//! Two structural guarantees that live in `emend-core`:
-//!
-//! 1. **Max input size is rejected BEFORE any send** (FR-036a).
-//! 2. **The API key never leaks via `Debug`/`Display`** (NFR-006).
+//! T123 — failing-first integration tests for the typography settings store
+//! (`emend_core::settings`), the global editor/preview typography preferences
+//! (US7 · FR-038/FR-039; FFI contract §8).
 ```
 
 ## Swift Code Style
@@ -229,14 +225,16 @@ extension EditorCoordinator {
 | SwiftUI views | PascalCase | `MainWindow.swift`, `EmendApp.swift` |
 | SwiftUI view components | PascalCase | `EditorPane.swift` |
 | Utility extensions | PascalCase + descriptive | `SecurityScopedBookmarks.swift` |
-| Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift`, `InfoModel.swift` |
+| Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift`, `InfoModel.swift`, `TypographyModel.swift` |
 | Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `EditorCoordinator.swift`, `WorkspaceOutlineView+Coordinator.swift` |
 | Sink bridges (FFI callbacks) | PascalCase + `Sink` suffix | `QuickOpenSink.swift`, `FsObserver.swift`, `AiStreamAdapter.swift` |
 | Link/task helpers (US5) | PascalCase + descriptive | `WikiLink.swift`, `TaskCheckbox.swift`, `ImageDrop.swift` |
 | Security/storage | PascalCase | `KeychainStore.swift`, `SecurityScopedBookmarks.swift` |
+| Settings resolvers (US7) | PascalCase | `Typography.swift` |
 | Export/utility enums | PascalCase | `PDFExport.swift` |
 | Info pane models | PascalCase + `Model` suffix | `InfoModel.swift` |
-| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `LinkHelpersTests.swift`, `KeychainStoreTests.swift` |
+| Settings UI | PascalCase + `View` or descriptive suffix | `TypographySettingsView.swift` |
+| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `LinkHelpersTests.swift`, `KeychainStoreTests.swift`, `TypographyTests.swift` |
 
 #### Code Element Naming (Swift)
 
@@ -244,9 +242,9 @@ extension EditorCoordinator {
 |------|------------|---------|
 | Variables | camelCase | `selectedLocation`, `isVisible`, `bookmarkData` |
 | Constants (static) | camelCase (or SCREAMING_SNAKE_CASE for compile-time constants) | `defaultFolderSize` |
-| Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `WikiLink`, `KeychainStore` |
-| Functions/methods | camelCase, verb-prefix for state change | `addLocation()`, `openDocument()`, `onToken(_:)`, `save(_:account:)` |
-| Properties | camelCase | `locations`, `selection`, `abiVersion`, `apiKey` |
+| Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `WikiLink`, `KeychainStore`, `TypographySettings` |
+| Functions/methods | camelCase, verb-prefix for state change | `addLocation()`, `openDocument()`, `onToken(_:)`, `save(_:account:)`, `apply(_:)` |
+| Properties | camelCase | `locations`, `selection`, `abiVersion`, `apiKey`, `settings` |
 | Boolean properties | `is`/`has` prefix when non-obvious | `isVisible`, `hasError`, `hasKey` |
 
 #### SwiftUI Conventions
@@ -280,9 +278,9 @@ final class WorkspaceModel: ObservableObject {
 }
 
 @MainActor
-final class InfoModel: ObservableObject {
-    @Published private(set) var stats: DocStats?
-    @Published private(set) var outline: [OutlineItem] = []
+final class TypographyModel: ObservableObject {
+    @Published private(set) var settings: TypographySettings
+    let handle: SettingsHandle
 }
 ```
 
@@ -455,6 +453,157 @@ deinit {
 ```
 
 **Rationale**: Selector-based observers automatically post on the main thread for main-thread-posting notifications (e.g., `NSView.boundsDidChangeNotification`), avoiding the need for `Task { @MainActor in … }` wrappers that complicate `@Sendable` closure constraints.
+
+## Typography Settings Patterns (US7)
+
+### Clamping & Validation in Core
+
+The `TypographySettings` struct in the core (`crates/emend-core/src/settings.rs`) enforces **clamping at the boundary** — hostile or buggy values from the UI never produce a broken layout:
+
+```rust
+/// Editor/preview typography preferences (US7 · FR-038/FR-039).
+/// Clamping rules applied in `clamped()`:
+/// - font_size_pt: 8..=48 (readable bounds)
+/// - line_height: 1.0..=3.0 (single spacing to very loose)
+/// - paragraph_spacing_pt: 0..=64 (non-negative, max 64 pt)
+/// - font_family: empty → default ("SF Mono" on macOS)
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TypographySettings {
+    pub font_family: String,
+    pub font_size_pt: f32,
+    pub line_height: f32,
+    pub paragraph_spacing_pt: f32,
+}
+
+impl TypographySettings {
+    /// Apply clamping rules; idempotent.
+    pub fn clamped(self) -> Self {
+        // Clamp each field into sane bounds; NaN → default for that field
+    }
+}
+
+/// The in-memory store (app-managed global state per US2 guardrail).
+pub struct TypographyStore { /* ... */ }
+
+impl TypographyStore {
+    pub fn new() -> Self { /* sane defaults */ }
+    pub fn get(&self) -> TypographySettings { /* read current */ }
+    pub fn set(&self, settings: TypographySettings) {
+        // Clamp on set; SwiftUI reads the clamped result
+    }
+}
+```
+
+**Rationale** (Constitution V — validation in core, UI trusts the result):
+- The core clamps hostile values (size 0, size 9999, negative spacing, NaN)
+- The UI calls `apply()`, which passes through the core's `set()`, then reads back the clamped result
+- SwiftUI publishes the clamped result, so the layout is always valid
+- Tests verify NaN/infinity/out-of-range values are repaired (T123)
+
+### Two-Applier Pattern: Editor + Preview
+
+One settings source (`TypographyModel`), two appliers (`Typography` resolver + `PreviewCSS`):
+
+```swift
+/// Resolves core `TypographySettings` into the editor's AppKit attributes
+/// and the preview's CSS (US7). One settings source, two appliers.
+enum Typography {
+    static func font(for settings: TypographySettings) -> NSFont {
+        let size = CGFloat(settings.fontSizePt)
+        if settings.fontFamily == systemSentinel || settings.fontFamily.isEmpty {
+            return .systemFont(ofSize: size)
+        }
+        return NSFont(name: settings.fontFamily, size: size) ?? .systemFont(ofSize: size)
+    }
+    
+    static func paragraphStyle(for settings: TypographySettings) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineHeightMultiple = CGFloat(settings.lineHeight)
+        style.paragraphSpacing = CGFloat(settings.paragraphSpacingPt)
+        return style
+    }
+    
+    static func previewCSS(for settings: TypographySettings) -> String {
+        let family = if settings.fontFamily == systemSentinel || settings.fontFamily.isEmpty {
+            "-apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+        } else {
+            "\"\(settings.fontFamily)\", -apple-system, sans-serif"
+        }
+        return """
+        .markdown-body { \
+        font-family: \(family); \
+        font-size: \(settings.fontSizePt)px; \
+        line-height: \(settings.lineHeight); }
+        .markdown-body p { margin-bottom: \(settings.paragraphSpacingPt)px; }
+        """
+    }
+}
+```
+
+**Key guarantee**: Both appliers receive the *same clamped* settings, so visual sync is guaranteed (no edge-case divergence between editor font size and preview font size).
+
+### Swift-Side Persistence via UserDefaults
+
+Follows the **app-state pattern** established in US2 (core has no persistence layer; Swift-side owns the storage and replays on launch):
+
+```swift
+@MainActor
+final class TypographyModel: ObservableObject {
+    @Published private(set) var settings: TypographySettings
+    
+    static let defaultSettings = TypographySettings(
+        fontFamily: "-apple-system",
+        fontSizePt: 14,
+        lineHeight: 1.4,
+        paragraphSpacingPt: 8
+    )
+    
+    private let handle: SettingsHandle
+    private let defaults: UserDefaults
+    
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        handle = newSettings()
+        // Replay persisted settings from UserDefaults into the core on launch
+        if let stored = Self.load(from: defaults, key: key) {
+            try? handle.setTypography(settings: stored)
+        }
+        settings = handle.getTypography()
+    }
+    
+    /// Apply new settings: the core clamps, we read the clamped result back,
+    /// publish it (so the editor/preview update), and persist.
+    func apply(_ new: TypographySettings) {
+        try? handle.setTypography(settings: new)
+        let clamped = handle.getTypography()
+        settings = clamped
+        Self.save(clamped, to: defaults, key: key)
+    }
+}
+```
+
+**Pattern** (US2 guardrail, applied consistently):
+1. Core holds settings in memory with no disk I/O (`TypographyStore`)
+2. Swift layer owns persistence (UserDefaults key)
+3. On launch: load from UserDefaults, pass to core via `setTypography()`, read back clamped value
+4. On update: core clamps, UI reads the result, publishes to SwiftUI, persists to UserDefaults
+
+### uniffi Record Equatable for SwiftUI Change-Guards
+
+The `TypographySettings` struct is a `uniffi::Record` and derives `Equatable` (generated by UniFFI), enabling SwiftUI to detect changes:
+
+```swift
+// In SwiftUI view:
+@ObservedObject var model: TypographyModel
+
+var body: some View {
+    if oldSettings != model.settings {  // Equatable comparison
+        updateEditorAndPreviewFont()  // Refresh applies live
+    }
+}
+```
+
+**Rationale**: `uniffi::Record` auto-derives `Equatable` across the FFI boundary, so SwiftUI `@Published` changes and view re-renders are automatic and correct.
 
 ## PDF Export Patterns (US4)
 
@@ -764,7 +913,7 @@ pub fn quick_open(
 }
 ```
 
-**Rationale** (Constitution V — decision logic in core):
+**Rationale** (Constitution V — decision logic in core, tested in core):
 - Ranking happens once, synchronously
 - Batching logic is deterministic (no async, no timing-dependent decisions)
 - Cancellation is a simple `&Cancel` flag, not tokio-dependent
@@ -876,7 +1025,7 @@ Enforced at commit time by `lefthook` hook (see `lefthook.yml` commit-msg sectio
 - `chore` — Maintenance / tooling
 - `revert` — Revert a prior commit
 
-**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`, `(links)` (US5), `(ai)` (US6).
+**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`, `(links)` (US5), `(ai)` (US6), `(typography)` (US7).
 
 **Breaking change** (optional): Suffix `!` before `:` (e.g., `feat(ffi)!: new ABI version`).
 
@@ -890,6 +1039,7 @@ feat(search): add cancellable quick-open query (US3)
 feat(preview): add PDF export via NSPrintOperation (US4)
 feat(links): add wiki-link resolution + embed inlining (US5)
 feat(ai): implement BYOM AI client with SSE streaming (US6)
+feat(typography): add editor/preview font & spacing settings (US7)
 ci: enforce MSRV 1.85
 ```
 
@@ -929,10 +1079,11 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`crates/emend-core/src/derived.rs`**: Link extraction, resolution, task detection, and doc stats (US5/US6)
 - **`crates/emend-core/src/parse/embed.rs`**: Embed expander with cycle + depth guards (US5)
 - **`crates/emend-core/src/ai.rs`**: Pure AI client: SSE parser, secret hygiene, max-input guard (US6)
+- **`crates/emend-core/src/settings.rs`**: Typography settings store + clamping validation (US7)
 - **`crates/emend-core/tests/`**: Integration tests (see [Testing](#testing))
 - **`crates/emend-ffi/src/lib.rs`**: UniFFI `#[uniffi::export]` shim + panic containment
 - **`crates/emend-ffi/src/search.rs`**: FFI projection of streaming search (bridges cancellation, spawns worker, panic containment)
-- **`crates/emend-ffi/src/ai.rs`**: FFI projection of AI client (tokio orchestration, request dispatch, token bridging)
+- **`crates/emend-ffi/src/ai.rs`**: FFI projection of AI client (tokio orchestration, reqwest dispatch, token bridging)
 - **`crates/emend-bench/benches/`**: Criterion micro-benchmarks
 
 ### Swift Module Structure
@@ -947,6 +1098,7 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
   - **`Preview/`**: Live preview model, off-screen WebView render, PDF export (`PDFExport.swift`, US4)
   - **`QuickOpen/`**: Quick Open palette model + sink bridge (US3)
   - **`Info/`**: Info sidebar model + view (US6) — displays stats, outline, AI summary
+  - **`Settings/`**: Typography settings model, view, and resolver (US7)
   - **`Platform/`**: macOS-specific utilities (`KeychainStore.swift`, `SecurityScopedBookmarks.swift`, etc.)
   - **`EditorCoordinator.swift`**: Coordinator for `NSTextView` / editor text handling (US5 split to own file for file_length)
 - **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
@@ -999,6 +1151,15 @@ Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 - **`crates/emend-core/tests/ai_privacy.rs`**: Secret hygiene + max-input guard (T110, US6)
 - **`app/Emend/EmendTests/KeychainStoreTests.swift`**: Keychain round-trip (T119, US6)
 - **`app/Emend/EmendTests/InfoSidebarTests.swift`**: Info sidebar stats/outline population (T119, US6)
+
+### Typography Settings Organization (US7)
+
+- **`crates/emend-core/src/settings.rs`**: `TypographySettings` struct, clamping rules, `TypographyStore` in-memory hold (T123)
+- **`crates/emend-ffi/src/lib.rs`**: FFI `#[uniffi::export]` for `SettingsHandle` + getter/setter
+- **`app/Emend/Emend/Settings/TypographyModel.swift`**: SwiftUI state model, UserDefaults persistence, replay on launch (US2 pattern)
+- **`app/Emend/Emend/Settings/Typography.swift`**: Resolver for editor font + preview CSS (two appliers, one source)
+- **`app/Emend/Emend/Settings/TypographySettingsView.swift`**: UI for font family, size, line height, paragraph spacing
+- **`app/Emend/EmendTests/TypographyTests.swift`**: Model clamp + persistence, resolver font/CSS synthesis (T127)
 
 ### Preview & Export Organization (US4)
 

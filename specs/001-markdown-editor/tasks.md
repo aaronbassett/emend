@@ -270,7 +270,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T125 [US7] Implement `app/Emend/Emend/Settings/TypographySettingsView.swift`; apply to editor + preview; bind light/dark to system
 - [x] T126 [GIT] Commit: typography settings (core + UI)
 - [x] T127 [US7] [test] `app/Emend/EmendUITests/TypographyTests.swift`: change font → editor + preview reflect
-- [ ] T128 [US7] Run `/sdd:map incremental`; review `retro/P9.md` → CLAUDE.md; [GIT] commit
+- [x] T128 [US7] Run `/sdd:map incremental`; review `retro/P9.md` → CLAUDE.md; [GIT] commit
 - [ ] T129 [GIT] Push; PR "US7: typography"; verify CI green; report PR ready status
 
 **Checkpoint**: All seven user stories independently functional.
