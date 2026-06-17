@@ -31,6 +31,13 @@ pub mod document;
 /// preview engine — kept apart on purpose, never unified.
 pub mod parse;
 
+/// The file-based workspace model (US2): locations, lazy directory listing,
+/// collision-safe file operations, the favorites/pins/icons/child-order store,
+/// and the canonicalization + bounded-traversal primitives that give path
+/// identity (NFR-007). Pure `std` + [`fs`]; **no FFI, no async** (Constitution V),
+/// shaped to project onto the FFI contract's §1/§2 later.
+pub mod workspace;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;
