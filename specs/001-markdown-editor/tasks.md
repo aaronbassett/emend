@@ -251,7 +251,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T117 [US6] Implement `app/Emend/Emend/AI/SummaryView.swift` (streamed summary, cancel/supersede, error states)
 - [x] T118 [GIT] Commit: info sidebar, AI settings (Keychain), summary UI
 - [x] T119 [US6] [test] `app/Emend/EmendTests/KeychainStoreTests.swift` (headless) + `app/Emend/EmendUITests/InfoSidebarTests.swift`
-- [ ] T120 [US6] Run `/sdd:map incremental`; review `retro/P8.md` → CLAUDE.md; [GIT] commit
+- [x] T120 [US6] Run `/sdd:map incremental`; review `retro/P8.md` → CLAUDE.md; [GIT] commit
 - [ ] T121 [GIT] Push; PR "US6: info sidebar + AI"; verify CI green; report PR ready status
 
 **Checkpoint**: Document insight + BYOM AI summary work; privacy preserved.

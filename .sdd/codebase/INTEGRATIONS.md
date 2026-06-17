@@ -2,7 +2,7 @@
 
 > **Purpose**: Document all external services, APIs, databases, and third-party integrations.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US5 additions: wiki-links, embeds, tasks, attachments)
+> **Last Updated**: 2026-06-17 (US6 additions: AI summary streaming, info sidebar stats/outline, BYOM key storage)
 
 ## Data Stores
 
@@ -43,14 +43,17 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 
 | Component | Type | Purpose | Implementation |
 |-----------|------|---------|-----------------|
-| `derived.rs` | Per-document analytics | Extract `[[wiki links]]` and `![[embeds]]`, resolve links deterministically, and toggle task checkboxes (FR-014, FR-019/019a, FR-020, FR-021/021a) | Pure `std` — no tokio/uniffi. Three functions: (1) `extract_links()` scans source for link/embed tokens with UTF-16 ranges; (2) `resolve_wikilink()` applies FR-019a tiebreak policy (same-directory → shallowest → lex-smallest) over index candidates, returns `None` for stale links; (3) `toggle_task()` flips `[ ]`↔`[x]` on a line |
+| `derived.rs` | Per-document analytics | Extract `[[wiki links]]` and `![[embeds]]`, resolve links deterministically, toggle task checkboxes, compute document statistics (word/char/task counts), and generate document outline (headings + line numbers) | Pure `std` — no tokio/uniffi. Five main functions: (1) `extract_links()` scans source for link/embed tokens with UTF-16 ranges; (2) `resolve_wikilink()` applies FR-019a tiebreak policy (same-directory → shallowest → lex-smallest) over index candidates, returns `None` for stale links; (3) `toggle_task()` flips `[ ]`↔`[x]` on a line; (4) `stats()` (US6) counts words/chars/tasks; (5) `outline()` (US6) extracts headings with line numbers |
 | `parse/embed.rs` | Embed expansion | Recursively splice embedded note sources into the preview document before comrak rendering (FR-021/021a) | Pure source-level pass: replaces `![[Target]]` with target's source text. Two termination guards: (1) cycle detection (stack-based `on_stack` set); (2) depth bound ([`MAX_EMBED_DEPTH`] = 8, research §D). Embeds are a reading aid — unresolved/cyclic/out-of-depth tokens rendered as placeholders, not errors |
 
-**FFI Exports (Phase 7 US5):**
+**FFI Exports (Phase 7 US5 + Phase 8 US6):**
 
 - [`OpenDocHandle::links()`](crates/emend-ffi/src/document.rs) — returns all `[[…]]` + `![[…]]` tokens in the current buffer with UTF-16 ranges (FFI contract §4)
 - [`OpenDocHandle::toggle_task(at: U16Range)`](crates/emend-ffi/src/document.rs) — toggle checkbox on the line containing the UTF-16 offset; applies edit via full-document delta so shadow Document + Highlighter stay in lock-step
 - [`OpenDocHandle::render_preview_html_resolving(workspace:)`](crates/emend-ffi/src/document.rs) — preview engine parameterized by a resolver closure (so embeds can be expanded mid-render via workspace index lookup)
+- [`OpenDocHandle::stats()`](crates/emend-ffi/src/document.rs) — (US6) returns `DocStats` (word count, character count, task N-of-M); called by info sidebar on edit notification (FR-031a)
+- [`OpenDocHandle::outline()`](crates/emend-ffi/src/document.rs) — (US6) returns `Vec<OutlineItem>` (headings with line numbers + byte offset for click→scroll); called by info sidebar on edit notification (FR-031a)
+- [`OpenDocHandle::set_doc_observer(observer: Arc<dyn DocObserver>)`](crates/emend-ffi/src/document.rs) — (US6) register a Rust-owned callback that fires ≤300ms after an edit, triggering Swift info-sidebar re-pull of `outline`/`stats`/`links` (FFI contract §4 `on_derived_changed`, FR-031a)
 - [`WorkspaceHandle::resolve_wikilink(from_note, raw_target)`](crates/emend-ffi/src/workspace.rs) — resolve a `[[link]]` using FR-019a policy, returns `Option<String>` absolute path or `None`
 - [`WorkspaceHandle::wikilink_suggestions(prefix, limit)`](crates/emend-ffi/src/workspace.rs) — autocomplete suggestions for `[[` (FFI contract §5 `wikilink_suggestions`; FR-020); returns ranked [`SearchHit`]s from the index
 - [`store_attachment(note_path, bytes, suggested_name)`](crates/emend-ffi/src/workspace.rs) — free function (not a workspace method); writes bytes atomically to `note_path`'s parent dir's `attachments/` subdir with collision-safe naming; returns portable Markdown reference (FFI contract §2; FR-013/013a)
@@ -62,60 +65,78 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 - Dragged media files trigger `store_attachment()` and insert the returned reference into the editor
 - Checkable task lines (`- [ ]` / `- [x]`) call `OpenDocHandle.toggle_task()` on click, auto-update the editor
 - Preview renderer calls `render_preview_html_resolving()` to expand embeds before display
-- Info sidebar / outline (Future, FR-031a) will pull links/embeds/tasks debounced from `OpenDocHandle.links()` for a derived summary
+- Info sidebar (US6, FR-031a) pulls `stats()` + `outline()` live by registering a `DocObserver` with `set_doc_observer()` and re-pulling on notification with ≤300ms latency
 
 ### App Preferences & Configuration
 
 | Service | Type | Purpose | Configuration |
 |---------|------|---------|----------------|
-| macOS Keychain | Secure Storage | AI API key (transient to Rust, never logged/persisted) | macOS Security framework (`SecKeychain` C APIs via Swift FFI) |
-| `NSUserDefaults` | Local Preferences | Editor state, location tree favorites, folder icons, typography settings, AI config metadata, tab state | Standard macOS app preferences (per-user, non-synced) |
+| macOS Keychain | Secure Storage | AI API key (transient to Rust, never logged/persisted) | macOS Security framework (`SecKeychain` C APIs via Swift FFI); user enters key once in app settings; app retrieves plaintext for Rust, wraps it in redacting `ApiKey` newtype, uses only on `Authorization` header, never logs |
+| `NSUserDefaults` | Local Preferences | Editor state, location tree favorites, folder icons, typography settings, AI config metadata (base URL, model ID, request timeout, max input size), tab state | Standard macOS app preferences (per-user, non-synced) |
 
 ---
 
 ## Authentication & Authorization
 
-### AI API Key Management
+### AI API Key Management (US6, FR-035)
 
-- **Storage**: macOS Keychain (encrypted by OS)
-- **Access Pattern**: Swift app queries Keychain → passes plaintext to Rust (transient) → used in HTTP headers only → never logged, never written to disk
-- **Privacy**: Redacted in HTTP client logs (NFR-006)
-- **User Control**: Zero network unless AI is configured AND explicitly invoked
+- **Storage**: macOS Keychain (encrypted by OS), user-provided `SecKeychain` secure storage via Security framework
+- **Access Pattern**: Swift app queries Keychain → passes plaintext to Rust as transient `String` → wraps in redacting `ApiKey` newtype (NFR-006) → used ONLY in HTTP `Authorization: Bearer` header → never logged, never written to disk
+- **Privacy**: `ApiKey` Debug and Display both render `***`; exposed only via explicit `.expose()` method; zero network unless AI is configured AND explicitly invoked (SC-008 / FR-035)
+- **User Control**: Zero network unless AI is configured AND invoked by user; info sidebar (FR-031a) does NOT send data to AI — only manual summarize (US6 FR-032) sends document excerpt
+- **Error Handling**: Blank/missing key → `EmendError::AiNotConfigured` before any socket (FR-036a / SC-008); redacted in error responses
 
 **Code Location**: 
 
-- `crates/emend-ffi/` — async scaffolding for cancellable AI requests
-- `crates/emend-core/` — `ai` module (phase 1, FR-023)
-- `app/Emend/Emend/Platform/` — Keychain bridge (phases 1–2)
+- `crates/emend-core/src/ai.rs` — `ApiKey` newtype (pure), `check_input_size()` (FR-036a), `SseParser`, request builders
+- `crates/emend-ffi/src/ai.rs` — HTTP orchestration (`summarize_document`, `test_ai_config`, `AiHandle`, `AiRequestConfig`), per-chunk timeout, cancellation token
+- `app/Emend/Emend/Platform/KeychainStore.swift` — Keychain bridge (Security framework)
 
 ---
 
 ## External APIs
 
-### AI (OpenAI-Compatible)
+### AI (OpenAI-Compatible, BYOM, US6)
 
 | Provider | Purpose | Base URL Config | Auth | Rate Limits |
 |----------|---------|-----------------|------|-------------|
-| OpenAI or any OpenAI Chat Completions–compatible endpoint | BYOM (Bring Your Own Model): user supplies base URL + model ID | User-provided `AI_BASE_URL` env/prefs | Bearer token (from Keychain) | Configured by the endpoint provider |
+| OpenAI or any OpenAI Chat Completions–compatible endpoint | BYOM (Bring Your Own Model): user supplies base URL + model ID; used for document summary (FR-032, US6) via streamed `/v1/chat/completions` | User-provided `base_url` in app settings (NSUserDefaults); no environment variable | Bearer token from Keychain (transient to Rust, redacted) | Configured by the endpoint provider |
 
-**Connection Details:**
+**Connection Details (US6, FR-032/035/036/036a, NFR-006, SC-008/SC-009):**
 
 - **Protocol**: OpenAI Chat Completions API (HTTP, JSON, SSE streaming)
-- **Client**: `reqwest` with SSE support (`stream` feature, not yet wired)
-- **Request Shape**: Standard `/v1/chat/completions` POST
-- **Response**: Server-Sent Events (delimited `data: …` lines)
-- **Streaming Sink**: Foreign-trait callback (research §A1) — Rust collects deltas, Swift renders in real-time
-- **Cancellation**: `tokio::sync::CancellationToken` (user can cancel mid-stream)
-- **Error Handling**: Captured `EmendError::AiHttp`, `EmendError::AiStreamMalformed`, `EmendError::AiTimeout`, `EmendError::AiCancelled`
-- **Privacy**: Request body includes note excerpt (user-configured max length); no ambient document indexing sent without consent
+- **Client**: `reqwest` 0.13 with SSE support (`stream` + `native-tls` features, emend-ffi only)
+- **Request Shape**: Standard `/v1/chat/completions` POST with `messages` (system + user), `model`, `stream=true`
+- **Response**: Server-Sent Events (delimited `data: {json}` lines); each delta → `AiSink::on_token(delta)` callback
+- **Streaming Sink**: Foreign-trait `AiSink` callback (research §A1) — Rust collects deltas, Swift renders in real-time; exactly one terminal: `on_done(full_text)` or `on_error(err)`
+- **Cancellation**: `tokio::sync::CancellationToken` + `tokio::select!` (user can cancel mid-stream via `AiHandle::cancel()`, NFR-002, FR-036a)
+- **Per-chunk timeout**: `tokio::time::timeout` on each streamed chunk (inactivity guard, not whole-request deadline; research §B5)
+- **Error Handling**: Captured in `EmendError` variants: `AiNotConfigured` (no key, before socket), `AiOversizedInput` (exceeds max-input-bytes, before socket, FR-036a), `AiHttp` (network/5xx, redacted status), `AiStreamMalformed` (broken SSE), `AiTimeout` (chunk inactivity), `AiCancelled` (user cancelled)
+- **Privacy & Gating (SC-008)**: Max-input guard ([`check_input_size`]) enforced BEFORE socket; redacting `ApiKey` newtype; blank key → error before send; no info-sidebar derived data sent without user action (only explicit summarize → user-configured max excerpt sent)
+- **Input Guard (FR-036a)**: Document text truncated to `max_input_bytes` (user configurable, default TBD); oversized → `AiOversizedInput` before request
+- **System Prompt**: Default hardcoded: "You are a concise assistant. Summarize the following Markdown document in a short paragraph. Output only the summary, no preamble." (testable, in `emend_core::ai::DEFAULT_SUMMARY_SYSTEM_PROMPT`)
 
-**Implementation Status**: Planned phase 1 (US4 — AI completion) / (US5 — inline editing)
+**FFI Exports (FFI contract §7, US6):**
 
-**Code Location** (when wired):
+- [`summarize_document(handle: OpenDocHandle, cfg: AiRequestConfig, sink: Arc<dyn AiSink>) → Arc<AiHandle>`](crates/emend-ffi/src/ai.rs) — Start streaming AI summary of a document; returns cancellable handle. Validates: key not blank (AiNotConfigured), input size OK (AiOversizedInput), before any socket. Snapshot document, send excerpt to `/v1/chat/completions`, stream deltas to sink, terminal via `on_done`/`on_error`.
+- [`test_ai_config(cfg: AiRequestConfig, api_key: String) → bool`](crates/emend-ffi/src/ai.rs) — Validate AI endpoint by posting empty message; returns true if 2xx, false on error (used by app settings UI to verify key/URL before saving, FR-037)
 
-- `crates/emend-core/ai/` — HTTP client + SSE parser
-- `crates/emend-ffi/handles/` — async scaffolding + foreign traits
-- `app/Emend/Emend/AI/` — UI layer (model selection, key setup, streaming render)
+**Core Exports (pure, no-network, testable):**
+
+- [`SseParser`](crates/emend-core/src/ai.rs) — Line-based Server-Sent-Events parser; feeds chunks, emits complete tokens via `next()` iterator
+- [`ApiKey`](crates/emend-core/src/ai.rs) — Redacting newtype (Debug/Display → `***`); `.expose()` only way to read secret
+- [`check_input_size(text: &str, max_bytes: u64) → Result<(), EmendError::AiOversizedInput>`](crates/emend-core/src/ai.rs) — FR-036a: reject input before socket if exceeds max
+- [`build_request_body(text: &str, system_prompt: &str, model: &str) → String`](crates/emend-core/src/ai.rs) — Pure JSON builder for Chat-Completions request
+- [`build_auth_header(key: &ApiKey) -> String`](crates/emend-core/src/ai.rs) — Pure header builder (calls `.expose()` once)
+- [`chat_completions_url(base_url: &str) -> String`](crates/emend-core/src/ai.rs) — Constructs `/v1/chat/completions` endpoint
+
+**Implementation Status**: Phase 8 US6 (wired); emend-ffi streaming orchestration + core pure SSE/JSON/key logic
+
+**Code Location**:
+
+- `crates/emend-core/src/ai.rs` — SSE parser, ApiKey, guards, request builders (pure, no tokio/reqwest)
+- `crates/emend-ffi/src/ai.rs` — HTTP orchestration, cancellation, timeout, AiHandle, AiRequestConfig, summarize_document, test_ai_config exports
+- `app/Emend/Emend/AI/` — UI layer (settings, key entry, summarize button, streaming text render)
 
 ---
 
@@ -308,7 +329,7 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 
 | Service | Purpose | API | Status |
 |---------|---------|-----|--------|
-| Security framework (Keychain) | Secure API key storage | `SecKeychain` C APIs via Swift FFI | **WIRED** — core to AI key management |
+| Security framework (Keychain) | Secure API key storage (user-provided AI endpoint credentials) | `SecKeychain` C APIs via Swift FFI | **WIRED** — core to AI key management (US6 FR-035) |
 | NSTextView / TextKit 2 | Native editor surface with split-paragraph storage; completion popup for `[[` wiki-link autocomplete | AppKit / SwiftUI integration + `MarkdownEditorView` NSViewRepresentable | **WIRED** — phase 0 skeleton, Phase 3 US1 MVP (editor transforms), Phase 7 US5 (completion popup) |
 | NSOutlineView | Folder/file tree sidebar with expansion/collapse | AppKit | **WIRED** — Phase 4 US2 (`WorkspaceOutlineView.swift`) |
 | WKWebView | Preview rendering + scroll-sync + PDF export + embedded note display | WebKit framework | **WIRED** — Phase 6 US4 (`PreviewWebView.swift`, `PDFExport.swift`), Phase 7 US5 (embed rendering) |
@@ -346,8 +367,10 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | AI not configured | User invokes AI feature with no API key | Return `EmendError::AiNotConfigured`; UI shows setup prompt |
 | AI endpoint unreachable | Network error or 5xx response | `EmendError::AiHttp` with redacted status; user can retry or abort |
 | AI SSE malformed | Broken event stream | `EmendError::AiStreamMalformed`; cancel the request gracefully |
-| AI timeout | Request exceeds timeout | `EmendError::AiTimeout`; user can retry |
+| AI timeout | Request exceeds per-chunk inactivity timeout | `EmendError::AiTimeout`; user can retry |
+| AI input oversized | Document exceeds max-input-bytes | `EmendError::AiOversizedInput`; rejected before socket (FR-036a, SC-008) |
 | User cancels AI request | Cancel token triggered mid-stream | `EmendError::AiCancelled`; clean shutdown of the stream task |
+| AI key blank | User saves empty or whitespace-only key | Treated as not configured; `AiNotConfigured` before send |
 | Wiki-link unresolved | Target note not found or renamed | `resolve_wikilink()` returns `None`; editor shows broken-link styling; no auto-rewrite in v1 |
 | Embed unresolved | Embed target not found | Placeholder rendered (not an error); embed is a reading aid, not load-bearing |
 | Embed cycle | `A→B→A` or `A→A` | Cycle detection stops re-entrance; note expands at most once per path |
@@ -359,6 +382,7 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | PDF export: print failed | I/O error or user cancel | `PDFExport.Failure.printFailed`; gracefully dismiss |
 | Preview WebView crashes | Internal WebKit failure | Error logged; fall back to plain-text preview or re-render |
 | Syntax highlighting lagging | Tree-sitter reparse exceeds 50ms budget | Fall back to previous highlight spans; no visual stutter (advisory-only styling) |
+| Info sidebar stats/outline stale | Observer fires late or document changes fast | Re-pull triggered by observer callback (≤300ms latency); sidebar shows most recent pull |
 
 ---
 
@@ -374,4 +398,4 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 
 ---
 
-*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, or PDF export.*
+*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, PDF export, or document analytics (stats/outline/observer).*

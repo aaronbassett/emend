@@ -2,13 +2,13 @@
 
 > **Purpose**: Document what executes in this codebase — languages, runtimes, frameworks, and critical dependencies.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US5 additions: links, embeds, tasks, attachments)
+> **Last Updated**: 2026-06-17 (US6 additions: `reqwest`, `futures-util`, `serde`/`serde_json` wired for AI summary + info sidebar)
 
 ## Languages & Runtimes
 
 | Language | Version | Purpose |
 |----------|---------|---------|
-| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, preview rendering, link/task/embed resolution, AI client |
+| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, AI client |
 | Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export, wiki-link autocomplete |
 | C (via UniFFI) | ABI shim | FFI boundary between Rust and Swift |
 
@@ -38,6 +38,8 @@ These packages are actively wired into the runtime:
 | `nucleo-matcher` | 0.3.1 | Synchronous fuzzy-matching primitive for workspace search index and wiki-link suggestions (lighter than full `nucleo`); used in both Quick Open and link autocomplete | **WIRED** — Phase 4 US2, Phase 7 US5 `derived::wikilink_suggestions()`, `index.rs` — in-memory haystack for Quick Open + wiki-link resolution |
 | `notify` | 8.2 | File system watching (macOS FSEvents recursive watcher) | **WIRED** — Phase 4 US2, `watcher.rs` — detects external note edits and changes |
 | `notify-debouncer-full` | 0.7 | Debounced file watcher with self-write suppression (FileIdCache) | **WIRED** — Phase 4 US2, `watcher.rs` — coalesces FS bursts, prevents echo-back on autosaves |
+| `serde` | 1.x | JSON serialization/deserialization for OpenAI Chat-Completions API request/response shapes | **WIRED** — Phase 8 US6, `ai.rs` (pure, no-network JSON parsing) |
+| `serde_json` | 1.x | JSON parsing for OpenAI Chat-Completions responses | **WIRED** — Phase 8 US6, `ai.rs` — ditto |
 
 ### Rust FFI Bridge (`emend-ffi`)
 
@@ -45,6 +47,8 @@ These packages are actively wired into the runtime:
 |---------|---------|---------|---------------|
 | `tokio` | 1.x (rt-multi-thread, macros, time, sync) | Async runtime for cancellable AI/search work | **WIRED** — long-lived runtime in the FFI layer |
 | `tokio-util` | 0.7 | `CancellationToken` for Rust-owned cancellation handles | **WIRED** — backing async cancellation |
+| `reqwest` | 0.13 (stream, native-tls) | HTTP client with SSE streaming for OpenAI-compatible API; macOS-native TLS (Security framework), no rustls/ring; minimal feature surface | **WIRED** — Phase 8 US6, `ai.rs` (streaming orchestration for `summarize_document`), emend-ffi only so emend-core stays network-free (Constitution V); `idna_adapter = "=1.1.0"` pinned to keep MSRV ≤ 1.85 (icu 2.x needs 1.86) |
+| `futures-util` | 0.3.32 (std feature) | `StreamExt::next` for draining reqwest's `bytes_stream()` SSE chunks | **WIRED** — Phase 8 US6, `ai.rs` — feeding bytes through the core `SseParser`; already a transitive dep of reqwest |
 | `uniffi` | 0.31 | FFI binding scaffold (no UDL, pure proc-macro mode) | **WIRED** — FFI boundary |
 | `thiserror` | 2.x | Re-exported error Display for FFI projection | **WIRED** — error bridging |
 
@@ -60,7 +64,7 @@ No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (gener
 
 ### Swift (`app/Emend`)
 
-Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, and wiki-link `[[` autocomplete (via `NSTextView` completion) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, wiki-link `[[` autocomplete (via `NSTextView` completion), and info sidebar (document `stats`/`outline` pull via FFI `OpenDocHandle::stats()` / `outline()` on edit-notification, FR-031a) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI. AI key storage uses macOS Security framework Keychain (`SecKeychain` C APIs).
 
 ### Catalogued but Inert (Not Yet Wired)
 
@@ -69,10 +73,6 @@ These are pinned in the workspace `[workspace.dependencies]` but not yet importe
 | Package | Version | Purpose | Why Inert | Planned For |
 |---------|---------|---------|-----------|------------|
 | `nucleo` | 0.5 | Fuzzy search / Quick Open ranking (full worker-pool engine; current index uses lighter `nucleo-matcher` only) | Not imported | Phase 2 (US2 — streaming Quick Open driver T073) |
-| `reqwest` | 0.13 (json, stream) | HTTP client with SSE streaming for AI | Not imported | Phase 1 (FR-023 — AI client) |
-| `serde` / `serde_json` | 1.x | Serialization for AI request/response JSON | Not imported | Phase 1 (FR-023) |
-
-These will be imported into `emend-core` as the corresponding user stories land in `/sdd:implement` phases.
 
 ## Package Managers & Build Tools
 
@@ -90,8 +90,8 @@ These will be imported into `emend-core` as the corresponding user stories land 
 | **OS Target** | macOS 14.0+ (Sonoma+) |
 | **Architecture** | arm64 (Apple Silicon) only |
 | **Deployment** | Native .app bundle (single-window macOS application) |
-| **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for API key) and user defaults; attachments stored in note-relative `attachments/` subdirectories |
-| **No Network by Default** | Zero outbound network unless AI is configured AND invoked by the user |
+| **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for AI API key) and user defaults; attachments stored in note-relative `attachments/` subdirectories |
+| **No Network by Default** | Zero outbound network unless AI is configured (via user prefs) AND explicitly invoked by the user (SC-008 / FR-035) |
 
 ## Build Profile
 
@@ -118,6 +118,8 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 - **Wiki-link resolution**: Deterministic FR-019a policy in `derived::resolve_wikilink()` — same-directory tiebreak → shallowest path → lexicographically smallest. Returns `None` for unresolved/renamed links (stale links are not auto-rewritten in v1).
 - **Attachment storage**: Atomic writes to note-relative `attachments/` subdirectory via `fs::store_attachment()` (reuses `write_atomic_bytes` + `fsync` durability); returns portable Markdown reference for insertion.
 - **Task toggling**: Synchronous line-based toggle of `[ ]`↔`[x]` via `derived::toggle_task()`, applied as a full-document edit delta so the shadow Document and Highlighter stay in lock-step.
+- **AI streaming (US6)**: `emend-ffi` owns the `reqwest` HTTP client + `tokio` orchestration (per-chunk inactivity timeout, `CancellationToken` + `tokio::select!`). Bytes feed through the core `emend_core::ai::SseParser` (redacting `ApiKey` newtype, max-input guard FR-036a, pure JSON parsing) to the foreign `AiSink` callback. The FFI exports: `summarize_document(OpenDocHandle, AiRequestConfig, AiSink) → Arc<AiHandle>` (cancellable) + `test_ai_config(AiRequestConfig) → bool` (validates endpoint before full request). The core (`ai.rs`) exports: `SseParser`, `ApiKey`, `check_input_size()`, `build_request_body()`, `build_auth_header()` — all pure, zero network.
+- **Info sidebar (US6)**: FFI exports `OpenDocHandle::stats()` (word/char/task counts via `derived::stats()`) + `outline()` (headings + line numbers via `derived::outline()`). Live pull via `set_doc_observer()` callback on edit (debounced ≤300ms, FR-031a).
 
 ## What Does NOT Belong Here
 

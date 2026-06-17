@@ -2,21 +2,21 @@
 
 > **Purpose**: Document technical debt, known risks, bugs, fragile areas, and improvement opportunities.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US5 Phase 7 complete; embed resolution, links, tasks, attachments; runtime gaps documented)
+> **Last Updated**: 2026-06-17 (US6 Phase 8 complete; AI summary with zero-network guarantee, key redaction, and max-input guard before send. Keychain integration deferred to Phase 1.)
 
 ## Executive Summary
 
-Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete; US4 preview + PDF export complete; US5 embeds + links + attachments complete). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US4 (Phase 6)** added: offline Markdown preview with bundled Mermaid + KaTeX, three-layer network isolation (CSP + nonPersistent store + navigation delegate), PDF export with identical privacy guarantees, comrak HTML escaping as the trust boundary for untrusted markdown. **US5 (Phase 7)** added: wiki-link resolution, `![[embed]]` expansion with cycle + depth guards, task list syntax, and attachment storage with collision-safe naming. **Phase 1 in scope**: AI integration (key redaction, privacy tests), scroll-sync runtime validation, editor highlighting, Quick Open index maintenance, and most feature implementations remain. Key risks are around **unimplemented AI key handling** (designed but not coded), **untested self-write suppression + conflict path**, **scroll-sync runtime verification deferred** (core logic tested, runtime integration untested on real macOS events), **deferred performance regression testing** for incremental Markdown parsing on large documents, and **relative image preview not yet implemented** (attachment refs stored but not displayed in preview).
+Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete; US4 preview + PDF export complete; US5 embeds + links + attachments complete; US6 AI summary complete). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US4 (Phase 6)** added: offline Markdown preview with bundled Mermaid + KaTeX, three-layer network isolation (CSP + nonPersistent store + navigation delegate), PDF export with identical privacy guarantees, comrak HTML escaping as the trust boundary for untrusted markdown. **US5 (Phase 7)** added: wiki-link resolution, `![[embed]]` expansion with cycle + depth guards, task list syntax, and attachment storage with collision-safe naming. **US6 (Phase 8)** added: AI summary feature with BYOM (bring-your-own-model) endpoint support, API key redaction in all logs/messages (render `***`), max-input guard before any network call (FR-036a), and zero outbound network without explicit AI invocation (SC-008). **Phase 1 in scope**: Keychain key integration (designed but not wired; Phase 1 T112), scroll-sync runtime validation, editor highlighting, Quick Open index maintenance, and most feature implementations remain. Key risks are around **Keychain integration for AI key custody** (designed but not yet implemented), **untested self-write suppression + conflict path**, **scroll-sync runtime verification deferred** (core logic tested, runtime integration untested on real macOS events), **deferred performance regression testing** for incremental Markdown parsing on large documents, and **relative image preview not yet implemented** (attachment refs stored but not displayed in preview).
 
 ---
 
 ## Critical Security Concerns
 
-### SEC-001: AI Key Redaction Not Yet Implemented
+### SEC-001: AI Key Redaction Implemented; Keychain Integration Deferred to Phase 1
 
 | ID | Area | Description | Risk Level | Mitigation |
 |----|------|-------------|------------|------------|
-| **SEC-001** | `crates/emend-core/src/ai.rs` (not yet written) | AI client must redact the API key in `Authorization` header and never log it. Design is specified (research §B5) but code does not exist. | **High** | Implement per research §B5; add test `crates/emend-core/tests/ai_privacy.rs` to verify key never appears in captured logs. (Phase 1 task T112.) |
+| **SEC-001** | `crates/emend-core/src/ai.rs` (implemented) + `crates/emend-ffi/src/ai.rs` (implemented) + Keychain integration (deferred Phase 1 T112) | **Core redaction is COMPLETE**: The API key is wrapped in a redacting newtype [`ApiKey`] whose `Debug` AND `Display` render `***`, never the secret (NFR-006). The key is exposed **only** via an explicit `expose()` method, set on the `Authorization` header inside `run_summary()`, and dropped immediately. All error messages and log lines are redacted (status codes + reason phrases only, never headers). **Keychain integration is DEFERRED**: Swift is designed to read the key from macOS Keychain on-demand, pass it as a transient `String` to Rust, and rely on Rust's `ApiKey` newtype for redaction. The Keychain storage layer (`KeychainStore`) and FFI boundary wiring are not yet implemented (Phase 1 task T112). | **High** (by design — Phase 1) | *Current state (US6)*: Tests pass a `String` directly to `summarize_document()`; production will pass a Keychain-retrieved value. Rust layer is complete; Swift layer deferred. (Phase 1 task T112: implement `KeychainStore` in Swift, wire the `summarize_document()` boundary to read + pass the transient key.) |
 
 ### SEC-002: Security-Scoped-Bookmark Validation Only in Signed App
 
@@ -24,11 +24,11 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 |----|------|-------------|------------|------------|
 | **SEC-002** | `app/Emend/Platform/SecurityScopedBookmarks.swift` + `crates/emend-core/src/fs.rs` | Security-scoped bookmarks are tested with **plain** (non-security-scoped) bookmarks in `BookmarkResolutionTests.swift` because the test process is not sandboxed. Full sandbox behavior—ensuring scope extends to Rust file IO and prevents access outside the granted folder—is only validated in the signed, notarized app. | **High** | (1) Manual testing in the signed app: add a folder, quit, relaunch, confirm reads/writes work without a new prompt. (2) Xcode simulator tests cannot reproduce sandbox constraints; App Store beta or ad-hoc signing required for full validation. (3) Document this limitation in the code review checklist. |
 
-### SEC-003: Catalog Dependencies Inert; Feature Implementations Deferred
+### SEC-003: Inert Dependencies; Feature Implementations Deferred
 
 | ID | Area | Description | Risk Level | Mitigation |
 |----|------|-------------|------------|------------|
-| **SEC-003** | `Cargo.toml` (workspace) + Phase 1 tasks | `reqwest`, `comrak`, `syntect`, `tree-sitter`, `notify`, `nucleo` are pinned but not yet imported into the code. This is by design (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed), but introduces a small risk: if a crate is later imported without review, or if a new crate is added, the security implications may be overlooked. | **Medium** | Code review gate (Constitution VII / DS-006): every Phase 1 task that imports a new crate or adds a dependency MUST justify its inclusion and threat surface. Automated `cargo audit` runs pre-release. |
+| **SEC-003** | `Cargo.toml` (workspace) + Phase 1 tasks | `comrak`, `syntect`, `tree-sitter`, `notify`, `nucleo` are pinned but not yet imported into the code. This is by design (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed), but introduces a small risk: if a crate is later imported without review, or if a new crate is added, the security implications may be overlooked. **US6 imports**: `reqwest` (0.13.x with `stream` feature), `serde_json`, `futures-util` have been added for the AI client. | **Medium** | Code review gate (Constitution VII / DS-006): every Phase 1 task that imports a new crate or adds a dependency MUST justify its inclusion and threat surface. Automated `cargo audit` runs pre-release. **For US6 imports**: (1) `reqwest` (0.13.x) uses macOS native TLS (Security.framework); stream feature for SSE support; (2) `serde_json` for OpenAI Chat-Completions serialization; (3) `futures-util` for streaming adapters. All three pinned to versions with MSRV ≤ 1.85. |
 
 ### SEC-004: Self-Write Suppression + Rename Correlation Untested (US2 Runtime Debt)
 
@@ -93,6 +93,30 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 |----|------|-------------|--------|--------|--------|
 | **TD-006** | `crates/emend-core/src/fs.rs::read_tolerant` | To satisfy FR-003a, reads accept UTF-8 BOM, CRLF, and lossy UTF-8 decoding. On round-trip (read → edit → write), the original encoding is lost: BOM is stripped, CRLF is **preserved** (not normalized), invalid UTF-8 is replaced with U+FFFD. Files written by tools with specific encodings may degrade slightly on first save. | Subtle data change on first save after opening; user confusion if encoding was intentional | Low | Post-v1 |
 | **Prevention** | Document the normalization behavior in settings ("Encoding" section). Consider a future "preserve encoding" flag if users request it. CRLF preservation is intentional (research §B4). | | | |
+
+---
+
+## US6 Phase 8 AI Security Concerns & Testing Gaps
+
+The AI summary feature is **functionally complete** (US6 Phase 8) with **core redaction + zero-network guarantees implemented and tested**. Deferred items are **Keychain integration** (Phase 1 T112) and **production field validation**.
+
+### AI-001: Keychain Integration Deferred to Phase 1
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **AI-001** | `crates/emend-ffi/src/ai.rs::summarize_document()` boundary + Swift Keychain layer (not yet implemented) | **Core implementation complete**: The `summarize_document()` FFI function accepts the API key as a transient `String` parameter, wraps it in a redacting `ApiKey` newtype, and exposes it **only** to set the `Authorization` header (NFR-006). The pure core logic is testable and correct. **Keychain integration deferred**: Swift side is designed to read the key from macOS Keychain (Security framework, `SecItem` with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) and pass it as a transient `String` to the FFI boundary. This **custody layer** is not yet wired. Current tests pass the key directly; production will use Keychain. | **Medium** (by design phase) | *Current*: Tests work with hardcoded keys; code review verifies no key leakage. *Phase 1 T112*: Implement `KeychainStore` (Swift, read on-demand + pass transient `String`). | Phase 1 T112 (deferred, specified in research §B5) |
+
+### AI-002: BYOM Endpoint Trust Model (User-Chosen)
+
+| ID | Area | Description | Impact | Mitigation | Status |
+|----|------|-------------|--------|------------|--------|
+| **AI-002** | `crates/emend-ffi/src/ai.rs::summarize_document()` + `run_summary()` + endpoint configuration (Swift UI) | **Design**: The user configures a BYOM (bring-your-own-model) OpenAI-compatible endpoint (e.g., `https://api.openai.com/v1`, or a local LLM proxy). Emend sends the document content and the API key to that endpoint. **Inherent risk**: A malicious or compromised endpoint can log/exfiltrate the document content (it's receiving the plaintext to process). A compromised endpoint could also use the API key for unauthorized operations on that service. **This is not Emend's responsibility** — the user chose the endpoint and is responsible for trusting it. | User must trust their chosen endpoint. Hostile endpoint sees the document content (inherent to BYOM). Hostile endpoint could replay the API key. | **User responsibility.** Document in settings: "Your AI endpoint will receive your document text and your API key. Choose a trusted provider." Phase 1: add endpoint validation (FR-037, test_ai_config) so users can verify reachability + auth before enabling. | Documented risk; by design (BYOM model) |
+
+### AI-003: Per-Chunk Timeout May Fire on Slow Models
+
+| ID | Area | Description | Impact | Mitigation | Status |
+|----|------|-------------|--------|-----------|--------|
+| **AI-003** | `crates/emend-ffi/src/ai.rs::stream_body()` (lines 305–367) | The implementation uses a **per-chunk inactivity timeout**, not a whole-request timeout (research §B5: whole-request timeout would fire mid-stream on a slow model). If the model takes >timeout_ms to produce the next byte chunk, the request terminates with `AiTimeout` and the user sees "request timed out." On a local/slow model, this may happen frequently. | User frustration on slow endpoints if timeout is too aggressive. | Document in settings: timeout is "per-chunk inactivity"; increase it for slow/local models (e.g., 30–60 sec for local Ollama). Phase 1: allow user configuration of timeout (FR-037, alas not yet completed). | By design (streaming, lenient timeout strategy) |
 
 ---
 
@@ -257,9 +281,11 @@ The following are **by design** — deferred to Phase 1 or later, but documented
 | `crates/emend-core/src/fs.rs` | Atomic write choreography is critical to Constitution Principle III; any step (temp creation, sync, rename, dir sync) can silently break durability. | Every change must justify its atomicity contract and durability guarantees. Pair code review with `fs.rs` test inspection (lines 186–221). Always verify `File::sync_all()` is present after temp write and after directory rename. |
 | `crates/emend-core/src/watcher.rs` | Pure logic (classify, suppression registry, conflict resolution) is well-tested, but FsWatcher integration with real notify events is untested. Rename correlation (debouncer `Both` mode → single `Renamed` event) is critical to avoid duplicating moves. | Every change to event classification must have corresponding unit test with synthetic `DebouncedEvent` vectors. Rename correlation tests required before Phase 1 merge. Full integration test on real macOS FSEvents strongly recommended. |
 | `crates/emend-core/src/parse/embed.rs` | Embed cycle detection and depth bounding prevent infinite loops, but the resolver closure is external (provided by FFI/preview). If a resolver returns stale or circular data, embeds could expand unexpectedly. | Every change to cycle/depth logic must have unit tests with synthetic resolvers (see `tests/embeds.rs`). The FFI layer's resolver must be robust: `render_preview_html_with_embeds` supplies the resolver, and it must handle file-not-found gracefully. |
+| `crates/emend-core/src/ai.rs` | SSE parser and request builders are pure and testable. The max-input guard and API key redaction are critical to NFR-006 (secret hygiene) and FR-036a (no network on oversized input). A misplaced redaction or a skipped guard check could leak secrets or send too much data. | Every change to `ApiKey` must maintain redaction in `Debug`/`Display`. Every change to `check_input_size` must check the boundary (inclusive). All `expose()` calls must be reviewed — should only appear at the header-setting point in `emend-ffi/src/ai.rs::run_summary()`. |
 | `crates/emend-core/src/document.rs` | UTF-16 range handling with surrogate-pair validation; off-by-one errors risk silent text corruption. | Every edit operation must use `U16Range` branded newtype, never raw `u32`. Property-based tests required before Phase 3 merge (T035). Code review: check all `try_from` calls are present, never `as` casts for conversions. |
 | `crates/emend-ffi/src/error.rs` | FFI error projection is exhaustive (no wildcard match). Adding a variant to `EmendError` breaks this file at compile time until mirrored. | Always mirror variants exactly. Test that projection round-trips are lossless (`FfiError::from(core_err)` preserves all fields). |
 | `crates/emend-ffi/src/panic.rs` | Panic containment is the boundary between crashing FFI panics and recoverable Rust errors. `contain_panic` wraps spawned tasks; missing it → process abort. | Every `tokio::spawn` body must be wrapped. Add a comment: `// SAFETY: panic contained by contain_panic(…)` over the spawn call. Code review gate: verify no bare `spawn()` calls exist. |
+| `crates/emend-ffi/src/ai.rs` | AI client orchestration: request building, streaming, error handling, and key exposure are interdependent. A bug could leak the key, send a malformed request, or fail to redact an error. The per-chunk timeout and cancellation logic must race correctly. | Every change must maintain the property: key exposed ONLY at `Authorization` header in `run_summary()`, NEVER elsewhere. Every error must be redacted (carry no header/URL). Per-chunk timeout must be set correctly (research §B5). Cancellation must race on every async point. Code review: check `expose()` is called once, `build_auth_header()` output is used on the header, errors are redacted. |
 | `crates/emend-core/src/parse/preview.rs` | Comrak HTML escaping is the trust boundary for untrusted user markdown. If escaping is disabled (e.g., `unsafe_ = true`) or comrak is replaced, raw HTML could be injected. | Code review gate: any change to `build_options()` must justify the change and document the security implication. Test that malicious markdown (e.g., `<script>alert(1)</script>`) renders as escaped text, not executable. |
 | `app/Emend/Emend/Preview/PreviewWebView.swift` | Three-layer isolation (CSP + nonPersistent + navigation delegate) must be kept in sync. A bug in any layer could regress the privacy model. | Code review: verify CSP header is always present in template.html. Verify `config.websiteDataStore = .nonPersistent()` is never removed. Verify navigation delegate allows only `file:` + `about:`. If any of these change, update the SECURITY.md documentation. |
 | `crates/emend-core/src/fs.rs::store_attachment()` | Attachment naming is collision-safe (`free_name`) and path normalization ensures portable Markdown. But attachment directory creation (`create_dir_all`) could race in theory. | Code review: verify `create_dir_all` is idempotent (returns success if dir exists). Verify that `free_name` doesn't allow directory separators in the chosen name (it uses `Path::file_name`, which is safe). Unit tests should cover: empty name fallback, collision detection, extension handling. |
@@ -279,8 +305,8 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | Location | TODO | Priority | Task ID | Status |
 |----------|------|----------|---------|--------|
 | Phase 1 (T068) | Implement FFI methods `index_insert`, `index_remove`, `index_rename` and wire `DocObserver.on_fs_change` to them for external-change embed index maintenance | High | T068 | Deferred |
-| Phase 1 (T110) | Implement `crates/emend-core/tests/ai_privacy.rs`: verify no network when AI unconfigured, key never in logs | High | T110 | Deferred |
-| Phase 1 (T112) | Implement `crates/emend-core/src/ai.rs`: reqwest SSE, redacting key, timeout, max-input guard | High | T112 | Deferred |
+| Phase 1 (T110) | Implement core + FFI tests to verify: (1) no network when AI unconfigured (blank key), (2) key never appears in logs/errors/Debug/Display, (3) max-input guard rejects oversized docs before send | High | T110 | ✅ Implemented (US6) |
+| Phase 1 (T112) | Implement Keychain integration: Swift `KeychainStore` reads key on-demand, passes transient `String` to `summarize_document()` FFI. Rust layer complete (redaction in place). | High | T112 | **Deferred — Rust complete, Swift integration deferred** |
 | Phase 1 (T083) | Implement `crates/emend-core/tests/preview_offline.rs`: core rendering is offline (DONE); runtime WebView CSP + nonPersistent test deferred | High | T083 | Partial (core done, runtime deferred) |
 | Phase 1 (T086) | Implement scroll-sync integration tests: editor↔preview scroll coordination on real documents | Medium | T086 | Deferred |
 | Phase 1 (T065–T067) | Implement `crates/emend-core/src/watcher.rs` integration tests: file watching, debounce, self-write suppression, rename correlation, conflict handling | High | T065–T067 | Logic complete; integration tests deferred |
@@ -308,7 +334,9 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | `syntect` | ✅ Maintained (burntsushi) | 2026-06-17 | 5.3.x stable; theme/syntax set discovery is slow; see research §B6 binary dump approach |
 | `nucleo` | ✅ Active (helix contributor) | 2026-06-17 | 0.5.x; published crate is stable; prefer vendoring if CI concerns arise |
 | `notify` + `notify-debouncer-full` | ✅ Maintained | 2026-06-17 | 8.2.x + 0.7.x stable; 9.0 RC available but stay on 8.x until stabilized |
-| `reqwest` | ✅ Active (Tokio org) | 2026-06-17 | 0.13.x with `stream` feature; watch for TLS upgrade breaking changes |
+| `reqwest` | ✅ Active (Tokio org) | 2026-06-17 | **0.13.x with `stream` feature** (US6 imported); macOS native TLS; watch for TLS upgrade breaking changes |
+| `serde` + `serde_json` | ✅ Maintained | 2026-06-17 | 1.x stable (US6 imported for Chat-Completions serialization); ubiquitous ecosystem |
+| `futures-util` | ✅ Maintained | 2026-06-17 | 0.3.x stable (US6 imported for streaming adapters); widely used in async ecosystem |
 | `criterion` | ✅ Maintained | 2026-06-17 | 0.7.x stable (0.8+ needs 1.86); MSRV constraint enforced in CI |
 
 ---
@@ -329,6 +357,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Preview CSP runtime validation** | Assumed working; manual testing only | Add runtime test that verifies WKWebView CSP blocks remote loads (low-level, may be difficult in CI) | Confidence that privacy layer is enforced | Medium |
 | **Local-image preview** | Attachment refs stored but not displayed | Construct security-scoped `file://` URLs for dropped images (T089) | User can see dropped images in preview | Medium |
 | **Embed index maintenance** | Full reindex only; external changes missed | Wire watcher → `index_insert`/`_remove`/`_rename` FFI methods (T068) | Quick Open and embeds find externally-created files immediately | Medium |
+| **Keychain integration** | Designed (research §B5); Rust complete; Swift not wired | Implement `KeychainStore` + wire to `summarize_document()` FFI | Production API key custody; Phase 1 T112 | Medium |
 
 ---
 
@@ -343,6 +372,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Error telemetry** | App records errors locally but doesn't report them (by design—offline-first) | Hard to detect widespread bugs in field | Post-v1 (intentional design) |
 | **Preview CSP enforcement** | Assumed enforced; no runtime verification in CI | Could regress silently if template is edited | Pre-release gate (manual testing) |
 | **External index changes** | No tracking of externally-created/deleted files | Embeds + Quick Open miss external changes until reindex | Phase 1 (T068 proposed) |
+| **AI field stability** | No production field monitoring for AI feature (by design — no telemetry) | Hard to detect AI integration issues with diverse endpoints | Post-v1; document known limitations in release notes |
 
 ---
 
@@ -351,8 +381,8 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | Level | Definition | Response Time | Examples |
 |-------|------------|----------------|----------|
 | **Critical** | Production impact, security breach, data loss | Immediate (block merge) | Panic in FFI, atomic write bug, key leak |
-| **High** | Degraded functionality, security risk, test gap for security features | Before Phase 1 merge | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, TD-001, TD-002, TD-004 |
-| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints), SEC-006 (scroll-sync), US5-001/US5-002/US5-003 (deferred gaps) |
+| **High** | Degraded functionality, security risk, test gap for security features | Before Phase 1 merge | SEC-001 (Keychain deferred, Rust complete), SEC-002, SEC-003, SEC-004, SEC-005, TD-001, TD-002, TD-004, AI-001 (by-design phase) |
+| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints), SEC-006 (scroll-sync), US5-001/US5-002/US5-003 (deferred gaps), AI-002 (BYOM trust model), AI-003 (timeout) |
 | **Low** | Nice to have, cosmetic, post-v1 enhancement | Backlog | TD-011–TD-014, localization, observability |
 
 ---
