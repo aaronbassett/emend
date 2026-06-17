@@ -40,7 +40,7 @@ struct PreviewWebView: NSViewRepresentable {
     }
 
     func updateNSView(_: WKWebView, context: Context) {
-        context.coordinator.render(html: model.html, css: model.themeCSS, version: model.version)
+        context.coordinator.render(html: model.html, css: model.css, version: model.version)
     }
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {

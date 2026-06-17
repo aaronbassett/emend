@@ -2,7 +2,7 @@
 
 > **Purpose**: Document test frameworks, patterns, organization, and coverage requirements.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6 Phase 8)
+> **Last Updated**: 2026-06-17 (US7 Phase 9)
 
 ## Overview
 
@@ -65,6 +65,7 @@ Tests are **co-located with source code** in two forms:
      - `crates/emend-core/tests/derived_stats.rs` — Doc stats, task N-of-M, outline (T108, US6)
      - `crates/emend-core/tests/ai_sse.rs` — SSE parser edge cases (T109, US6)
      - `crates/emend-core/tests/ai_privacy.rs` — Secret hygiene + max-input guard (T110, US6)
+     - `crates/emend-core/tests/settings.rs` — Typography settings store, clamping, round-trip (T123, US7)
      - `crates/emend-ffi/tests/panic_containment.rs` — Panic capture across FFI (T015)
 
 #### Test Files
@@ -85,6 +86,7 @@ Tests are **co-located with source code** in two forms:
 | `crates/emend-core/tests/derived_stats.rs` | Word count, character count, reading time, task N-of-M completion, outline with line numbers | Doc stats + outline (T108, FR-029/030/031a, US6) |
 | `crates/emend-core/tests/ai_sse.rs` | SSE chunks reassemble across boundaries, [DONE] terminates, comments/blanks ignored, CRLF/LF tolerated, closed connection clean | SSE parser (T109, FR-032/036, US6) |
 | `crates/emend-core/tests/ai_privacy.rs` | Oversized input rejected locally before send, API key Debug/Display redaction | Secret hygiene + max-input (T110, FR-035/036a, NFR-006, SC-008, US6) |
+| `crates/emend-core/tests/settings.rs` | Sane defaults, round-trip set→get, clamping out-of-range values (size, spacing, line-height), NaN/infinity repair, font family fallback | Typography store (T123, FR-038/FR-039, US7) |
 | `crates/emend-ffi/tests/panic_containment.rs` | Panics routed through `contain_panic` surface as `EmendError::Internal` | FFI boundary safety (NFR-003, research §B7) |
 
 #### Lint Exceptions in Tests
@@ -113,7 +115,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
 | `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
-#### Test Files (Comprehensive, US6)
+#### Test Files (Comprehensive, US7)
 
 | Path | Purpose | Test Type |
 |------|---------|-----------|
@@ -132,6 +134,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `app/Emend/EmendTests/LinksFlowTests.swift` | End-to-end links: resolve + suggest wiki-links, embed inlines, store attachments (T104, US5) | Integration |
 | `app/Emend/EmendTests/KeychainStoreTests.swift` | Keychain round-trip: save/read/upsert/delete AI API key (T119, US6; skips if env denies Keychain access) | Unit integration |
 | `app/Emend/EmendTests/InfoSidebarTests.swift` | Info sidebar stats/outline: word count, char count, task N-of-M, heading tree with line numbers (T119, US6) | Integration |
+| `app/Emend/EmendTests/TypographyTests.swift` | Typography settings model clamp + persistence, resolver font/CSS synthesis (T127, US7, headless) | Unit integration |
 
 #### Test Pattern (XCTest)
 
@@ -157,7 +160,7 @@ Tests are **headless** (no GUI launch) and run in the test bundle (`@testable` i
 
 #### @MainActor Annotation for Headless Tests
 
-Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `InfoModel`) must themselves be annotated `@MainActor`:
+Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `InfoModel`, `TypographyModel`) must themselves be annotated `@MainActor`:
 
 ```swift
 @MainActor
@@ -185,6 +188,25 @@ final class QuickOpenTests: XCTestCase {
         model.selection = index
         model.openSelected()
         XCTAssertEqual(opened?.lastPathComponent, "beta.md")
+    }
+}
+
+@MainActor
+final class TypographyTests: XCTestCase {
+    func testApplyClampsAndPersists() throws {
+        let defaults = try freshDefaults()
+        let model = TypographyModel(defaults: defaults)
+
+        // Out-of-range values are clamped by the core; the font family is kept.
+        model.apply(TypographySettings(
+            fontFamily: "Menlo", fontSizePt: 999, lineHeight: 99, paragraphSpacingPt: -5
+        ))
+        XCTAssertLessThanOrEqual(model.settings.fontSizePt, 48)
+        XCTAssertLessThanOrEqual(model.settings.lineHeight, 3.0)
+        
+        // A new model over the same defaults reads the persisted (clamped) values.
+        let reloaded = TypographyModel(defaults: defaults)
+        XCTAssertEqual(reloaded.settings, model.settings)
     }
 }
 ```
@@ -362,6 +384,53 @@ final class LinkHelpersTests: XCTestCase {
     }
 }
 ```
+
+**Example: TypographyTests (T127, US7) — Settings Model + Resolver**
+```swift
+@MainActor
+final class TypographyTests: XCTestCase {
+    private func freshDefaults() throws -> UserDefaults {
+        try XCTUnwrap(UserDefaults(suiteName: "emend-typo-\(UUID().uuidString)"))
+    }
+
+    func testApplyClampsAndPersists() throws {
+        let defaults = try freshDefaults()
+        let model = TypographyModel(defaults: defaults)
+
+        // Out-of-range values are clamped by the core (size 8...48, line 1...3,
+        // paragraph 0...64); the font family is kept.
+        model.apply(TypographySettings(
+            fontFamily: "Menlo", fontSizePt: 999, lineHeight: 99, paragraphSpacingPt: -5
+        ))
+        XCTAssertLessThanOrEqual(model.settings.fontSizePt, 48)
+        XCTAssertLessThanOrEqual(model.settings.lineHeight, 3.0)
+        XCTAssertGreaterThanOrEqual(model.settings.paragraphSpacingPt, 0)
+        XCTAssertEqual(model.settings.fontFamily, "Menlo")
+
+        // A new model over the same defaults reads the persisted (clamped) values.
+        let reloaded = TypographyModel(defaults: defaults)
+        XCTAssertEqual(reloaded.settings, model.settings)
+    }
+
+    func testResolverProducesFontAndCSS() {
+        let settings = TypographySettings(
+            fontFamily: "Menlo", fontSizePt: 18, lineHeight: 1.6, paragraphSpacingPt: 10
+        )
+        XCTAssertEqual(Typography.font(for: settings).pointSize, 18, accuracy: 0.01)
+
+        let css = Typography.previewCSS(for: settings)
+        XCTAssertTrue(css.contains("font-size: 18"))
+        XCTAssertTrue(css.contains("Menlo"))
+        XCTAssertTrue(css.contains("line-height: 1.6"))
+
+        // The system sentinel maps to the native font stack, not a literal name.
+        let systemCSS = Typography.previewCSS(for: TypographyModel.defaultSettings)
+        XCTAssertTrue(systemCSS.contains("-apple-system"))
+    }
+}
+```
+
+This drives the real `TypographyModel` state management and the `Typography` resolver, verifying clamping (via core), persistence (UserDefaults), and two-applier pattern (font + CSS) without AppKit/SwiftUI dependencies beyond `NSFont`.
 
 **Example: LinksFlowTests (T104, US5) — End-to-End with Real Components**
 ```swift
@@ -696,6 +765,77 @@ fn depth_bounded_at_max_embed_depth() {
 - Cycles degrade gracefully (visited-path tracking prevents infinite recursion)
 - Expansion terminates and produces finite output
 
+### Rust: Typography Settings Clamping (T123, US7)
+
+The `settings.rs` integration test verifies **clamping + validation** in the core (US7):
+
+```rust
+//! T123 — failing-first integration tests for the typography settings store
+//! (`emend_core::settings`), the global editor/preview typography preferences
+//! (US7 · FR-038/FR-039; FFI contract §8).
+
+#[test]
+fn defaults_are_sane() {
+    let d = TypographySettings::default();
+
+    // A usable default font family (system-appropriate, non-empty).
+    assert!(!d.font_family.trim().is_empty());
+
+    // ~14 pt, comfortably inside the allowed range.
+    assert!((MIN_FONT_SIZE_PT..=MAX_FONT_SIZE_PT).contains(&d.font_size_pt));
+    assert!((12.0..=16.0).contains(&d.font_size_pt));
+
+    // A comfortable line height (≥ 1.0, single-spacing or looser).
+    assert!((MIN_LINE_HEIGHT..=MAX_LINE_HEIGHT).contains(&d.line_height));
+    assert!(d.line_height >= 1.0);
+
+    // Non-negative paragraph spacing.
+    assert!((0.0..=MAX_PARAGRAPH_SPACING_PT).contains(&d.paragraph_spacing_pt));
+
+    // A fresh store reports the defaults.
+    let store = TypographyStore::new();
+    assert_eq!(store.get(), TypographySettings::default());
+}
+
+#[test]
+fn zero_and_huge_font_size_clamp_into_range() {
+    let store = TypographyStore::new();
+
+    // Size 0 → clamped up to the floor.
+    store.set(TypographySettings { font_size_pt: 0.0, ..TypographySettings::default() });
+    assert_eq!(store.get().font_size_pt, MIN_FONT_SIZE_PT);
+
+    // Size 9999 → clamped down to the ceiling.
+    store.set(TypographySettings { font_size_pt: 9999.0, ..TypographySettings::default() });
+    assert_eq!(store.get().font_size_pt, MAX_FONT_SIZE_PT);
+}
+
+#[test]
+fn nan_values_are_repaired_not_stored() {
+    // A NaN crossing the boundary (a buggy caller) must not poison the layout:
+    // the clamp replaces non-finite values with the default for that field.
+    let store = TypographyStore::new();
+    store.set(TypographySettings {
+        font_family: "Menlo".to_owned(),
+        font_size_pt: f32::NAN,
+        line_height: f32::INFINITY,
+        paragraph_spacing_pt: f32::NEG_INFINITY,
+    });
+
+    let got = store.get();
+    assert!(got.font_size_pt.is_finite());
+    assert!(got.line_height.is_finite());
+    assert!(got.paragraph_spacing_pt.is_finite());
+    assert!((MIN_FONT_SIZE_PT..=MAX_FONT_SIZE_PT).contains(&got.font_size_pt));
+}
+```
+
+**Key obligations** (Constitution V — validation in core):
+1. **Sane defaults** — fresh store yields usable config
+2. **Round-trip** — in-range values survive set→get
+3. **Clamping** — hostile values (0, NaN, huge, negative) are repaired into sane bounds
+4. **Idempotent** — clamping an already-clamped value is a no-op
+
 ### Rust: Panic Containment Testing
 
 The `panic_containment.rs` test (T015) verifies that forced panics in async tasks surface as `EmendError::Internal` without aborting:
@@ -742,10 +882,7 @@ fn word_count_ignores_markdown_punctuation_runs() {
     let s = stats(src);
     // Words: Title, bold, item, plain, item = 5. The `#`, `-`, `**` markers
     // must not inflate the count.
-    assert_eq!(
-        s.words, 5,
-        "markdown punctuation must not count as words: {s:?}"
-    );
+    assert_eq!(s.words, 5, "markdown punctuation must not count as words: {s:?}");
 }
 
 #[test]
@@ -779,19 +916,6 @@ The `ai_sse.rs` integration test exercises the **pure, tokio-free** SSE parser:
 ```rust
 //! T109 — the **pure** SSE event parser for the BYOM AI client (US6 · FR-032/036;
 //! research §B5).
-//!
-//! This exercises [`emend_core::ai::SseParser`], the tokio-free / reqwest-free
-//! line-buffering SSE parser that the `emend-ffi` streaming orchestration feeds
-//! raw response byte chunks into. The parser owns ALL the lenient framing the
-//! research note calls out, so it can be tested with plain `cargo test`:
-//!
-//! * a `data:` payload **split across two byte chunks** must reassemble into one
-//!   ordered delta (FFI contract "Global rules": tokens are complete strings);
-//! * `data: [DONE]` terminates the stream;
-//! * comment/heartbeat (`:`-prefixed) and blank lines are ignored;
-//! * CRLF and LF line endings are both tolerated;
-//! * a server that just closes (no `[DONE]`) is a clean end (any buffered
-//!   complete line is flushed).
 
 #[test]
 fn parses_single_complete_data_line() {
@@ -832,11 +956,6 @@ The `ai_privacy.rs` integration test enforces two structural guarantees:
 ```rust
 //! T110 — AI **privacy / secret-hygiene** invariants enforced in the pure core
 //! (US6 · FR-035/036a, NFR-006, SC-008).
-//!
-//! Two structural guarantees that live in `emend-core`:
-//!
-//! 1. **Max input size is rejected BEFORE any send** (FR-036a).
-//! 2. **The API key never leaks via `Debug`/`Display`** (NFR-006).
 
 #[test]
 fn oversized_input_is_rejected_locally() {
@@ -937,6 +1056,7 @@ The Rust core avoids mocking libraries (`mockall`, `proptest`) in favor of **pur
 - File I/O is tested with real temp files via `tempfile` crate
 - Search driver is tested with in-memory `Index` fixtures (no Rust core FFI, no tokio)
 - Link/embed resolution is tested with in-memory `Index` fixtures (T095/T096, US5)
+- Settings validation is tested with in-memory `TypographyStore` (T123, US7)
 - AI/SSE is tested with hardcoded string fixtures (pure parser, no reqwest)
 - Doc stats/outline is tested with hardcoded markdown strings (pure computation)
 
@@ -953,6 +1073,7 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 - In-memory `Index` with `n` pre-inserted notes (search tests; no disk I/O)
 - In-memory note store (`HashMap<String, String>`) for embed tests (T096)
 - OpenAI-style SSE chunks with `data:` lines for parser tests (T109)
+- In-memory `TypographyStore` with various input values for settings validation (T123)
 
 **Fixtures in Swift tests**:
 - Simple test doubles (e.g., fake bookmarks, `makeTempDirectory()`) or hardcoded test data
@@ -965,6 +1086,7 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 - Temp note for attachment storage tests (T104, US5)
 - Unique Keychain accounts (throwaway per test) for key storage tests (T119, US6)
 - Temp markdown document with headings + tasks for info sidebar tests (T119, US6)
+- Fresh UserDefaults suite per test for typography settings (T127, US7)
 
 ## Benchmarking
 
@@ -1055,6 +1177,7 @@ Pure, isolated tests of editor behavior without UI:
 | Formatting commands | `app/Emend/EmendTests/FormattingCommandsTests.swift` | Bold `**`, italic `*`, code `` ` `` wrap/unwrap (T046) | Yes (core editing) |
 | Syntax highlighting | `app/Emend/EmendTests/SyntaxAttributingTests.swift` | NSAttributedString synthesis from tree-sitter blocks (T047) | Yes (visual feedback) |
 | Wiki-link helpers | `app/Emend/EmendTests/LinkHelpersTests.swift` | Range detection for autocomplete, link/embed distinction, checkbox toggle (T103, US5) | Yes (link UX) |
+| Typography model + resolver | `app/Emend/EmendTests/TypographyTests.swift` | Model clamping + persistence, resolver font/CSS (T127, US7) | Yes (layout UX) |
 
 ### Integration Tests
 
@@ -1077,6 +1200,7 @@ Full-feature tests exercising public APIs and boundaries:
 | Doc stats | `crates/emend-core/tests/derived_stats.rs` | Word/char counts, reading time, task N-of-M, outline extraction (T108, US6) | Yes (FR-029/FR-030/FR-031a) |
 | SSE parser | `crates/emend-core/tests/ai_sse.rs` | Chunks reassemble, [DONE] terminates, CRLF tolerated, closed connection clean (T109, US6) | Yes (FR-032/FR-036) |
 | AI privacy | `crates/emend-core/tests/ai_privacy.rs` | Oversized input rejected locally, API key redaction (T110, US6) | Yes (FR-035/FR-036a, NFR-006, SC-008) |
+| Typography settings | `crates/emend-core/tests/settings.rs` | Sane defaults, round-trip, clamping, NaN repair, font fallback (T123, US7) | Yes (FR-038/FR-039) |
 | Bookmark resolution | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmarks resolve to files | Yes (FR-004) |
 | Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
 | Workspace flow | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | Add folder → tree → open tab → move/rename (T067, US2) | Yes (workspace UX) |
@@ -1085,6 +1209,7 @@ Full-feature tests exercising public APIs and boundaries:
 | Links flow | `app/Emend/EmendTests/LinksFlowTests.swift` | Resolve + suggest wiki-links, embed inlines content, store attachments (T104, US5) | Yes (FR-019/FR-021/FR-013a) |
 | Keychain storage | `app/Emend/EmendTests/KeychainStoreTests.swift` | Round-trip save/read/upsert/delete for API key (T119, US6; skips if Keychain unavailable) | Yes (SC-008, NFR-006) |
 | Info sidebar | `app/Emend/EmendTests/InfoSidebarTests.swift` | Stats and outline populate from document (T119, US6) | Yes (FR-029/FR-030/FR-031a) |
+| Typography | `app/Emend/EmendTests/TypographyTests.swift` | Model apply clamps and persists, resolver produces font and CSS (T127, US7) | Yes (FR-038/FR-039) |
 
 ## CI Integration
 
@@ -1163,16 +1288,17 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 - ✅ Doc stats computation verified (word/char count, reading time, task N-of-M, outline) (T108, US6)
 - ✅ SSE parser edge cases tested (chunks, CRLF, [DONE], closed connection) (T109, US6)
 - ✅ AI privacy guarantees enforced (max-input rejection, API key redaction) (T110, US6)
+- ✅ Typography settings clamping + round-trip verified (sane defaults, NaN repair) (T123, US7)
 
 ### Pragmatic UI Testing
 
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
-- ✅ Pure transform tests (headless, isolated unit tests for editor behavior including links/tasks)
-- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export, links end-to-end, Keychain storage, info sidebar)
+- ✅ Pure transform tests (headless, isolated unit tests for editor behavior including links/tasks/typography)
+- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export, links end-to-end, Keychain storage, info sidebar, typography model/resolver)
 - ⏳ Full-app behavior tests deferred until features land (Phase 2+)
 
-**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, on-screen preview rendering, native `[[` autocomplete UI, and AI summary streaming remain manual-verification (Constitution VII).
+**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, on-screen preview rendering, native `[[` autocomplete UI, typography UI sliders, and AI summary streaming remain manual-verification (Constitution VII).
 
 ### Benchmark Philosophy
 

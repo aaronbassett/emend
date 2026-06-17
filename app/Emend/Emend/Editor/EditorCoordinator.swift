@@ -7,11 +7,21 @@ import EmendCore
 /// happens on the main thread.
 @MainActor
 final class EditorCoordinator: NSObject, NSTextStorageDelegate {
-    let baseFont = NSFont.systemFont(ofSize: 14)
-    private(set) lazy var baseAttributes: [NSAttributedString.Key: Any] = [
-        .font: baseFont,
-        .foregroundColor: NSColor.textColor
-    ]
+    /// Typography (US7); recomputed font + paragraph style flow from this. Set by
+    /// the representable before first attribution and updated live on change.
+    var typography: TypographySettings = TypographyModel.defaultSettings
+
+    var baseFont: NSFont {
+        Typography.font(for: typography)
+    }
+
+    var baseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: baseFont,
+            .foregroundColor: NSColor.textColor,
+            .paragraphStyle: Typography.paragraphStyle(for: typography)
+        ]
+    }
 
     private let handle: OpenDocHandle
     private let autosave: AutosaveController
@@ -137,6 +147,17 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
         applyUnresolvedLinkStyling(in: storage)
         storage.endEditing()
         isApplyingAttributes = false
+    }
+
+    /// Apply new typography live (US7): update the text view's font + paragraph
+    /// style + typing attributes, then re-attribute so the whole document reflows.
+    func applyTypography(_ settings: TypographySettings) {
+        typography = settings
+        guard let textView else { return }
+        textView.font = baseFont
+        textView.defaultParagraphStyle = Typography.paragraphStyle(for: settings)
+        textView.typingAttributes = baseAttributes
+        reattribute()
     }
 
     // MARK: - Wiki links (US5)

@@ -65,6 +65,14 @@ pub mod watcher;
 /// `FsNode`/`NodeKind` records. See `contracts/ffi-interface.md` §1/§2/§5.
 pub mod workspace;
 
+/// Typography settings FFI projection (T124, US7): a `SettingsHandle` wrapping
+/// `emend_core`'s `TypographyStore` (`get_typography`/`set_typography` over the
+/// in-memory, clamped editor + preview typography), plus the projected
+/// `TypographySettings` record. App-state held in memory only — Swift persists
+/// (UserDefaults) and replays on launch (US2 guardrail). See
+/// `contracts/ffi-interface.md` §8.
+pub mod settings;
+
 uniffi::setup_scaffolding!();
 
 /// Build/version probe across the FFI boundary.

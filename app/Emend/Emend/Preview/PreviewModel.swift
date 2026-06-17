@@ -19,7 +19,22 @@ final class PreviewModel: ObservableObject {
     @Published private(set) var version = 0
 
     /// The syntect classed-code stylesheet (core-owned; constant for the session).
-    let themeCSS: String = previewThemeCss()
+    private let themeCSS: String = previewThemeCss()
+
+    /// The stylesheet injected into the preview: the syntect theme plus the live
+    /// typography overrides (US7), so the preview tracks the editor's font/spacing.
+    var css: String {
+        themeCSS + "\n" + Typography.previewCSS(for: typography)
+    }
+
+    /// Typography (US7). Changing it bumps `version` so the WebView re-injects the
+    /// stylesheet over the unchanged HTML.
+    var typography: TypographySettings = TypographyModel.defaultSettings {
+        didSet {
+            guard typography != oldValue else { return }
+            version &+= 1
+        }
+    }
 
     /// Whether the preview pane is visible — renders are skipped while hidden to
     /// avoid wasted work, and a full refresh runs when it reappears.

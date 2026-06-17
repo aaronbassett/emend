@@ -2,14 +2,14 @@
 
 > **Purpose**: Document what executes in this codebase — languages, runtimes, frameworks, and critical dependencies.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6 additions: `reqwest`, `futures-util`, `serde`/`serde_json` wired for AI summary + info sidebar)
+> **Last Updated**: 2026-06-17 (US6); 2026-06-17 (US7 additions: `TypographySettings` + AppKit `NSFontManager`/`NSFont`/`NSParagraphStyle` + CSS injection for preview)
 
 ## Languages & Runtimes
 
 | Language | Version | Purpose |
 |----------|---------|---------|
-| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, AI client |
-| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export, wiki-link autocomplete |
+| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, AI client, typography settings storage |
+| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export, wiki-link autocomplete, typography UI |
 | C (via UniFFI) | ABI shim | FFI boundary between Rust and Swift |
 
 ## Frameworks
@@ -17,7 +17,7 @@
 | Framework | Version | Purpose |
 |-----------|---------|---------|
 | SwiftUI | 6.0 | Declarative UI framework for the macOS application |
-| AppKit | macOS 14+ | Native APIs for `NSTextView` (TextKit 2), `NSOutlineView`, `WKWebView`, `NSPrintOperation`, Keychain |
+| AppKit | macOS 14+ | Native APIs for `NSTextView` (TextKit 2), `NSOutlineView`, `WKWebView`, `NSPrintOperation`, `NSFontManager`, `NSFont`, `NSParagraphStyle` (typography controls), Keychain |
 | UniFFI | 0.31 | FFI binding generator (proc-macro mode): Rust → C ABI → Swift bindings |
 
 ## Critical Dependencies
@@ -64,7 +64,7 @@ No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (gener
 
 ### Swift (`app/Emend`)
 
-Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, wiki-link `[[` autocomplete (via `NSTextView` completion), and info sidebar (document `stats`/`outline` pull via FFI `OpenDocHandle::stats()` / `outline()` on edit-notification, FR-031a) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI. AI key storage uses macOS Security framework Keychain (`SecKeychain` C APIs).
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, wiki-link `[[` autocomplete (via `NSTextView` completion), info sidebar (document `stats`/`outline` pull via FFI `OpenDocHandle::stats()` / `outline()` on edit-notification, FR-031a), and typography UI (`TypographyPanel`, font picker using `NSFontManager`, paragraph-style picker) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI. AI key storage uses macOS Security framework Keychain (`SecKeychain` C APIs). Typography settings persist to `NSUserDefaults` and are synced to the Rust core via `SettingsHandle.set_typography()` on app launch and user preference changes.
 
 ### Catalogued but Inert (Not Yet Wired)
 
@@ -90,7 +90,7 @@ These are pinned in the workspace `[workspace.dependencies]` but not yet importe
 | **OS Target** | macOS 14.0+ (Sonoma+) |
 | **Architecture** | arm64 (Apple Silicon) only |
 | **Deployment** | Native .app bundle (single-window macOS application) |
-| **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for AI API key) and user defaults; attachments stored in note-relative `attachments/` subdirectories |
+| **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for AI API key) and user defaults (including typography settings); attachments stored in note-relative `attachments/` subdirectories |
 | **No Network by Default** | Zero outbound network unless AI is configured (via user prefs) AND explicitly invoked by the user (SC-008 / FR-035) |
 
 ## Build Profile
@@ -118,6 +118,7 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 - **Wiki-link resolution**: Deterministic FR-019a policy in `derived::resolve_wikilink()` — same-directory tiebreak → shallowest path → lexicographically smallest. Returns `None` for unresolved/renamed links (stale links are not auto-rewritten in v1).
 - **Attachment storage**: Atomic writes to note-relative `attachments/` subdirectory via `fs::store_attachment()` (reuses `write_atomic_bytes` + `fsync` durability); returns portable Markdown reference for insertion.
 - **Task toggling**: Synchronous line-based toggle of `[ ]`↔`[x]` via `derived::toggle_task()`, applied as a full-document edit delta so the shadow Document and Highlighter stay in lock-step.
+- **Typography settings (US7)**: A thread-safe in-memory `TypographyStore` (`emend-core::settings`) holds global editor + preview typography (font family, size in points, line height multiplier, paragraph spacing). Values are **clamped** on entry (font size `8..=48` pt, line height `1.0..=3.0`, paragraph spacing `0..=64` pt, blank font family → system default) so broken layouts are impossible. Swift owns persistence (UserDefaults) and replays on launch via `SettingsHandle.set_typography()` (FFI contract §8). The editor (`NSTextView` + `NSParagraphStyle`) applies size and line height directly; the preview (`WKWebView`) applies them via injected CSS (font-size, line-height, margin-bottom). No new dependencies — pure `std::Mutex` in the core, AppKit `NSFontManager`/`NSFont`/`NSParagraphStyle` on the Swift side (built-in).
 - **AI streaming (US6)**: `emend-ffi` owns the `reqwest` HTTP client + `tokio` orchestration (per-chunk inactivity timeout, `CancellationToken` + `tokio::select!`). Bytes feed through the core `emend_core::ai::SseParser` (redacting `ApiKey` newtype, max-input guard FR-036a, pure JSON parsing) to the foreign `AiSink` callback. The FFI exports: `summarize_document(OpenDocHandle, AiRequestConfig, AiSink) → Arc<AiHandle>` (cancellable) + `test_ai_config(AiRequestConfig) → bool` (validates endpoint before full request). The core (`ai.rs`) exports: `SseParser`, `ApiKey`, `check_input_size()`, `build_request_body()`, `build_auth_header()` — all pure, zero network.
 - **Info sidebar (US6)**: FFI exports `OpenDocHandle::stats()` (word/char/task counts via `derived::stats()`) + `outline()` (headings + line numbers via `derived::outline()`). Live pull via `set_doc_observer()` callback on edit (debounced ≤300ms, FR-031a).
 
