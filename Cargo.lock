@@ -292,6 +292,7 @@ name = "emend-ffi"
 version = "0.1.0"
 dependencies = [
  "emend-core",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",

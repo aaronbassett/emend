@@ -41,10 +41,44 @@ pub fn core_abi_version() -> u32 {
     1
 }
 
+/// Read a text file at `path`, tolerating BOM / CRLF / non-UTF-8 bytes
+/// (`emend_core::fs::read_tolerant`).
+///
+/// This is the foundational read primitive behind the security-scoped-bookmark
+/// handshake (research §A4): Swift opens the scope for a user-granted folder and
+/// hands Rust the resolved path; a successful read here proves the sandbox
+/// extension is process-wide. Higher-level document loading (`open_document`,
+/// with the size cap and an `OpenDocHandle`) arrives with US1.
+#[uniffi::export]
+pub fn read_file_at(path: String) -> Result<String, error::FfiError> {
+    emend_core::fs::read_tolerant(path).map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{core_abi_version, error::FfiError, read_file_at};
+
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(super::core_abi_version(), 1);
+        assert_eq!(core_abi_version(), 1);
+    }
+
+    #[test]
+    fn read_file_at_roundtrips_through_the_tolerant_reader(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "# hi\r\nbody")?;
+        let text = read_file_at(path.to_string_lossy().into_owned())?;
+        assert_eq!(text, "# hi\r\nbody"); // CRLF preserved by the tolerant reader
+        Ok(())
+    }
+
+    #[test]
+    fn read_file_at_maps_missing_file_to_not_found() {
+        assert!(matches!(
+            read_file_at("/no/such/emend/file.md".to_owned()),
+            Err(FfiError::NotFound { .. })
+        ));
     }
 }

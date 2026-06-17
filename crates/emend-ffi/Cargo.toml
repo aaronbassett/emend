@@ -33,5 +33,9 @@ tokio.workspace = true
 # `CancellationToken` backing the Rust-owned cancellation handles (research §A1).
 tokio-util.workspace = true
 
+[dev-dependencies]
+# Temp files for the read_file_at export round-trip test.
+tempfile.workspace = true
+
 [lints]
 workspace = true
