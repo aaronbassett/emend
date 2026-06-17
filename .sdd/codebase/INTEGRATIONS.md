@@ -16,7 +16,7 @@
 
 - **Reading**: `emend_core::fs::read_tolerant` (UTF-8 BOM stripping, CRLF preservation, lossy UTF-8 decode)
 - **Writing**: `emend_core::fs::write_atomic` (temp file + fsync + atomic rename + fsync dir for durability)
-- **Watching**: `notify` + `notify-debouncer-full` (file system events with debounce + self-write suppression)
+- **Watching**: `notify` + `notify-debouncer-full` (file system events with debounce + self-write suppression, not yet wired)
 - **No migration**: Plain Markdown; app-managed state lives in `NSUserDefaults` and Keychain
 
 ### App Preferences & Configuration
@@ -56,7 +56,7 @@
 **Connection Details:**
 
 - **Protocol**: OpenAI Chat Completions API (HTTP, JSON, SSE streaming)
-- **Client**: `reqwest` with SSE support (`stream` feature)
+- **Client**: `reqwest` with SSE support (`stream` feature, not yet wired)
 - **Request Shape**: Standard `/v1/chat/completions` POST
 - **Response**: Server-Sent Events (delimited `data: …` lines)
 - **Streaming Sink**: Foreign-trait callback (research §A1) — Rust collects deltas, Swift renders in real-time
@@ -78,9 +78,29 @@
 
 | Service | Purpose | Configuration | Failure Mode |
 |---------|---------|----------------|--------------|
-| macOS File System Events (via `notify` crate) | Detect external note edits; reload + alert user | Debounced to 100ms; self-write suppression (FR-006a) | Silent miss if event queue overflows; user can manually refresh |
+| macOS File System Events (via `notify` + `notify-debouncer-full` crates) | Detect external note edits; reload + alert user | Debounced to 100ms; self-write suppression (FR-006a) | Silent miss if event queue overflows; user can manually refresh |
 
-**Implementation Status**: Planned phase 0–1 (FR-006a)
+**Implementation Status**: Planned phase 0–1 (FR-006a); not yet wired
+
+---
+
+## Syntax Highlighting
+
+### Editor Highlighting (Internal)
+
+| Component | Purpose | Technology | Status |
+|-----------|---------|-----------|--------|
+| Editor live-syntax highlight | Real-time visual feedback as user types (bold, italic, headings, code, etc.); advisory only — does not affect preview rendering | `tree-sitter-md` (split block + inline Markdown grammar) with incremental tree-sitter runtime | **WIRED** — Phase 3 US1 (Editor MVP); lives in `crates/emend-core/src/parse/highlight.rs` |
+
+**Performance:**
+- Incremental per-keystroke reparses (≤50 ms typing budget, SC-003)
+- Does NOT block the main thread; UTF-16 coordinate bridging via `ropey::Rope` mirror
+- Advisory styling only; preview rendering uses separate `comrak` engine (not yet wired)
+
+**Code Location:**
+- Highlighter struct: `crates/emend-core/src/parse/highlight.rs`
+- FFI export: `crates/emend-ffi/` (style span collection via handle)
+- Swift integration: `app/Emend/Emend/Editor/SyntaxAttributing.swift` (applies spans to `NSTextView`)
 
 ---
 
@@ -98,6 +118,8 @@
 - Bundled KaTeX (no remote CDN)
 - Content Security Policy (CSP) blocks inline `<script>` and remote loads
 - User data (note HTML) rendered, but no AI-generated content exposed
+
+**Implementation Status**: Planned phase 1 (US3 — preview) with authoritative `comrak` engine
 
 ---
 
@@ -133,7 +155,7 @@ No external CDN loads.
 | Service | Purpose | API | Status |
 |---------|---------|-----|--------|
 | Security framework (Keychain) | Secure API key storage | `SecKeychain` C APIs via Swift FFI | **WIRED** — core to AI key management |
-| NSTextView / TextKit 2 | Native editor surface | AppKit / SwiftUI integration | **WIRED** — phase 0 skeleton |
+| NSTextView / TextKit 2 | Native editor surface with split-paragraph storage | AppKit / SwiftUI integration + `MarkdownEditorView` NSViewRepresentable | **WIRED** — phase 0 skeleton, Phase 3 US1 MVP (editor transforms) |
 | NSOutlineView | Folder/file tree sidebar | AppKit | **WIRED** — phase 0 skeleton |
 | Pasteboard | Copy/paste support | `NSPasteboard` API | Planned phase 1–2 |
 
@@ -166,6 +188,7 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | AI timeout | Request exceeds timeout | `EmendError::AiTimeout`; user can retry |
 | User cancels AI request | Cancel token triggered mid-stream | `EmendError::AiCancelled`; clean shutdown of the stream task |
 | Preview WebView crashes | Internal WebView failure | Error logged; fall back to plain-text preview or re-render |
+| Syntax highlighting lagging | Tree-sitter reparse exceeds 50ms budget | Fall back to previous highlight spans; no visual stutter (advisory-only styling) |
 
 ---
 
@@ -176,6 +199,7 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 - Security policies → `SECURITY.md`
 - Dependency versions and selection → `STACK.md`
 - File system operations / Keychain access patterns → See `crates/emend-core/src/fs.rs`, `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`
+- Editor-UI transforms (smart lists, formatting) → `CONVENTIONS.md`
 
 ---
 

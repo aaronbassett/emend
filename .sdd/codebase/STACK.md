@@ -28,7 +28,9 @@ These packages are actively wired into the runtime:
 
 | Package | Version | Purpose | Wiring Status |
 |---------|---------|---------|---------------|
-| `ropey` | 1.6.1 | Shadow rope for UTF-16/line indexing in the per-keystroke editor hot path | **WIRED** — backing the `Document` model |
+| `ropey` | 1.6.1 | Shadow rope for UTF-16/line indexing in the per-keystroke editor hot path | **WIRED** — backing the `Document` model and `Highlighter` rope |
+| `tree-sitter` | 0.26 | Incremental parser runtime for editor-highlight engine (block + inline grammars) | **WIRED** — Phase 3 US1 (Editor MVP), `parse/highlight.rs` |
+| `tree-sitter-md` | 0.5 | Split Markdown grammar (block + inline); wrapped by `MarkdownParser`/`MarkdownTree` | **WIRED** — Phase 3 US1, `parse/highlight.rs` |
 | `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename | **WIRED** — used in `fs::write_atomic` |
 | `thiserror` | 2.x | Error type Display/Error derive for `EmendError` enum | **WIRED** — core error handling |
 
@@ -47,15 +49,21 @@ These packages are actively wired into the runtime:
 |---------|---------|---------|---------------|
 | `criterion` | 0.7 | Micro-benchmark harness (perf budgets tracked, non-blocking) | **DEV-ONLY** — benchmarking (phase 3) |
 
+### Swift (`EmendCore`)
+
+No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (generated via UniFFI).
+
+### Swift (`app/Emend`)
+
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
+
 ### Catalogued but Inert (Not Yet Wired)
 
 These are pinned in the workspace `[workspace.dependencies]` but not yet imported by any crate:
 
 | Package | Version | Purpose | Why Inert | Planned For |
 |---------|---------|---------|-----------|------------|
-| `tree-sitter` | 0.25 | Incremental Markdown syntax highlighting | Not imported | Phase 1 (US7 — syntax highlighting) |
-| `tree-sitter-md` | 0.5 | Tree-sitter Markdown grammar | Not imported | Phase 1 (US7) |
-| `comrak` | 0.52 | CommonMark + GFM parsing for preview HTML | Not imported | Phase 1 (US3 — preview) |
+| `comrak` | 0.52 | CommonMark + GFM parsing for preview HTML (authoritative, whole-document engine; distinct from tree-sitter editor highlight) | Not imported | Phase 1 (US3 — preview) |
 | `syntect` | 5.3 | Code block syntax highlighting (20+ languages) | Not imported | Phase 1 (US7) |
 | `nucleo` | 0.5 | Fuzzy search / Quick Open ranking | Not imported | Phase 2 (US2 — location tree + Quick Open) |
 | `notify` | 8.2 | File watching (macOS native) | Not imported | Phase 0–1 (FR-006a — autoreload on external change) |
@@ -96,9 +104,10 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 
 ## Cross-Boundary Semantics
 
-- **Text buffer**: Swift owns the canonical `NSTextStorage`; Rust shadows it with a `ropey::Rope` for off-main-thread queries.
+- **Text buffer**: Swift owns the canonical `NSTextStorage`; Rust shadows it with a `ropey::Rope` for off-main-thread queries and incremental tree-sitter highlighting.
 - **Coordinates**: FFI boundary uses **UTF-16 code units** (not UTF-8 offsets) to map 1:1 onto `NSRange` and avoid per-keystroke transcoding (research §A2).
 - **Async wiring**: Rust tokio runtime lives in `emend-ffi`; `emend-core` stays purely synchronous for testability (Constitution V, research §B8).
+- **Highlight engine**: `tree-sitter-md` (split block + inline grammar) runs incrementally on the per-keystroke hot path (≤50 ms budget, SC-003); is advisory-only (does not affect preview rendering, which uses comrak separately).
 
 ## What Does NOT Belong Here
 

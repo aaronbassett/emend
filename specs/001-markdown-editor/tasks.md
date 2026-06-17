@@ -123,7 +123,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T047 [US1] Wire debounced atomic autosave (core `flush`) + self-write suppression in `app/Emend/Emend/Editor/AutosaveController.swift` (FR-009/FR-006a) (use devs:rust-dev agent for the core `flush` export)
 - [x] T048 [GIT] Commit: smart lists, shortcuts, autosave
 - [x] T049 [US1] [test] `app/Emend/EmendTests/EditorPersistenceTests.swift`: drive the real editor coordinator + autosave so typed edits round-trip to disk through the core (headless app-hosted test; XCUITest dropped — its runner cannot bootstrap under CI's `CODE_SIGNING_ALLOWED=NO`, and the project's CI is GUI/signing-free by design, Constitution VII)
-- [ ] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
+- [x] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
 - [ ] T051 [GIT] Push; create/update PR "US1 (MVP): live editor"; verify CI green; report PR ready status
 
 **Checkpoint**: 🎯 MVP — Emend can open, edit (dimmed syntax + smart lists + shortcuts), and autosave a Markdown file.

@@ -13,7 +13,7 @@ emend/
 │   │   ├── Cargo.toml               # Core manifest (NO FFI dep)
 │   │   ├── src/
 │   │   │   ├── lib.rs               # Module map + U16Range type
-│   │   │   ├── error.rs             # EmendError enum (single source of truth)
+│   │   │   ├── error.rs             # EmendError enum (error source of truth)
 │   │   │   ├── fs.rs                # Atomic writes + tolerant reads
 │   │   │   └── document.rs          # Shadow rope + UTF-16/line indices
 │   │   └── tests/                   # Integration tests (cargo test)
@@ -50,18 +50,28 @@ emend/
 │       ├── Emend/                   # App sources
 │       │   ├── EmendApp.swift       # @main entry point
 │       │   ├── Shell/
-│       │   │   └── MainWindow.swift # Three-pane layout (Phase 2)
+│       │   │   └── MainWindow.swift # Three-pane layout (US1+)
 │       │   ├── Platform/
 │       │   │   └── SecurityScopedBookmarks.swift
-│       │   ├── Screens/             # Pane views (Phase 2+)
-│       │   ├── Models/              # SwiftUI state (Phase 2+)
-│       │   ├── Bindings/            # Rust↔Swift type adapters (Phase 2+)
-│       │   ├── Services/            # UI-facing core wrappers (Phase 2+)
+│       │   ├── Editor/              # Editor pane (US1)
+│       │   │   ├── MarkdownEditorView.swift    # NSViewRepresentable over TextKit 2
+│       │   │   ├── MarkdownTextView.swift      # NSTextView subclass + list/format keys
+│       │   │   ├── EditorCoordinator.swift     # NSTextStorageDelegate + sync/re-attribute
+│       │   │   ├── SyntaxAttributing.swift     # Pure: spans → attributes
+│       │   │   ├── SmartLists.swift            # Pure: newline/renumber/indent/outdent
+│       │   │   ├── FormattingCommands.swift    # Pure: bold/italic/link/task
+│       │   │   └── AutosaveController.swift    # Debounced atomic flush
+│       │   ├── Screens/             # Pane views (US2/US6+)
+│       │   ├── Models/              # SwiftUI state (US2/US6+)
+│       │   ├── Bindings/            # Rust↔Swift type adapters (US2+)
+│       │   ├── Services/            # UI-facing core wrappers (US2+)
 │       │   └── Resources/
 │       │       ├── preview/         # Vendored Mermaid + KaTeX (bundled, offline)
 │       │       └── Emend.entitlements
 │       └── EmendTests/              # App unit tests
 │           ├── BookmarkResolutionTests.swift
+│           ├── EditorTests.swift    # Editor pane + coordinator tests
+│           ├── SmartListsTests.swift # SmartLists pure transform tests
 │           └── EmendCoreLinkageTests.swift
 │
 ├── specs/                           # Specification documents
@@ -144,20 +154,39 @@ emend/
 | `EmendCore/EmendCore.swift` | Public module re-export | Module: `EmendCore`, enum: `EmendCore` |
 | `EmendCore/Streaming.swift` | Idiomatic Swift adapters (AsyncStream, etc.) | Class/struct: `PascalCase` |
 
-### `app/Emend/` — macOS Xcode App
+### `app/Emend/Emend/Editor/` — Live Editor Pane (US1)
+
+**Purpose**: Editor component with TextKit 2 backing, synchronous delta → core path, and pure formatting/list transforms.
+
+| File | Purpose | Key Classes/Structs |
+|---|---|---|
+| `MarkdownEditorView.swift` | NSViewRepresentable, builds TextKit 2 stack | `MarkdownEditorView` |
+| `MarkdownTextView.swift` | NSTextView subclass, intercepts list/format keys | `MarkdownTextView` |
+| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop | `EditorCoordinator` |
+| `SyntaxAttributing.swift` | Pure: spans → attributes | `SyntaxAttributing` (enum with static methods) |
+| `SmartLists.swift` | Pure transforms: newline/renumber/indent/outdent | `SmartLists`, `SmartLists.Edit` |
+| `FormattingCommands.swift` | Pure transforms: bold/italic/link/task | `FormattingCommands`, `FormattingCommands.Edit` |
+| `AutosaveController.swift` | Debounced flush on private queue | `AutosaveController` |
+
+**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → AutosaveController rearms.
+
+**Formatting & list commands** are **pure functions**: no access to editor state. They take `(text: NSString, selection: NSRange)` and return an `Edit`. This makes them unit-testable without a window (Constitution VII).
+
+### `app/Emend/Emend/` — macOS Xcode App
 
 **Source of truth**: `project.yml` (XcodeGen spec). The `.xcodeproj` is generated and git-ignored.
 
 | Directory | Purpose | Naming |
 |---|---|---|
-| `Emend/EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Emend/Shell/` | Window and pane structure | Views: `MainWindow`, `EditorPane`, `SidebarPane` |
-| `Emend/Screens/` (Phase 2+) | Major feature screens | Views: `EditorScreen`, `SearchResults`, `PreviewPane` |
-| `Emend/Models/` (Phase 2+) | SwiftUI `@Observable` state | Classes: `PascalCase` + `Model` suffix (e.g., `DocumentModel`) |
-| `Emend/Bindings/` (Phase 2+) | Rust↔Swift type adapters | Structs: `PascalCase` (e.g., `EmendDocument`, `HighlightToken`) |
-| `Emend/Services/` (Phase 2+) | Core API wrappers | Classes: `PascalCase` + `Service` suffix (e.g., `EditorService`) |
-| `Emend/Platform/` | macOS/AppKit integration | Files: `FeatureName.swift` (e.g., `SecurityScopedBookmarks.swift`) |
-| `Emend/Resources/` | Assets, entitlements, vendored deps | Subfolders: `preview/` (Mermaid+KaTeX, bundled) |
+| `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
+| `Shell/` | Window and pane structure | Views: `MainWindow`, `EditorPane`, `SidebarPane` |
+| `Platform/` | macOS/AppKit integration | Files: `FeatureName.swift` (e.g., `SecurityScopedBookmarks.swift`) |
+| `Editor/` | Live editor pane (US1) | Views + pure transforms (see above) |
+| `Screens/` (US2+) | Major feature screens | Views: `LocationTree`, `SearchResults`, `PreviewPane` |
+| `Models/` (US2+) | SwiftUI `@Observable` state | Classes: `PascalCase` + `Model` suffix (e.g., `DocumentModel`) |
+| `Bindings/` (US2+) | Rust↔Swift type adapters | Structs: `PascalCase` (e.g., `EmendDocument`, `HighlightToken`) |
+| `Services/` (US2+) | Core API wrappers | Classes: `PascalCase` + `Service` suffix (e.g., `EditorService`) |
+| `Resources/` | Assets, entitlements, vendored deps | Subfolders: `preview/` (Mermaid+KaTeX, bundled) |
 | `EmendTests/` | Unit tests | Files: `*Tests.swift` or `*Spec.swift` |
 
 **Naming conventions**:
@@ -232,10 +261,14 @@ class EditorService {
 | **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/lib.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
 | **Async scaffolding** (tokio runtime, cancellation, sinks) | `crates/emend-ffi/src/handles.rs` | Extend `struct Handle`, add `pub async fn ...` |
 | **Swift wrapper** (idiomatic adapters over UniFFI bindings) | `swift/EmendCore/Sources/EmendCore/*.swift` | `extension EmendCore`, `struct AsyncStreamAdapter` |
-| **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct EditorPane: View` |
+| **Editor UI view** | `app/Emend/Emend/Editor/{FeatureName}.swift` | `struct EditorPane: View` (US1 complete) |
+| **Pure transform** (formatting, lists, etc.) | `app/Emend/Emend/Editor/SmartLists.swift` or `FormattingCommands.swift` | `static func indent(in:selection:) -> Edit?` |
+| **Autosave logic** | `app/Emend/Emend/Editor/AutosaveController.swift` | Extend existing controller |
+| **Syntax attributing** | `app/Emend/Emend/Editor/SyntaxAttributing.swift` | Add style class cases |
+| **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct LocationTree: View` (US2+) |
 | **App state model** | `app/Emend/Emend/Models/{Feature}Model.swift` | `@Observable class EditorModel` |
 | **App service** (wrapper over EmendCore) | `app/Emend/Emend/Services/{Feature}Service.swift` | `class EditorService` |
-| **App-level test** | `app/Emend/EmendTests/{Feature}Tests.swift` | `final class SecurityTests` |
+| **App-level test** | `app/Emend/EmendTests/{Feature}Tests.swift` | `final class SmartListsTests` |
 | **Core-level test** | `crates/emend-core/tests/integration.rs` or `src/*.rs` | `#[test] fn ...` or module `#[cfg(test)]` |
 | **Benchmark** | `crates/emend-bench/benches/emend_bench.rs` | `fn criterion_benchmark()` (Criterion) |
 | **Error variant** | `crates/emend-core/src/error.rs` (and mirror in `emend-ffi/src/error.rs`) | `#[error("...")] NewVariant { field: Type }` |
@@ -279,6 +312,16 @@ import EmendCore
 // (except inside EmendCore module itself)
 ```
 
+### App Swift Imports
+
+```swift
+// Import EmendCore for core API
+import EmendCore
+
+// Coordinate with services
+let result = try service.editHandle(range: range, text: text)
+```
+
 ## Generated Files
 
 Files that are auto-generated and should NOT be manually edited:
@@ -297,17 +340,19 @@ Files that are auto-generated and should NOT be manually edited:
 | `crates/emend-ffi/src/lib.rs` | FFI entry points | Swift via UniFFI |
 | `swift/EmendCore/Sources/EmendCore/EmendCore.swift` | Public Swift API | App |
 | `app/Emend/Emend/EmendApp.swift` | App entry point | macOS launcher |
+| `app/Emend/Emend/Shell/MainWindow.swift` | Main window + three panes | App |
+| `app/Emend/Emend/Editor/MarkdownEditorView.swift` | Live editor pane | MainWindow |
 
 ## Phase Milestones
 
 Structure changes as phases land:
 
-| Phase | New Directories | New Modules | New FFI Exports |
-|-------|-----------------|-------------|-----------------|
-| 0 (Current) | Core, FFI, Swift package, app skeleton | `error`, `fs`, `document` | `core_abi_version`, `read_file_at` |
-| 1 | (none) | `watcher`, `index`, `parse`, `search`, `ai` | `open_document`, `push_edit`, `highlight_range`, `search_files`, `ai_request` |
-| 2 | `app/Emend/Screens`, `Models`, `Services` | (none — app wiring) | (none) |
-| 3+ | As needed | (depends on features) | (depends on features) |
+| Phase | New Directories | New Modules | New FFI Exports | New App Components |
+|-------|-----------------|-------------|-----------------|-------------------|
+| 0 (Phase 0 complete) | Core, FFI, Swift package, app skeleton | `error`, `fs`, `document` | `core_abi_version`, `read_file_at` | EmendApp, MainWindow shell |
+| 1 (Phase 1 current) | `app/Emend/Editor/` | `watcher`, `index`, `parse`, `search`, `ai` | `open_document`, `push_edit`, `highlight_spans`, `search_files`, `ai_request`, `flush`, `close_document` | MarkdownEditorView, EditorCoordinator, SmartLists, FormattingCommands, AutosaveController, SyntaxAttributing |
+| 2 (Phase 2 future) | `app/Emend/Screens`, `Models`, `Services` | (none — app wiring) | (none) | LocationTree, SearchResults, PreviewPane |
+| 3+ | As needed | (depends on features) | (depends on features) | Per-feature models, services, screens |
 
 ---
 
