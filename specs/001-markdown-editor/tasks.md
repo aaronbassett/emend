@@ -264,7 +264,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Change font/size/spacing → editor + preview update; switch system appearance → app follows.
 
-- [ ] T122 [US7] Create `retro/P9.md`; [GIT] commit
+- [x] T122 [US7] Create `retro/P9.md`; [GIT] commit
 - [ ] T123 [P] [US7] [test] `crates/emend-core/tests/settings.rs`: typography settings persist + round-trip (use devs:rust-dev agent)
 - [ ] T124 [US7] Implement `crates/emend-core/src/settings.rs` get/set + export in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [ ] T125 [US7] Implement `app/Emend/Emend/Settings/TypographySettingsView.swift`; apply to editor + preview; bind light/dark to system
