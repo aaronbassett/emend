@@ -200,6 +200,19 @@ impl Index {
         let Some(id) = self.path_map.remove(&key) else {
             return;
         };
+        self.tombstone_slot(id);
+    }
+
+    /// Tombstone the arena slot at `id`: drop the entry in place, remove it from
+    /// its `name_map` bucket, and decrement `live`. The caller is responsible for
+    /// having already detached `id` from `path_map` (so the path key points
+    /// elsewhere or is gone). A no-op if the slot is already a tombstone.
+    ///
+    /// Shared by [`Index::remove`] (after dropping the path key) and
+    /// [`Index::rename`] (when the destination path was already indexed under a
+    /// *different* slot — the displaced "victim" must be reclaimed identically, or
+    /// `live` over-counts and the stale slot lingers in `query`/`resolve_name`).
+    fn tombstone_slot(&mut self, id: PathId) {
         if let Some(entry) = self.entries[id.0 as usize].take() {
             self.unmap_name(&entry.name, id);
             self.live -= 1;
@@ -215,6 +228,12 @@ impl Index {
     /// basename may stay), or both. If `old_path` was not indexed this degrades
     /// to a plain [`Index::insert`] of `new_path` (we still end in the right
     /// state without a rescan).
+    ///
+    /// If `new_path` is **already** indexed under a *different* slot (a rename
+    /// onto an occupied destination), that displaced "victim" is reclaimed first
+    /// — tombstoned and dropped from both maps, exactly as [`Index::remove`]
+    /// would — so the moved file overwrites it without leaking a stale duplicate
+    /// (which would inflate [`Index::len`] and surface in `query`/`resolve_name`).
     pub fn rename(&mut self, old_path: &str, new_path: &str, new_rel: &str) {
         let old_key = PathBuf::from(old_path);
         let Some(id) = self.path_map.remove(&old_key) else {
@@ -222,6 +241,16 @@ impl Index {
             self.insert(new_path, new_rel);
             return;
         };
+
+        let new_key = PathBuf::from(new_path);
+        // Reclaim any pre-existing entry at the destination (a different slot):
+        // overwriting its `path_map` key below would otherwise orphan its arena
+        // slot and `name_map` bucket and leave `live` over-counting forever.
+        if let Some(&victim) = self.path_map.get(&new_key) {
+            if victim != id {
+                self.tombstone_slot(victim);
+            }
+        }
 
         let new_name = basename(new_path);
         let old_name = self.entries[id.0 as usize].as_ref().map(|e| e.name.clone());
@@ -238,7 +267,7 @@ impl Index {
         }
 
         // Re-key the path map and rewrite the entry in place.
-        self.path_map.insert(PathBuf::from(new_path), id);
+        self.path_map.insert(new_key, id);
         self.entries[id.0 as usize] = Some(Entry {
             path: new_path.to_owned(),
             name: new_name,

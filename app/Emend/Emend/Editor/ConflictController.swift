@@ -17,8 +17,10 @@ final class ConflictController: ObservableObject {
     private weak var workspace: WorkspaceModel?
     private var recentSelfWrites: [String: Date] = [:]
     /// A save's own filesystem echo arrives within the watcher debounce (~400 ms);
-    /// ignore changes to a path for a comfortable window after we wrote it.
-    private let selfWriteWindow: TimeInterval = 2.5
+    /// ignore changes to a path for a short window after we wrote it. The Rust
+    /// watcher's identity-matched suppression is the primary guard; this is
+    /// belt-and-suspenders, kept tight so a real edit isn't masked for long.
+    private let selfWriteWindow: TimeInterval = 1.5
 
     /// Wire the controller to the models once (idempotent).
     func attach(tabs: TabModel, workspace: WorkspaceModel) {
@@ -26,6 +28,7 @@ final class ConflictController: ObservableObject {
         self.tabs = tabs
         self.workspace = workspace
         workspace.onExternalChange = { [weak self] event in self?.handleChange(event) }
+        workspace.beforeMove = { [weak self] path in self?.tabs?.closeIfOpen(path: path) }
         tabs.onTabFlushed = { [weak self] url in self?.noteSelfWrite(url) }
     }
 
@@ -41,7 +44,9 @@ final class ConflictController: ObservableObject {
         case .reloadFromDisk:
             tabs?.reload(id)
         case .keepMine:
-            break
+            // Write the kept buffer to disk now so it stops diverging from disk
+            // (rather than waiting for the next incidental edit).
+            tabs?.flush(id)
         @unknown default:
             break
         }
@@ -51,15 +56,11 @@ final class ConflictController: ObservableObject {
     // MARK: - Private
 
     private func handleChange(_ event: ChangeEvent) {
-        let path: String
-        switch event {
-        case let .modified(path: changed), let .removed(path: changed):
-            path = changed
-        case let .renamed(from, _):
-            path = from
-        case .created:
-            return // a new sibling file is not a conflict for an open document
-        }
+        // Only an in-place modification is a reload-able conflict. A removed or
+        // renamed-away file is gone, so "reload from disk" would read nothing and
+        // silently lose the buffer — keep the user's buffer instead (the next
+        // autosave re-creates the file). Created is a new sibling, not a conflict.
+        guard case let .modified(path) = event else { return }
         guard let tab = tabs?.tab(forPath: path) else { return }
         let elapsed = recentSelfWrites[path].map { Date().timeIntervalSince($0) } ?? .infinity
         if elapsed < selfWriteWindow { return } // our own autosave, not external
@@ -68,7 +69,11 @@ final class ConflictController: ObservableObject {
 
     private func noteSelfWrite(_ url: URL) {
         let path = url.path(percentEncoded: false)
-        recentSelfWrites[path] = Date()
+        let now = Date()
+        recentSelfWrites[path] = now
+        // Prune stale entries so the map can't grow unbounded over a session.
+        recentSelfWrites = recentSelfWrites
+            .filter { now.timeIntervalSince($0.value) < selfWriteWindow }
         workspace?.recordSelfWrite(path: path)
     }
 }

@@ -16,6 +16,10 @@ final class WorkspaceModel: ObservableObject {
     /// sidebar refreshes — the conflict controller uses it to flag open docs.
     var onExternalChange: ((ChangeEvent) -> Void)?
 
+    /// Invoked just before a file at the given path is moved, so an open tab can
+    /// flush + close first (FR-004/FR-005 — avoid a stale post-move handle).
+    var beforeMove: ((String) -> Void)?
+
     /// Sidebar roots (the added locations). `revision` bumps only when this set
     /// changes, so the outline view reloads its top level exactly then (not on
     /// every incidental SwiftUI update — which would collapse expanded folders).
@@ -179,6 +183,9 @@ final class WorkspaceModel: ObservableObject {
         guard target.path != sourcePath, !target.path.hasPrefix(sourcePath + "/") else {
             return false // can't drop a folder into itself or a descendant
         }
+        // Save + close any tab open on the source so its edits land on the file
+        // before it moves and no stale handle keeps autosaving to the old path.
+        beforeMove?(sourcePath)
         let newPath: String
         do {
             newPath = try workspace.moveNode(path: sourcePath, newParent: target.path)
@@ -259,6 +266,12 @@ private extension WorkspaceModel {
 
     private func register(bookmark: Data, persist: Bool) throws {
         let resolved = try SecurityScopedBookmarks.resolve(bookmark)
+        // Skip a folder that's already a location (re-adding the same path would
+        // otherwise mint a duplicate location, scope, and watcher).
+        let canonical = resolved.url.resolvingSymlinksInPath().standardizedFileURL
+        guard !roots.contains(where: {
+            $0.url.resolvingSymlinksInPath().standardizedFileURL == canonical
+        }) else { return }
         let effective = resolved.refreshedData ?? bookmark
         let started = resolved.url.startAccessingSecurityScopedResource()
         do {
@@ -297,7 +310,12 @@ private extension WorkspaceModel {
     }
 
     private func persistBookmarks() {
-        defaults.set(Array(bookmarks.values), forKey: bookmarksKey)
+        // Persist in sidebar (roots) order so location order is stable across launches.
+        let ordered: [Data] = roots.compactMap { node in
+            guard case let .location(id) = node.kind else { return nil }
+            return bookmarks[id]
+        }
+        defaults.set(ordered, forKey: bookmarksKey)
     }
 
     private func loadAppState() {

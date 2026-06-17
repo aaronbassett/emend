@@ -536,9 +536,13 @@ impl Workspace {
     }
 
     /// Delete `path` (FFI contract §2). A file is removed; a folder is removed
-    /// recursively with its contents. Also drops any app-managed preferences
-    /// (favorite/pin/icon/child-order) keyed on that exact path so they do not
-    /// dangle.
+    /// recursively with its contents.
+    ///
+    /// This touches **disk only**. It does **not** drop any app-managed
+    /// preferences (favorite/pin/icon/child-order) keyed on the path: those live
+    /// Swift-side, which is the source of truth for them and prunes entries for
+    /// paths that no longer exist. (`delete` takes `&self`, so it could not mutate
+    /// such maps even if they lived here.)
     ///
     /// # Errors
     ///

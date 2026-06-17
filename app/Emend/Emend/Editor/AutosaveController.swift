@@ -26,6 +26,7 @@ final class AutosaveController {
 
     private var idleItem: DispatchWorkItem?
     private var hardCapItem: DispatchWorkItem?
+    private var discarded = false
 
     init(handle: OpenDocHandle, idleInterval: TimeInterval = 1.5, hardCap: TimeInterval = 5.0) {
         self.handle = handle
@@ -55,14 +56,17 @@ final class AutosaveController {
         queue.sync { performFlush() }
     }
 
-    /// Cancel any pending debounced flush WITHOUT writing — used when reloading a
-    /// document from disk (the local buffer is being discarded).
-    func cancel() {
-        queue.async { [weak self] in
-            self?.idleItem?.cancel()
-            self?.idleItem = nil
-            self?.hardCapItem?.cancel()
-            self?.hardCapItem = nil
+    /// Permanently discard this controller's pending writes (the local buffer is
+    /// being thrown away on reload-from-disk). Synchronous so any *queued* flush
+    /// is skipped and no flush lands on a soon-to-be-closed handle; the controller
+    /// is single-use after this.
+    func discard() {
+        queue.sync {
+            discarded = true
+            idleItem?.cancel()
+            idleItem = nil
+            hardCapItem?.cancel()
+            hardCapItem = nil
         }
     }
 
@@ -73,6 +77,7 @@ final class AutosaveController {
     }
 
     private func performFlush() {
+        guard !discarded else { return }
         idleItem?.cancel()
         idleItem = nil
         hardCapItem?.cancel()

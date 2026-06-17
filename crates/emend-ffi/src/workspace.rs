@@ -460,8 +460,11 @@ impl WorkspaceHandle {
     }
 
     /// Delete `path` (FFI contract §2 `delete`). A file is removed; a folder is
-    /// removed recursively. Drops the index entry for the path (FR-017a) and any
-    /// app-managed preferences keyed on it.
+    /// removed recursively, and the index entry for the path is dropped
+    /// (FR-017a).
+    ///
+    /// It does **not** touch app-managed preferences (favorite/pin/icon/
+    /// child-order) keyed on the path — those are owned and pruned Swift-side.
     ///
     /// # Errors
     ///

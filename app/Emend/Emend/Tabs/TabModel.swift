@@ -88,7 +88,7 @@ final class TabModel: ObservableObject {
     func reload(_ id: Tab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let old = tabs[index]
-        old.autosave.cancel() // drop the pending local buffer
+        old.autosave.discard() // synchronously drop the local buffer + pending flush
         try? old.handle.close()
         let path = old.url.path(percentEncoded: false)
         guard let handle = openHandle(path: path) else { return }
@@ -123,6 +123,19 @@ final class TabModel: ObservableObject {
         for tab in tabs {
             tab.autosave.flushNow()
         }
+    }
+
+    /// Flush one tab now (e.g. resolving a conflict with "Keep Mine" — write the
+    /// kept buffer to disk immediately rather than waiting for the next edit).
+    func flush(_ id: Tab.ID) {
+        tabs.first { $0.id == id }?.autosave.flushNow()
+    }
+
+    /// If `path` is open, flush + close its tab. Called before the workspace moves
+    /// a file so the open buffer is saved to the old path (which then moves) and
+    /// no stale handle keeps autosaving to the vanished path.
+    func closeIfOpen(path: String) {
+        if let open = tab(forPath: path) { close(open.id) }
     }
 
     // MARK: - Private

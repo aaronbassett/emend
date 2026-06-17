@@ -153,6 +153,46 @@ fn move_keeps_basename_changes_rel_path_without_rebuild() {
     assert_eq!(ranked_rels(&index, "ar/foo", 10), vec!["archive/foo.md"]);
 }
 
+#[test]
+fn rename_onto_occupied_destination_reclaims_the_victim() {
+    let mut index = Index::new();
+    // Two distinct files with distinct basenames.
+    insert_rel(&mut index, "notes/alpha.md");
+    insert_rel(&mut index, "notes/beta.md");
+    let rebuilds = index.rebuild_count();
+    assert_eq!(index.len(), 2);
+
+    // Rename alpha.md ONTO beta.md's already-indexed path. The displaced
+    // `beta` entry (the "victim") must be reclaimed, not orphaned: no stale
+    // duplicate left behind in any of the three stores.
+    index.rename(
+        "/root/notes/alpha.md",
+        "/root/notes/beta.md",
+        "notes/beta.md",
+    );
+
+    // Still an incremental op (no rescan), and the over-counted slot was reclaimed.
+    assert_eq!(index.rebuild_count(), rebuilds, "rename must not rebuild");
+    assert_eq!(
+        index.len(),
+        1,
+        "the victim slot must be reclaimed, not orphaned"
+    );
+
+    // `resolve_name` returns exactly the one renamed entry — no stale duplicate.
+    assert_eq!(
+        index.resolve_name("beta"),
+        vec!["/root/notes/beta.md"],
+        "exactly one entry resolves to beta — the moved file, not a duplicate"
+    );
+    // The source name is fully gone.
+    assert!(index.resolve_name("alpha").is_empty());
+
+    // A fuzzy query for beta returns a single hit (the reclaimed victim would
+    // otherwise surface as a second, identical result).
+    assert_eq!(ranked_rels(&index, "beta", 10), vec!["notes/beta.md"]);
+}
+
 // ---------------------------------------------------------------------------
 // (2) Fuzzy subsequence matching on basename AND relative path (FR-017)
 // ---------------------------------------------------------------------------
