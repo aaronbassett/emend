@@ -27,5 +27,12 @@
 //!   once. Wired into [`preview`] via comrak's code-fence adapter.
 
 pub mod code_highlight;
+/// Obsidian-style `![[embed]]` resolution (US5 · FR-021/021a). The bespoke
+/// pre-render source pass that inlines another note's Markdown — the **only**
+/// custom Markdown extension comrak doesn't handle natively (research §B1) —
+/// with cycle detection and a depth bound (default 8, research §D). Wired into
+/// the [`preview`] render path; pure `&str -> String`, no IO/`tokio`/`uniffi`
+/// (Constitution V).
+pub mod embed;
 pub mod highlight;
 pub mod preview;

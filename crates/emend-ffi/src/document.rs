@@ -50,6 +50,9 @@
 //!   [`FfiError::Internal`] rather than panicking.
 
 use crate::error::FfiError;
+use emend_core::derived::{
+    extract_links, toggle_task, LinkKind as CoreLinkKind, LinkRef as CoreLinkRef,
+};
 use emend_core::document::Document;
 use emend_core::parse::highlight::{
     Highlighter, StyleClass as CoreStyleClass, StyleSpan as CoreStyleSpan,
@@ -164,6 +167,60 @@ impl From<CoreStyleSpan> for StyleSpan {
         Self {
             range: range.into(),
             class: class.into(),
+        }
+    }
+}
+
+/// Whether a [`LinkRef`] is a navigable link (`[[…]]`) or an inline embed
+/// (`![[…]]`) — the FFI mirror of [`emend_core::derived::LinkKind`] (US5 ·
+/// FR-019/021). The [`From`] is exhaustive (no wildcard), so a new core variant
+/// breaks compilation here until mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LinkKind {
+    /// A `[[wiki link]]` — clickable, navigates to the target note (FR-019).
+    Link,
+    /// A `![[embed]]` — inlines the target's content in the preview (FR-021).
+    Embed,
+}
+
+impl From<CoreLinkKind> for LinkKind {
+    /// Exhaustive projection — no wildcard arm.
+    fn from(kind: CoreLinkKind) -> Self {
+        match kind {
+            CoreLinkKind::Link => Self::Link,
+            CoreLinkKind::Embed => Self::Embed,
+        }
+    }
+}
+
+/// A wiki link / embed found in a document (FFI contract §4 `links`). The FFI
+/// mirror of [`emend_core::derived::LinkRef`].
+///
+/// `range` is UTF-16 (FFI contract §4/§5) so it maps onto `NSRange` for
+/// click/navigation; `raw_target` is the target as typed (before any `|` alias),
+/// which Swift resolves via [`crate::workspace::WorkspaceHandle::resolve_wikilink`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LinkRef {
+    /// Link vs embed.
+    pub kind: LinkKind,
+    /// The target as typed (before any `|` alias), e.g. `Launch Plan`.
+    pub raw_target: String,
+    /// The full `[[…]]` / `![[…]]` token's source range in UTF-16 code units.
+    pub range: U16Range,
+}
+
+impl From<CoreLinkRef> for LinkRef {
+    fn from(link: CoreLinkRef) -> Self {
+        // Destructure exhaustively so a new core field forces a compile error.
+        let CoreLinkRef {
+            kind,
+            raw_target,
+            range,
+        } = link;
+        Self {
+            kind: kind.into(),
+            raw_target,
+            range: range.into(),
         }
     }
 }
@@ -351,6 +408,70 @@ impl OpenDocHandle {
         Ok(html)
     }
 
+    /// The `[[wiki links]]` and `![[embeds]]` in the current buffer, each with
+    /// its UTF-16 source range (FFI contract §4 `links`; FR-019..022).
+    ///
+    /// Snapshots the buffer ([`Document::text`]) under the lock and scans it with
+    /// [`emend_core::derived::extract_links`]. The `raw_target` of each is resolved
+    /// to a note path Swift-side via
+    /// [`crate::workspace::WorkspaceHandle::resolve_wikilink`] (the index lives in
+    /// the workspace handle, not the document) — this method only *extracts* the
+    /// references and their ranges.
+    ///
+    /// Not the hot path (the info-sidebar/derived layer pulls these debounced,
+    /// FR-031a), so the buffer snapshot under the lock is acceptable.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub fn links(&self) -> Result<Vec<LinkRef>, FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        let source = session.doc.text();
+        Ok(extract_links(&source)
+            .into_iter()
+            .map(LinkRef::from)
+            .collect())
+    }
+
+    /// Toggle the task checkbox on the line containing the UTF-16 offset `at`
+    /// (FFI contract §3 `toggle_task`; FR-014 clickable checkbox).
+    ///
+    /// Computes the new line text with [`emend_core::derived::toggle_task`]
+    /// (flipping `[ ]`↔`[x]`) and applies the change as a single `push_edit`
+    /// delta over the toggled line, so the shadow [`Document`] **and** the
+    /// [`Highlighter`] stay in lock-step (same path as typing) and a later
+    /// [`flush`](Self::flush) writes the toggled Markdown to disk.
+    ///
+    /// The contract takes a `U16Range`; we use its `start` as the click offset
+    /// (the click is a caret position, not a selection). A click that is not on a
+    /// task line surfaces an error rather than silently no-op'ing.
+    ///
+    /// # Errors
+    ///
+    /// - [`FfiError::InvalidConfig`] if `at` is past EOF or its line is not a task
+    ///   checkbox (propagated from the core toggle).
+    /// - [`FfiError::Internal`] if the handle is closed, the lock is poisoned, or
+    ///   the computed edit is rejected (unreachable — the new text differs only in
+    ///   one checkbox char).
+    pub fn toggle_task(&self, at: U16Range) -> Result<(), FfiError> {
+        let mut guard = self.lock()?;
+        let session = guard.as_mut().ok_or_else(closed_handle)?;
+
+        let old_text = session.doc.text();
+        let new_text = toggle_task(&old_text, at.start)?;
+
+        // Apply the change as a whole-document replacement delta so the Document
+        // and Highlighter both track it (the toggle changes exactly one char, but
+        // computing a minimal delta here would duplicate the core's line-finding;
+        // a whole-doc replace is correct and the toggle is not the hot path).
+        let full_len = session.doc.len_utf16();
+        let whole = CoreU16Range::new(0, full_len);
+        session.doc.push_edit(whole, &new_text)?;
+        session.highlighter.apply_edit(whole, &new_text)?;
+        Ok(())
+    }
+
     /// Explicit close (FFI contract §3 `close_document`). Consumes the inner
     /// session, running [`Document::close`]; the handle is inert afterwards.
     ///
@@ -453,7 +574,7 @@ mod tests {
         reason = "unit test asserts on its own fixtures"
     )]
 
-    use super::{open_document, preview_theme_css, StyleClass, U16Range};
+    use super::{open_document, preview_theme_css, LinkKind, StyleClass, U16Range};
     use crate::error::FfiError;
 
     fn u16_len(s: &str) -> u32 {
@@ -694,6 +815,73 @@ mod tests {
             matches!(err, FfiError::Internal { .. }),
             "expected Internal for render after close, got {err:?}"
         );
+    }
+
+    #[test]
+    fn links_extracts_wiki_links_and_embeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "See [[Target]] and ![[Embed]] here.\n");
+        let handle = open_document(path).expect("open");
+
+        let links = handle.links().expect("links");
+        assert_eq!(links.len(), 2, "one link + one embed: {links:?}");
+        assert_eq!(links[0].kind, LinkKind::Link);
+        assert_eq!(links[0].raw_target, "Target");
+        assert_eq!(links[1].kind, LinkKind::Embed);
+        assert_eq!(links[1].raw_target, "Embed");
+    }
+
+    #[test]
+    fn toggle_task_flips_checkbox_and_persists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "- [ ] task\n");
+        let handle = open_document(path.clone()).expect("open");
+
+        // Toggle at offset 0 (anywhere on the line works).
+        handle
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect("toggle");
+        handle.flush().expect("flush");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(on_disk, "- [x] task\n");
+
+        // Toggling again flips it back, proving the doc tracked the edit.
+        handle
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect("toggle back");
+        handle.flush().expect("flush");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "- [ ] task\n"
+        );
+    }
+
+    #[test]
+    fn toggle_task_on_non_task_line_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "just text\n");
+        let handle = open_document(path).expect("open");
+
+        let err = handle
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect_err("toggling a non-task line must error");
+        assert!(
+            matches!(err, FfiError::InvalidConfig { .. }),
+            "expected InvalidConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn links_after_close_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "[[x]]\n");
+        let handle = open_document(path).expect("open");
+        handle.close().expect("close");
+        assert!(matches!(
+            handle.links().expect_err("links after close"),
+            FfiError::Internal { .. }
+        ));
     }
 
     #[test]

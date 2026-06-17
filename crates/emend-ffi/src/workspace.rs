@@ -633,6 +633,52 @@ impl WorkspaceHandle {
         Ok(resolved)
     }
 
+    /// Resolve a `[[wiki link]]` to a single absolute note path using the
+    /// **deterministic** FR-019a policy (FFI contract §5 `resolve_wikilink`).
+    ///
+    /// `from_note` is the path of the note containing the link (used for the
+    /// same-directory tie-break); `raw_target` is the link target as typed.
+    /// Delegates to [`emend_core::derived::resolve_wikilink`], which ranks the
+    /// index's candidate set by: same directory as the source → shallowest path →
+    /// lexicographically smallest path. Returns `None` when the target resolves to
+    /// no note — including the v1 case where the target was renamed (links are not
+    /// auto-rewritten, so a stale name is unresolved, never mis-pointed).
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub fn resolve_wikilink(
+        &self,
+        from_note: String,
+        raw_target: String,
+    ) -> Result<Option<String>, FfiError> {
+        let guard = self.lock()?;
+        let index = guard.lock_index()?;
+        Ok(emend_core::derived::resolve_wikilink(
+            &index,
+            &from_note,
+            &raw_target,
+        ))
+    }
+
+    /// Autocomplete suggestions for a `[[` prefix (FFI contract §5
+    /// `wikilink_suggestions`; FR-020): up to `limit` ranked [`SearchHit`]s over
+    /// the index's note names/paths (same ranking as Quick Open).
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub fn wikilink_suggestions(
+        &self,
+        prefix: String,
+        limit: u32,
+    ) -> Result<Vec<SearchHit>, FfiError> {
+        let guard = self.lock()?;
+        let index = guard.lock_index()?;
+        let hits = emend_core::derived::wikilink_suggestions(&index, &prefix, limit as usize);
+        Ok(hits.into_iter().map(search_hit).collect())
+    }
+
     /// Start a streaming, **supersedable** Quick Open query (FFI contract §5
     /// `quick_open_query`; FR-017, FR-018/SC-004, NFR-002).
     ///
@@ -714,6 +760,32 @@ pub fn new_workspace() -> Arc<WorkspaceHandle> {
     Arc::new(WorkspaceHandle::default())
 }
 
+/// Store a dropped media attachment and return the **note-relative** Markdown
+/// reference to insert (FFI contract §2 `store_attachment`; FR-013/FR-013a).
+///
+/// A free function (not a [`WorkspaceHandle`] method): the core
+/// [`emend_core::fs::store_attachment`] keys entirely off the note's path on
+/// disk, needing none of the workspace's in-memory state. `note_path` is the
+/// target note, or `None` when it is still untitled/unsaved (a defined fallback
+/// dir is used; FR-013a). The attachment is written atomically + durably (an
+/// observer never sees a partial file, FR-009a) into an `attachments/`
+/// subdirectory beside the note, with a collision-safe name (`img.png` →
+/// `img 2.png`).
+///
+/// # Errors
+///
+/// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] if the attachments
+/// directory cannot be created or the write fails.
+#[uniffi::export]
+pub fn store_attachment(
+    note_path: Option<String>,
+    bytes: Vec<u8>,
+    suggested_name: String,
+) -> Result<String, FfiError> {
+    emend_core::fs::store_attachment(note_path.as_deref(), &bytes, &suggested_name)
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -723,7 +795,7 @@ mod tests {
         reason = "unit test asserts on its own fixtures"
     )]
 
-    use super::{new_workspace, NodeKind};
+    use super::{new_workspace, store_attachment, NodeKind};
     use crate::error::FfiError;
 
     #[test]
@@ -870,6 +942,69 @@ mod tests {
         // A favorited-then-deleted path is skipped, not surfaced as a broken row.
         ws.delete(note).expect("delete");
         assert!(ws.list_favorites().expect("list").is_empty());
+    }
+
+    #[test]
+    fn resolve_wikilink_and_suggestions_over_the_index() {
+        let ws = new_workspace();
+        ws.rebuild_index(vec![
+            super::IndexEntry {
+                abs_path: "/root/launch-plan.md".to_owned(),
+                rel_path: "launch-plan.md".to_owned(),
+            },
+            super::IndexEntry {
+                abs_path: "/root/launch-post.md".to_owned(),
+                rel_path: "launch-post.md".to_owned(),
+            },
+        ])
+        .expect("rebuild");
+
+        // Exact name resolves to the one note.
+        let resolved = ws
+            .resolve_wikilink("/root/from.md".to_owned(), "launch-plan".to_owned())
+            .expect("resolve");
+        assert_eq!(resolved.as_deref(), Some("/root/launch-plan.md"));
+
+        // A missing target is unresolved (None), never mis-pointed.
+        assert_eq!(
+            ws.resolve_wikilink("/root/from.md".to_owned(), "missing".to_owned())
+                .expect("resolve"),
+            None
+        );
+
+        // Autocomplete suggests both launch-* notes for the `laun` prefix.
+        let hits = ws
+            .wikilink_suggestions("laun".to_owned(), 10)
+            .expect("suggestions");
+        assert!(hits.len() >= 2, "both launch-* notes: {hits:?}");
+        assert!(hits.iter().all(|h| h.name.contains("launch")));
+    }
+
+    #[test]
+    fn store_attachment_writes_and_returns_rel_ref() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, b"# hi").expect("write note");
+
+        let rel = store_attachment(
+            Some(note.to_string_lossy().into_owned()),
+            b"\x89PNG bytes".to_vec(),
+            "image.png".to_owned(),
+        )
+        .expect("store");
+        assert_eq!(rel, "attachments/image.png");
+
+        let stored = dir.path().join("attachments").join("image.png");
+        assert_eq!(std::fs::read(stored).expect("read"), b"\x89PNG bytes");
+
+        // A second drop of the same name is collision-safe.
+        let rel2 = store_attachment(
+            Some(note.to_string_lossy().into_owned()),
+            b"second".to_vec(),
+            "image.png".to_owned(),
+        )
+        .expect("store 2");
+        assert_eq!(rel2, "attachments/image 2.png");
     }
 
     #[test]

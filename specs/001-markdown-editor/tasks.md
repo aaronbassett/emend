@@ -215,11 +215,11 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 **Independent Test**: `[[` autocompletes with paths; click navigates; `![[embed]]` inlines in preview; checkbox click toggles `[ ]`/`[x]`.
 
 - [x] T094 [US5] Create `retro/P7.md`; [GIT] commit
-- [ ] T095 [P] [US5] [test] `crates/emend-core/tests/links.rs`: deterministic resolution for duplicate basenames; rename leaves old links unresolved (FR-019a) (use devs:rust-dev agent)
-- [ ] T096 [P] [US5] [test] `crates/emend-core/tests/embeds.rs`: embed cycle terminates within max depth (FR-021a) (use devs:rust-dev agent)
-- [ ] T097 [US5] Implement `crates/emend-core/src/derived.rs` link/task extraction + `resolve_wikilink`/`wikilink_suggestions`/`toggle_task`; embed resolution with cycle/depth guard in `parse/embed.rs` (use devs:rust-dev agent)
-- [ ] T098 [US5] Implement `store_attachment` (collision-safe, untitled fallback) in `crates/emend-core/src/fs.rs` (FR-013a); export link/task/attachment APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
-- [ ] T099 [GIT] Commit: core links, embeds, tasks, attachments + FFI
+- [x] T095 [P] [US5] [test] `crates/emend-core/tests/links.rs`: deterministic resolution for duplicate basenames; rename leaves old links unresolved (FR-019a) (use devs:rust-dev agent)
+- [x] T096 [P] [US5] [test] `crates/emend-core/tests/embeds.rs`: embed cycle terminates within max depth (FR-021a) (use devs:rust-dev agent)
+- [x] T097 [US5] Implement `crates/emend-core/src/derived.rs` link/task extraction + `resolve_wikilink`/`wikilink_suggestions`/`toggle_task`; embed resolution with cycle/depth guard in `parse/embed.rs` (use devs:rust-dev agent)
+- [x] T098 [US5] Implement `store_attachment` (collision-safe, untitled fallback) in `crates/emend-core/src/fs.rs` (FR-013a); export link/task/attachment APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
+- [x] T099 [GIT] Commit: core links, embeds, tasks, attachments + FFI
 - [ ] T100 [US5] Implement `app/Emend/Emend/Links/WikiLinkAutocomplete.swift` (live `[[` dropdown with paths) + clickable link navigation
 - [ ] T101 [P] [US5] Implement clickable task checkbox attachment + toggle in `app/Emend/Emend/Editor/TaskCheckbox.swift` (FR-014); unresolved-link styling
 - [ ] T102 [P] [US5] Implement embed rendering in preview + inline image drag-drop in `app/Emend/Emend/Editor/ImageDrop.swift`
