@@ -31,6 +31,13 @@ jobs:
         # Compile-verify the Criterion harness (current + future perf benches)
         # without running measurements — perf budgets are tracked, non-blocking.
         run: cargo bench --no-run
+      - name: MSRV check (rust-version 1.85)
+        # The workspace promises rust-version = 1.85; the runner's default stable
+        # is newer and would otherwise mask an MSRV regression (as criterion 0.8,
+        # which needs 1.86, would have). `check` is enough to catch build breaks.
+        run: |
+          rustup toolchain install 1.85 --profile minimal
+          cargo +1.85 check --all
 
   # ---- Swift app (DS-002, DS-006): Apple Silicon runner ----
   swift:
@@ -40,16 +47,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.2.app || true
+      - name: Install Rust (for the core XCFramework)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
       - name: Install Swift tooling
         run: brew install swiftformat swiftlint xcodegen
+      - name: Cache uniffi-bindgen-swift
+        id: cache-bindgen
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen-swift
+          key: uniffi-bindgen-swift-0.31.1-${{ runner.os }}
+      - name: Install uniffi-bindgen-swift
+        if: steps.cache-bindgen.outputs.cache-hit != 'true'
+        run: cargo install uniffi --version 0.31.1 --features cli --bin uniffi-bindgen-swift
       - name: SwiftFormat (lint)
         run: swiftformat app swift --lint
       - name: SwiftLint
         run: swiftlint lint --strict
-      # App build/test — enabled now that the Xcode project exists (T004).
-      # The project is generated reproducibly from app/Emend/project.yml; the
-      # standalone EmendTests bundle runs headless (no GUI launch / signing).
-      # The XCFramework build step is added in Phase 2 once UniFFI is wired.
+      # App build/test — the project is generated reproducibly from
+      # app/Emend/project.yml; the standalone EmendTests bundle runs headless
+      # (no GUI launch / signing). The core XCFramework + Swift bindings are
+      # generated first (they are git-ignored build output of the Rust crate).
+      - name: Build core XCFramework + Swift bindings
+        run: ./scripts/build-xcframework.sh
       - name: Generate Xcode project
         run: xcodegen generate --spec app/Emend/project.yml --project app/Emend
       - name: Build & test app

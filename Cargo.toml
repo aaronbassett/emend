@@ -30,6 +30,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 tokio-util = { version = "0.7", features = ["rt"] }
 # errors
 thiserror = "2"
+# shadow text buffer + UTF-16/line index for the per-keystroke editor hot path
+# (research §A2/§A3). Pinned to the latest STABLE release (1.6.1): its published
+# manifest declares no rust-version, and the upstream master sets MSRV 1.65, so
+# it sits comfortably under the workspace's pinned rust-version = "1.85" (the
+# 2.0.0-beta line is a pre-release and is deliberately NOT used). Default
+# features (`unicode_lines`, `simd`) are NOT inherited here — emend-core opts in
+# to `simd` only and drops `unicode_lines`/`cr_lines` so that only LF and CRLF
+# count as line breaks, matching NSTextView/TextKit line semantics (see
+# crates/emend-core/Cargo.toml).
+ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 # markdown: incremental editor highlight + canonical preview
 tree-sitter = "0.25"
 tree-sitter-md = "0.5"

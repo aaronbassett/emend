@@ -42,8 +42,8 @@ swift-lint:
 xcodeproj:
     xcodegen generate --spec app/Emend/project.yml --project app/Emend
 
-# Build & test the macOS app (regenerates the project first)
-app-test: xcodeproj
+# Build & test the macOS app (builds the core XCFramework + bindings, then regenerates the project)
+app-test: xcframework xcodeproj
     xcodebuild test -project app/Emend/Emend.xcodeproj -scheme Emend -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO
 
 # --- Everything ----------------------------------------------------------

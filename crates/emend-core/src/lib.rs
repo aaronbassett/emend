@@ -15,6 +15,20 @@
 
 pub mod error;
 
+/// Atomic+durable writes and tolerant reads — the byte gateway to notes on disk
+/// (research §B4, FR-003a/FR-009a). Used by the document/autosave layer.
+pub mod fs;
+
+/// Open-document model: the shadow rope + UTF-16/line index behind the editor
+/// hot path (research §A2/§A3, FFI contract §3). Backs `open_document` /
+/// `close_document` / `push_edit` and the offset↔(line,col) queries the
+/// highlight/outline layers build on.
+pub mod document;
+
+/// The crate's primary error type, re-exported at the root for ergonomic use
+/// (`emend_core::EmendError`) by the FFI shim and callers.
+pub use error::EmendError;
+
 /// UTF-16 code-unit text range — the canonical range unit crossing the FFI
 /// boundary so it maps 1:1 onto `NSRange` (research §A2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

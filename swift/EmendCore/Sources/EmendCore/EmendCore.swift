@@ -1,10 +1,18 @@
 // EmendCore — clean Swift API over the Rust core.
 //
-// During /sdd:implement this re-exports the generated UniFFI surface
-// (import EmendCoreFFI) and wraps streaming callbacks/handles in idiomatic
-// Swift (e.g. AsyncStream adapters per research §A1). Skeleton placeholder:
+// Re-exports the UniFFI-generated surface (`EmendCoreFFI`) so consumers
+// `import EmendCore` and get the whole boundary. Idiomatic Swift wrappers
+// (e.g. AsyncStream adapters over the foreign-trait sinks — research §A1) are
+// added here as the corresponding features land.
+
+@_exported import EmendCoreFFI
 
 public enum EmendCore {
-    /// ABI version of the core this package targets.
-    public static let abiVersion: UInt32 = 1
+    /// ABI version reported by the Rust core across the FFI boundary.
+    ///
+    /// Backed by the real `core_abi_version` UniFFI export, so reading it
+    /// exercises the Swift↔Rust round-trip.
+    public static var abiVersion: UInt32 {
+        coreAbiVersion()
+    }
 }

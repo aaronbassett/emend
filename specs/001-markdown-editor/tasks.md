@@ -41,8 +41,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T005 Configure App Sandbox entitlements in `app/Emend/Emend/Emend.entitlements`: `com.apple.security.app-sandbox`, `...files.user-selected.read-write`, `...files.bookmarks.app-scope` (research §A4)
 - [x] T006 [P] Vendor offline preview assets into `app/Emend/Emend/Resources/preview/` (Mermaid.js, KaTeX JS/CSS/fonts, `theme.css`, `template.html`) with a CSP that blocks remote loads (research §C2)
 - [x] T007 [GIT] Commit: add bench crate, Xcode app target, entitlements, and bundled preview assets
-- [ ] T008 [GIT] Push branch to origin (ensure pre-push hooks pass) and open the PR to `main` titled "Emend: Setup complete"
-- [ ] T009 [GIT] Verify all CI checks pass; report PR ready status
+- [x] T008 [GIT] Push branch to origin (ensure pre-push hooks pass) and open the PR to `main` titled "Emend: Setup complete"
+- [x] T009 [GIT] Verify all CI checks pass; report PR ready status
 
 **Checkpoint**: Both toolchains build; app target exists; assets bundled.
 
@@ -54,48 +54,48 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **⚠️ CRITICAL**: No user-story work begins until this phase is complete.
 
-- [ ] T010 Create `specs/001-markdown-editor/retro/P2.md` from the retro template
-- [ ] T011 [GIT] Commit: initialize Phase 2 retro
+- [x] T010 Create `specs/001-markdown-editor/retro/P2.md` from the retro template
+- [x] T011 [GIT] Commit: initialize Phase 2 retro
 
 ### FFI boundary & error model
 
-- [ ] T012 Wire UniFFI in `crates/emend-ffi`: add `uniffi.workspace = true` + build dep, call `uniffi::setup_scaffolding!()`, export `core_abi_version` (use devs:rust-dev agent)
-- [ ] T013 Migrate `crates/emend-core/src/error.rs` `EmendError` to `thiserror`; add its `#[derive(uniffi::Error)]` projection in `crates/emend-ffi/src/error.rs` with all variants from contracts/ffi-interface.md (use devs:rust-dev agent)
-- [ ] T014 [P] Implement panic-containment posture in `crates/emend-ffi/src/lib.rs`: `catch_unwind` wrappers for spawned tokio tasks; document UniFFI's per-export containment (NFR-003) (use devs:rust-dev agent)
-- [ ] T015 [P] [test] Unit test in `crates/emend-ffi/tests/panic_containment.rs`: a forced `panic!` in an export surfaces as `EmendError`, process survives (use devs:rust-dev agent)
-- [ ] T016 Make `scripts/build-xcframework.sh` produce real bindings + `EmendCore.xcframework`; enable the `binaryTarget`/`EmendCoreFFI` target in `swift/EmendCore/Package.swift` with `SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated` (research §A1/§C9)
-- [ ] T017 [GIT] Commit: UniFFI wiring, error model, panic containment, XCFramework build
+- [x] T012 Wire UniFFI in `crates/emend-ffi`: add `uniffi.workspace = true` + build dep, call `uniffi::setup_scaffolding!()`, export `core_abi_version` (use devs:rust-dev agent)
+- [x] T013 Migrate `crates/emend-core/src/error.rs` `EmendError` to `thiserror`; add its `#[derive(uniffi::Error)]` projection in `crates/emend-ffi/src/error.rs` with all variants from contracts/ffi-interface.md (use devs:rust-dev agent)
+- [x] T014 [P] Implement panic-containment posture in `crates/emend-ffi/src/lib.rs`: `catch_unwind` wrappers for spawned tokio tasks; document UniFFI's per-export containment (NFR-003) (use devs:rust-dev agent)
+- [x] T015 [P] [test] Unit test in `crates/emend-ffi/tests/panic_containment.rs`: a forced `panic!` in an export surfaces as `EmendError`, process survives (use devs:rust-dev agent)
+- [x] T016 Make `scripts/build-xcframework.sh` produce real bindings + `EmendCore.xcframework`; enable the `binaryTarget`/`EmendCoreFFI` target in `swift/EmendCore/Package.swift` with `SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated` (research §A1/§C9)
+- [x] T017 [GIT] Commit: UniFFI wiring, error model, panic containment, XCFramework build
 
 ### Core text document substrate (UTF-16 boundary)
 
-- [ ] T018 [P] [test] Tests in `crates/emend-core/tests/document.rs`: UTF-16 offset↔(line,col) mapping incl. astral chars; `push_edit` delta application (use devs:rust-dev agent)
-- [ ] T019 Implement `crates/emend-core/src/document.rs`: shadow rope + UTF-16 line/offset index, `open_document`/`close_document`/`push_edit` (sync, non-blocking) returning a doc handle (research §A2/§A3) (use devs:rust-dev agent)
-- [ ] T020 [GIT] Commit: core document session with UTF-16 mapping
+- [x] T018 [P] [test] Tests in `crates/emend-core/tests/document.rs`: UTF-16 offset↔(line,col) mapping incl. astral chars; `push_edit` delta application (use devs:rust-dev agent)
+- [x] T019 Implement `crates/emend-core/src/document.rs`: shadow rope + UTF-16 line/offset index, `open_document`/`close_document`/`push_edit` (sync, non-blocking) returning a doc handle (research §A2/§A3) (use devs:rust-dev agent)
+- [x] T020 [GIT] Commit: core document session with UTF-16 mapping
 
 ### Atomic file IO + tolerant reads
 
-- [ ] T021 [P] [test] Tests in `crates/emend-core/tests/fs_atomic.rs`: kill-between-temp-and-persist leaves target intact; reader never sees partial; BOM/CRLF/non-UTF-8 read tolerantly (FR-003a/FR-009a) (use devs:rust-dev agent)
-- [ ] T022 Implement `crates/emend-core/src/fs.rs`: atomic+durable write (tempfile→`sync_all`→persist→dir fsync, `F_FULLFSYNC`) and tolerant read (research §B4) (use devs:rust-dev agent)
-- [ ] T023 [GIT] Commit: atomic durable writes + tolerant reads
+- [x] T021 [P] [test] Tests in `crates/emend-core/tests/fs_atomic.rs`: kill-between-temp-and-persist leaves target intact; reader never sees partial; BOM/CRLF/non-UTF-8 read tolerantly (FR-003a/FR-009a) (use devs:rust-dev agent)
+- [x] T022 Implement `crates/emend-core/src/fs.rs`: atomic+durable write (tempfile→`sync_all`→persist→dir fsync, `F_FULLFSYNC`) and tolerant read (research §B4) (use devs:rust-dev agent)
+- [x] T023 [GIT] Commit: atomic durable writes + tolerant reads
 
 ### Runtime, cancellation, streaming scaffolding
 
-- [ ] T024 Implement the tokio runtime + cancellation handle pattern (`CancellationToken`) and foreign-trait sink scaffolding (`SearchSink`, `AiSink`, `DocObserver`) in `crates/emend-ffi/src/handles.rs` (research §A1/§B7) (use devs:rust-dev agent)
-- [ ] T025 [P] Implement Swift wrappers in `swift/EmendCore/Sources/EmendCore/`: error mapping + `AsyncStream` adapters over the foreign-trait sinks
-- [ ] T026 [GIT] Commit: cancellation handles, streaming sinks, Swift adapters
+- [x] T024 Implement the tokio runtime + cancellation handle pattern (`CancellationToken`) and foreign-trait sink scaffolding (`SearchSink`, `AiSink`, `DocObserver`) in `crates/emend-ffi/src/handles.rs` (research §A1/§B7) (use devs:rust-dev agent)
+- [x] T025 [P] Implement Swift wrappers in `swift/EmendCore/Sources/EmendCore/`: error mapping + `AsyncStream` adapters over the foreign-trait sinks
+- [x] T026 [GIT] Commit: cancellation handles, streaming sinks, Swift adapters
 
 ### App shell + sandbox handshake (highest risk — prototype first)
 
-- [ ] T027 Implement `app/Emend/Emend/EmendApp.swift` (single window) + `app/Emend/Emend/Shell/MainWindow.swift` (sidebar | editor | info three-pane skeleton)
-- [ ] T028 Implement `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`: NSOpenPanel → bookmark create/persist/resolve (stale handling); prototype the scope↔Rust file-IO handshake end-to-end (research §A4)
-- [ ] T029 [P] [test] `app/Emend/EmendTests/BookmarkResolutionTests.swift`: bookmark round-trip resolve + stale re-create
-- [ ] T030 [GIT] Commit: app shell + security-scoped bookmark handshake
+- [x] T027 Implement `app/Emend/Emend/EmendApp.swift` (single window) + `app/Emend/Emend/Shell/MainWindow.swift` (sidebar | editor | info three-pane skeleton)
+- [x] T028 Implement `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`: NSOpenPanel → bookmark create/persist/resolve (stale handling); prototype the scope↔Rust file-IO handshake end-to-end (research §A4)
+- [x] T029 [P] [test] `app/Emend/EmendTests/BookmarkResolutionTests.swift`: bookmark round-trip resolve + stale re-create
+- [x] T030 [GIT] Commit: app shell + security-scoped bookmark handshake
 
 ### Phase close
 
-- [ ] T031 Run `/sdd:map incremental` for Phase 2 changes; commit updated `.sdd/codebase/` docs
-- [ ] T032 Review `retro/P2.md`; extract only critical, project-wide learnings to `CLAUDE.md` (conservative)
-- [ ] T033 [GIT] Commit: Phase 2 codebase map + retro
+- [x] T031 Run `/sdd:map incremental` for Phase 2 changes; commit updated `.sdd/codebase/` docs
+- [x] T032 Review `retro/P2.md`; extract only critical, project-wide learnings to `CLAUDE.md` (conservative)
+- [x] T033 [GIT] Commit: Phase 2 codebase map + retro
 - [ ] T034 [GIT] Push; create/update PR with Phase 2 summary; verify CI green; report PR ready status
 
 **Checkpoint**: Foundation ready — user stories can begin.

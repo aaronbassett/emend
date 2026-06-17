@@ -7,10 +7,26 @@ license.workspace = true
 authors.workspace = true
 description = "Emend core engine: files, watching, indexing, Markdown parsing, search, AI client. No FFI dependency — fully testable with `cargo test`."
 
-# NOTE: dependency-free skeleton so the workspace builds/tests offline.
-# /sdd:implement adds members of the catalog in the root [workspace.dependencies],
+# NOTE: kept lean so the workspace builds/tests offline with no FFI toolchain.
+# /sdd:implement adds further members of the catalog in the root
+# [workspace.dependencies] as features land,
 # e.g.:  tokio.workspace = true   comrak.workspace = true   nucleo.workspace = true
 [dependencies]
+# Error type ergonomics (Display/Error derive). Pure-Rust, no FFI dependency —
+# the core MUST NOT depend on `uniffi` (Constitution V); the uniffi projection
+# lives in emend-ffi.
+thiserror.workspace = true
+# Atomic+durable writes (FR-009a, research §B4): a sibling temp file in the
+# target's directory is fsync'd then `persist`ed (atomic rename) over the target.
+# Pure Rust, no `unsafe` at our call sites; the macOS durability guarantee comes
+# from std `File::sync_all` → `fcntl(F_FULLFSYNC)` on Apple targets (see fs.rs).
+tempfile.workspace = true
+# Shadow rope for the document/editor hot path (research §A2/§A3). Backs the
+# `Document` model: efficient incremental splices plus the UTF-16-code-unit ↔
+# char ↔ (line, col) index the FFI boundary answers from. Pure Rust, no FFI dep.
+# `unicode_lines`/`cr_lines` are intentionally disabled (only LF + CRLF are line
+# breaks, matching NSTextView/TextKit); `simd` is kept for hot-path throughput.
+ropey.workspace = true
 
 [lints]
 workspace = true

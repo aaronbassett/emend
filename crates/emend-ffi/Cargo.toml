@@ -13,9 +13,29 @@ crate-type = ["staticlib", "cdylib", "lib"]
 
 [dependencies]
 emend-core = { path = "../emend-core" }
-# Wired by /sdd:implement (offline skeleton omits uniffi until then):
-#   uniffi.workspace = true
-# plus a build-dependency on uniffi and `uniffi::setup_scaffolding!()`.
+# The ONLY crate that depends on uniffi (Constitution V). Pure proc-macro mode:
+# `#[uniffi::export]`, the `#[derive(uniffi::Error)]` projection, and
+# `uniffi::setup_scaffolding!()` need NO build.rs and NO build-dependency — the
+# `build` feature is only for UDL-driven crates (verified against
+# mozilla/uniffi-rs v0.31.1: uniffi/Cargo.toml, examples/arithmetic-procmacro).
+# Default feature `cargo-metadata` is kept on purpose: uniffi-bindgen-swift
+# reads crate metadata when generating Swift bindings from the compiled library.
+uniffi.workspace = true
+# Used for the `#[derive(thiserror::Error)]` on the FFI error projection so the
+# Swift-facing error keeps the same `Display` wording as the core type.
+thiserror.workspace = true
+# Async-infrastructure scaffolding (research §A1): the long-lived multi-thread
+# runtime the core owns for cancellable AI/search work. Features come from the
+# workspace catalog (rt-multi-thread, macros, time, sync). The runtime lives in
+# emend-ffi (not emend-core) because it is part of the boundary's async wiring;
+# emend-core stays toolchain-free for plain `cargo test` (Constitution V / §B8).
+tokio.workspace = true
+# `CancellationToken` backing the Rust-owned cancellation handles (research §A1).
+tokio-util.workspace = true
+
+[dev-dependencies]
+# Temp files for the read_file_at export round-trip test.
+tempfile.workspace = true
 
 [lints]
 workspace = true
