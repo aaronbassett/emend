@@ -13,6 +13,7 @@ import WebKit
 /// links open in the user's browser instead of loading in-page).
 struct PreviewWebView: NSViewRepresentable {
     @ObservedObject var model: PreviewModel
+    let scrollSync: ScrollSync
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -21,9 +22,19 @@ struct PreviewWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // Preview→editor scroll sync: the page posts its top source line here (§C3).
+        config.userContentController.add(context.coordinator, name: "emendScroll")
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
+        context.coordinator.scrollSync = scrollSync
+        // Editor→preview: hand the hub a thin wrapper over the page's scroll entry.
+        scrollSync.attachPreview { [weak webView] line in
+            webView?.evaluateJavaScript(
+                "window.__emendScrollToLine(\(line));",
+                completionHandler: nil
+            )
+        }
         context.coordinator.loadTemplate()
         return webView
     }
@@ -32,12 +43,19 @@ struct PreviewWebView: NSViewRepresentable {
         context.coordinator.render(html: model.html, css: model.themeCSS, version: model.version)
     }
 
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        nsView.configuration.userContentController
+            .removeScriptMessageHandler(forName: "emendScroll")
+        coordinator.scrollSync?.detachPreview()
+    }
+
     /// Owns the `WKWebView`, loads the bundled offline template, and injects each
     /// render via `window.__emendRender` (bridge.js). Main-actor isolated — all
     /// WebKit access is on the main thread.
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
+        var scrollSync: ScrollSync?
         private var isLoaded = false
         private var pending: (html: String, css: String)?
         private var lastVersion = -1
@@ -94,6 +112,24 @@ struct PreviewWebView: NSViewRepresentable {
                 }
                 decisionHandler(.cancel)
             }
+        }
+
+        /// Preview→editor scroll sync: the page posts `{ line }` as it scrolls.
+        func userContentController(
+            _: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "emendScroll",
+                  let body = message.body as? [String: Any] else { return }
+            let line: Int
+            if let value = body["line"] as? Int {
+                line = value
+            } else if let value = body["line"] as? Double {
+                line = Int(value)
+            } else {
+                return
+            }
+            scrollSync?.previewScrolled(toLine: line)
         }
 
         /// Encode a Swift string as a safe JS string literal (quotes + escapes via

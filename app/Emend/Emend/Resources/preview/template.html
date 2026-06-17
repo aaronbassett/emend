@@ -28,8 +28,9 @@
   <script src="mermaid.min.js"></script>
   <script>
     // Mermaid + KaTeX run locally only. The WKWebView host injects rendered
-    // content via window.__emendRender (defined in bridge.js, T087); scroll-sync
-    // anchors are wired in T088.
+    // content via window.__emendRender and drives/receives scroll-sync line
+    // anchors via window.__emendScrollToLine + the "emendScroll" handler
+    // (defined in bridge.js).
     if (window.mermaid) {
       window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
     }

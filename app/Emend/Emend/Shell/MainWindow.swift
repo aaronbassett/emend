@@ -15,6 +15,7 @@ struct MainWindow: View {
     @StateObject private var conflict = ConflictController()
     @StateObject private var quickOpen = QuickOpenModel()
     @StateObject private var preview = PreviewModel()
+    @StateObject private var scrollSync = ScrollSync()
     @State private var showPreview = false
 
     var body: some View {
@@ -41,6 +42,11 @@ struct MainWindow: View {
                 }
                 .help("Show or hide the live preview")
                 .disabled(tabs.active == nil)
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Export PDF", systemImage: "arrow.down.doc", action: exportPDF)
+                    .help("Export the current document to a paginated PDF")
+                    .disabled(tabs.active == nil)
             }
         }
         // ⌘P opens Quick Open (US3, FR-017). A hidden button registers the
@@ -111,7 +117,7 @@ struct MainWindow: View {
                 HSplitView {
                     editorStack
                         .frame(minWidth: 280)
-                    PreviewWebView(model: preview)
+                    PreviewWebView(model: preview, scrollSync: scrollSync)
                         .frame(minWidth: 240)
                 }
             } else {
@@ -154,7 +160,9 @@ struct MainWindow: View {
                         handle: tab.handle,
                         initialText: tab.text,
                         isReadOnly: tab.isReadOnly,
-                        autosave: tab.autosave
+                        autosave: tab.autosave,
+                        scrollSync: scrollSync,
+                        isActive: tab.id == tabs.activeID
                     )
                     .id("\(tab.id)-\(tab.reloadToken)")
                     .opacity(tab.id == tabs.activeID ? 1 : 0)
@@ -198,6 +206,30 @@ struct MainWindow: View {
         ].compactMap(\.self)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         tabs.open(url: url)
+    }
+
+    /// Export the active document to a paginated PDF (US4 · FR-026). Renders the
+    /// preview HTML off-main, then writes via the off-screen print host.
+    private func exportPDF() {
+        guard let tab = tabs.active else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = (tab.name as NSString).deletingPathExtension + ".pdf"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let handle = tab.handle
+        let css = preview.themeCSS
+        Task {
+            do {
+                let html = try await Task.detached { try handle.renderPreviewHtml() }.value
+                try await PDFExport.export(html: html, css: css, to: url)
+                tabs.status = "Exported PDF to “\(url.lastPathComponent)”."
+            } catch {
+                tabs.status = (error as? LocalizedError)?.errorDescription ?? error
+                    .localizedDescription
+            }
+        }
     }
 }
 
