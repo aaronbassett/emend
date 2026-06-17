@@ -50,9 +50,12 @@
 //!   [`FfiError::Internal`] rather than panicking.
 
 use crate::error::FfiError;
+use crate::handles::DocObserver;
 use crate::workspace::WorkspaceHandle;
 use emend_core::derived::{
-    extract_links, toggle_task, LinkKind as CoreLinkKind, LinkRef as CoreLinkRef,
+    extract_links, outline as core_outline, stats as core_stats, toggle_task,
+    DocStats as CoreDocStats, LinkKind as CoreLinkKind, LinkRef as CoreLinkRef,
+    OutlineItem as CoreOutlineItem,
 };
 use emend_core::document::Document;
 use emend_core::parse::highlight::{
@@ -226,6 +229,68 @@ impl From<CoreLinkRef> for LinkRef {
     }
 }
 
+/// Aggregated document stats for the info sidebar (FFI contract §4 `stats`;
+/// FR-029/030). The FFI mirror of [`emend_core::derived::DocStats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct DocStats {
+    /// Word count (FR-029).
+    pub words: u32,
+    /// Character count (Unicode scalar values — FR-029).
+    pub chars: u32,
+    /// Estimated reading time in whole minutes, `ceil(words / 200)` (FR-029).
+    pub reading_minutes: u32,
+    /// Completed task checkboxes (FR-030).
+    pub tasks_done: u32,
+    /// Total task checkboxes (FR-030).
+    pub tasks_total: u32,
+}
+
+impl From<CoreDocStats> for DocStats {
+    fn from(s: CoreDocStats) -> Self {
+        // Destructure exhaustively so a new core field forces a compile error.
+        let CoreDocStats {
+            words,
+            chars,
+            reading_minutes,
+            tasks_done,
+            tasks_total,
+        } = s;
+        Self {
+            words,
+            chars,
+            reading_minutes,
+            tasks_done,
+            tasks_total,
+        }
+    }
+}
+
+/// One heading in the live document outline (FFI contract §4 `outline`;
+/// FR-031/031a). The FFI mirror of [`emend_core::derived::OutlineItem`].
+///
+/// `line` is the 1-based source line number so the editor can scroll to the
+/// heading on click. (The contract sketches `{ level, title, range }`; we carry a
+/// 1-based source **line** instead of a UTF-16 range because the editor scrolls
+/// to a heading by line, and a line is cheaper to compute incrementally than a
+/// range — a documented, strictly-sufficient deviation. See `outline` below.)
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OutlineItem {
+    /// ATX heading level, 1..=6.
+    pub level: u8,
+    /// Heading text (trimmed, closing `#` run removed).
+    pub title: String,
+    /// 1-based source line number (for click→scroll, FR-031).
+    pub line: u32,
+}
+
+impl From<CoreOutlineItem> for OutlineItem {
+    fn from(item: CoreOutlineItem) -> Self {
+        // Destructure exhaustively so a new core field forces a compile error.
+        let CoreOutlineItem { level, title, line } = item;
+        Self { level, title, line }
+    }
+}
+
 /// The mutable state behind one open document: the shadow [`Document`], its
 /// [`Highlighter`] (driven in lock-step by the same `(range, replacement)`
 /// deltas), and the on-disk [`PathBuf`] [`flush`](OpenDocHandle::flush) writes
@@ -239,6 +304,11 @@ struct DocSession {
     path: PathBuf,
     doc: Document,
     highlighter: Highlighter,
+    /// The foreign derived-insight observer, if one was installed via
+    /// [`OpenDocHandle::set_doc_observer`]. Notified ≤300 ms after each edit so the
+    /// info sidebar re-pulls `outline`/`stats`/`links` (FR-031a; FFI contract §4
+    /// `set_doc_observer` / `on_derived_changed`).
+    observer: Option<Arc<dyn DocObserver>>,
 }
 
 /// Open-document handle exported to Swift (FFI contract §3).
@@ -278,6 +348,26 @@ impl OpenDocHandle {
             detail: "document session lock poisoned".to_owned(),
         })
     }
+
+    /// Snapshot the current buffer text (US6 · AI summary input).
+    ///
+    /// Used by [`crate::ai::summarize_document`] to capture the document the AI
+    /// summary runs over **under the lock, then release the lock before any
+    /// network work** — so the (potentially long-running) HTTP request never
+    /// holds the document session lock and the hot edit path stays unblocked.
+    ///
+    /// Not `#[uniffi::export]`ed (it lives in this private `impl` block beside
+    /// [`Self::lock`]) — it is an internal building block the AI shim calls once
+    /// to obtain the request input.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub(crate) fn snapshot_text(&self) -> Result<String, FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        Ok(session.doc.text())
+    }
 }
 
 #[uniffi::export]
@@ -300,21 +390,28 @@ impl OpenDocHandle {
     ///   validates the whole range before mutating either side).
     /// - [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
     pub fn push_edit(&self, range: U16Range, replacement: String) -> Result<(), FfiError> {
-        let mut guard = self.lock()?;
-        let session = guard.as_mut().ok_or_else(closed_handle)?;
-        let core_range: CoreU16Range = range.into();
+        let observer = {
+            let mut guard = self.lock()?;
+            let session = guard.as_mut().ok_or_else(closed_handle)?;
+            let core_range: CoreU16Range = range.into();
 
-        // Apply to the Document first: it performs the same up-front bounds /
-        // surrogate validation as the Highlighter, so if the delta is malformed
-        // this rejects it *before* the (more expensive) incremental reparse and
-        // — crucially — before either side is mutated, so they cannot drift.
-        session.doc.push_edit(core_range, &replacement)?;
+            // Apply to the Document first: it performs the same up-front bounds /
+            // surrogate validation as the Highlighter, so if the delta is malformed
+            // this rejects it *before* the (more expensive) incremental reparse and
+            // — crucially — before either side is mutated, so they cannot drift.
+            session.doc.push_edit(core_range, &replacement)?;
 
-        // Feed the IDENTICAL delta to the highlighter so its rope mirror + tree
-        // track the document. Both consume the same `(U16Range, &str)`, so once
-        // the Document accepted the range the Highlighter will too; mapping any
-        // (unreachable) error keeps the no-panic posture.
-        session.highlighter.apply_edit(core_range, &replacement)?;
+            // Feed the IDENTICAL delta to the highlighter so its rope mirror + tree
+            // track the document. Both consume the same `(U16Range, &str)`, so once
+            // the Document accepted the range the Highlighter will too; mapping any
+            // (unreachable) error keeps the no-panic posture.
+            session.highlighter.apply_edit(core_range, &replacement)?;
+            // Clone the observer (if any) so we can notify AFTER dropping the lock
+            // (callbacks are non-reentrant — FFI contract "Global rules").
+            session.observer.clone()
+            // `guard` drops here, releasing the lock before the notification.
+        };
+        notify_derived_changed(observer.as_ref());
         Ok(())
     }
 
@@ -534,6 +631,66 @@ impl OpenDocHandle {
             .collect())
     }
 
+    /// The document's aggregated [`DocStats`] — word/char counts, reading time,
+    /// and task N-of-M (FFI contract §4 `stats`; FR-029/030).
+    ///
+    /// Snapshots the buffer under the lock and computes the stats with
+    /// [`emend_core::derived::stats`]. Not the hot path (the info-sidebar pulls
+    /// these debounced, FR-031a), so the snapshot under the lock is acceptable.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub fn stats(&self) -> Result<DocStats, FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        let source = session.doc.text();
+        Ok(core_stats(&source).into())
+    }
+
+    /// The document's live heading [`OutlineItem`]s, each with its 1-based source
+    /// line for click→scroll (FFI contract §4 `outline`; FR-031/031a).
+    ///
+    /// Snapshots the buffer under the lock and computes the outline with
+    /// [`emend_core::derived::outline`]. Not the hot path (the info-sidebar pulls
+    /// these debounced, FR-031a).
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub fn outline(&self) -> Result<Vec<OutlineItem>, FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        let source = session.doc.text();
+        Ok(core_outline(&source)
+            .into_iter()
+            .map(OutlineItem::from)
+            .collect())
+    }
+
+    /// Install (or replace) the foreign derived-insight observer for this document
+    /// (FFI contract §4 `set_doc_observer`; FR-031a).
+    ///
+    /// After this, every edit ([`Self::push_edit`], [`Self::toggle_task`]) fires
+    /// [`DocObserver::on_derived_changed`] **after** the edit (and after the lock
+    /// is released — callbacks are non-reentrant), so the Swift info-sidebar
+    /// re-pulls `outline`/`stats`/`links` within the FR-031a budget without
+    /// polling. Passing a new observer replaces the previous one.
+    ///
+    /// The same [`DocObserver`] foreign trait also carries the watcher's
+    /// `on_fs_change`; a Swift implementation that only cares about derived pushes
+    /// can leave `on_fs_change` as a no-op (and vice versa).
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub fn set_doc_observer(&self, observer: Arc<dyn DocObserver>) -> Result<(), FfiError> {
+        let mut guard = self.lock()?;
+        let session = guard.as_mut().ok_or_else(closed_handle)?;
+        session.observer = Some(observer);
+        Ok(())
+    }
+
     /// Toggle the task checkbox on the line containing the UTF-16 offset `at`
     /// (FFI contract §3 `toggle_task`; FR-014 clickable checkbox).
     ///
@@ -555,20 +712,25 @@ impl OpenDocHandle {
     ///   the computed edit is rejected (unreachable — the new text differs only in
     ///   one checkbox char).
     pub fn toggle_task(&self, at: U16Range) -> Result<(), FfiError> {
-        let mut guard = self.lock()?;
-        let session = guard.as_mut().ok_or_else(closed_handle)?;
+        let observer = {
+            let mut guard = self.lock()?;
+            let session = guard.as_mut().ok_or_else(closed_handle)?;
 
-        let old_text = session.doc.text();
-        let new_text = toggle_task(&old_text, at.start)?;
+            let old_text = session.doc.text();
+            let new_text = toggle_task(&old_text, at.start)?;
 
-        // Apply the change as a whole-document replacement delta so the Document
-        // and Highlighter both track it (the toggle changes exactly one char, but
-        // computing a minimal delta here would duplicate the core's line-finding;
-        // a whole-doc replace is correct and the toggle is not the hot path).
-        let full_len = session.doc.len_utf16();
-        let whole = CoreU16Range::new(0, full_len);
-        session.doc.push_edit(whole, &new_text)?;
-        session.highlighter.apply_edit(whole, &new_text)?;
+            // Apply the change as a whole-document replacement delta so the Document
+            // and Highlighter both track it (the toggle changes exactly one char, but
+            // computing a minimal delta here would duplicate the core's line-finding;
+            // a whole-doc replace is correct and the toggle is not the hot path).
+            let full_len = session.doc.len_utf16();
+            let whole = CoreU16Range::new(0, full_len);
+            session.doc.push_edit(whole, &new_text)?;
+            session.highlighter.apply_edit(whole, &new_text)?;
+            session.observer.clone()
+            // `guard` drops here, releasing the lock before the notification.
+        };
+        notify_derived_changed(observer.as_ref());
         Ok(())
     }
 
@@ -598,6 +760,18 @@ impl OpenDocHandle {
 fn closed_handle() -> FfiError {
     FfiError::Internal {
         detail: "document handle is closed".to_owned(),
+    }
+}
+
+/// Fire the derived-insight push (FR-031a), if an observer is installed.
+///
+/// Called by the edit methods **after the session lock is released** so the
+/// foreign callback never re-enters the core while the lock is held (callbacks
+/// are non-reentrant — FFI contract "Global rules"). A no-op when no observer is
+/// set.
+fn notify_derived_changed(observer: Option<&Arc<dyn DocObserver>>) {
+    if let Some(obs) = observer {
+        obs.on_derived_changed();
     }
 }
 
@@ -658,6 +832,7 @@ pub fn open_document(path: String) -> Result<Arc<OpenDocHandle>, FfiError> {
             path,
             doc,
             highlighter,
+            observer: None,
         })),
     }))
 }
@@ -676,7 +851,10 @@ mod tests {
 
     use super::{open_document, preview_theme_css, LinkKind, StyleClass, U16Range};
     use crate::error::FfiError;
+    use crate::handles::DocObserver;
     use crate::workspace::new_workspace;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
     fn u16_len(s: &str) -> u32 {
         u32::try_from(s.encode_utf16().count()).expect("fits in u32")
@@ -1146,6 +1324,122 @@ mod tests {
         handle.close().expect("close");
         assert!(matches!(
             handle.links().expect_err("links after close"),
+            FfiError::Internal { .. }
+        ));
+    }
+
+    #[test]
+    fn stats_reports_words_chars_and_tasks() {
+        // FFI projection of `emend_core::derived::stats` (FR-029/030).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(
+            &dir,
+            "note.md",
+            "# Plan\n\n- [x] ship\n- [ ] celebrate\n\nThree more words.\n",
+        );
+        let handle = open_document(path).expect("open");
+
+        let s = handle.stats().expect("stats");
+        assert!(s.words > 0, "non-empty doc has words: {s:?}");
+        assert!(s.chars > 0);
+        assert_eq!(s.tasks_total, 2);
+        assert_eq!(s.tasks_done, 1);
+        assert!(
+            s.reading_minutes >= 1,
+            "non-empty doc reads in ≥1 min: {s:?}"
+        );
+    }
+
+    #[test]
+    fn outline_reports_headings_with_line_numbers() {
+        // FFI projection of `emend_core::derived::outline` (FR-031/031a).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "# Top\n\n## Section\n\ntext\n");
+        let handle = open_document(path).expect("open");
+
+        let items = handle.outline().expect("outline");
+        assert_eq!(items.len(), 2, "two headings: {items:?}");
+        assert_eq!(items[0].title, "Top");
+        assert_eq!(items[0].level, 1);
+        assert_eq!(items[0].line, 1, "1-based source line");
+        assert_eq!(items[1].title, "Section");
+        assert_eq!(items[1].level, 2);
+        assert_eq!(items[1].line, 3);
+    }
+
+    /// A recording `DocObserver` counting derived-change pushes (FR-031a).
+    #[derive(Default)]
+    struct CountingObserver {
+        derived: AtomicU32,
+    }
+
+    impl DocObserver for CountingObserver {
+        fn on_derived_changed(&self) {
+            self.derived.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_fs_change(&self, _change: crate::watcher::ChangeEvent) {
+            // The derived-insight observer ignores fs changes in this test.
+        }
+    }
+
+    #[test]
+    fn set_doc_observer_fires_on_edit_for_live_derived_push() {
+        // FR-031a: an installed observer is notified after each edit so the info
+        // sidebar re-pulls outline/stats/links live.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "Title\n");
+        let handle = open_document(path).expect("open");
+
+        let obs = Arc::new(CountingObserver::default());
+        handle.set_doc_observer(obs.clone()).expect("set observer");
+
+        // No notification yet.
+        assert_eq!(obs.derived.load(Ordering::SeqCst), 0);
+
+        // Each edit fires exactly one derived-change push.
+        handle
+            .push_edit(U16Range { start: 0, len: 0 }, "# ".to_owned())
+            .expect("edit");
+        assert_eq!(obs.derived.load(Ordering::SeqCst), 1, "edit fires a push");
+
+        handle
+            .push_edit(U16Range { start: 0, len: 0 }, "more ".to_owned())
+            .expect("edit 2");
+        assert_eq!(
+            obs.derived.load(Ordering::SeqCst),
+            2,
+            "second edit fires again"
+        );
+
+        // A task toggle also fires (it is an edit).
+        let path2 = write_note(&dir, "tasks.md", "- [ ] task\n");
+        let handle2 = open_document(path2).expect("open 2");
+        let obs2 = Arc::new(CountingObserver::default());
+        handle2
+            .set_doc_observer(obs2.clone())
+            .expect("set observer 2");
+        handle2
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect("toggle");
+        assert_eq!(
+            obs2.derived.load(Ordering::SeqCst),
+            1,
+            "toggle fires a push"
+        );
+    }
+
+    #[test]
+    fn stats_outline_after_close_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "# Hi\n");
+        let handle = open_document(path).expect("open");
+        handle.close().expect("close");
+        assert!(matches!(
+            handle.stats().expect_err("stats after close"),
+            FfiError::Internal { .. }
+        ));
+        assert!(matches!(
+            handle.outline().expect_err("outline after close"),
             FfiError::Internal { .. }
         ));
     }

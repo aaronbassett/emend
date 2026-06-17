@@ -45,6 +45,49 @@ use crate::index::{Index, SearchHit};
 use crate::{EmendError, U16Range};
 use std::path::Path;
 
+/// Conventional reading speed in words per minute (research §D / spec
+/// Assumptions): `reading_minutes` is `ceil(words / WORDS_PER_MINUTE)`.
+const WORDS_PER_MINUTE: u32 = 200;
+
+/// Aggregated, derived "understand a document at a glance" stats for the info
+/// sidebar (US6 · FR-029/030; FFI contract §4 `stats`).
+///
+/// All counts are over the document's Markdown *source* (the editor buffer), and
+/// are cheap to recompute on each edit (FR-031a). Bundled into one value so the
+/// FFI `stats` export is a single round-trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocStats {
+    /// Word count (whitespace-delimited tokens that contain a letter or digit, so
+    /// bare punctuation runs like `#`/`-`/`**` do not count — FR-029).
+    pub words: u32,
+    /// Character count (Unicode scalar values, i.e. `char`s — not bytes, not
+    /// UTF-16 code units — FR-029).
+    pub chars: u32,
+    /// Estimated reading time in whole minutes, `ceil(words / 200)` (FR-029);
+    /// any non-empty prose is at least 1 minute, an empty document is 0.
+    pub reading_minutes: u32,
+    /// Number of completed task checkboxes (`[x]`/`[X]`) — FR-030.
+    pub tasks_done: u32,
+    /// Total number of task checkboxes (complete + incomplete) — FR-030.
+    pub tasks_total: u32,
+}
+
+/// One heading in the document outline (US6 · FR-031/031a; FFI contract §4
+/// `outline`).
+///
+/// `line` is the **1-based source line** the heading sits on, so the editor can
+/// scroll to that line when the user clicks the outline entry (FR-031). `level`
+/// is the ATX heading level 1..=6.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineItem {
+    /// ATX heading level, 1..=6.
+    pub level: u8,
+    /// The heading text, trimmed and with any closing `#` run removed.
+    pub title: String,
+    /// 1-based source line number of the heading (for click→scroll, FR-031).
+    pub line: u32,
+}
+
 /// Whether a [`LinkRef`] is a navigable link (`[[…]]`) or an inline embed
 /// (`![[…]]`). The FFI mirror of the data-model "LinkRef.kind".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +187,181 @@ pub fn extract_links(source: &str) -> Vec<LinkRef> {
     }
 
     refs
+}
+
+/// Compute the aggregated [`DocStats`] for a document's Markdown `source` (US6 ·
+/// FR-029/030; FFI contract §4 `stats`).
+///
+/// In one pass over the lines this counts:
+/// * **words** — whitespace-delimited tokens containing at least one letter or
+///   digit, so pure Markdown punctuation runs (`#`, `-`, `**`, `>`) do not count
+///   (FR-029);
+/// * **chars** — Unicode scalar values (`char`s) of the whole source (FR-029);
+/// * **tasks** — completed (`[x]`/`[X]`) and total checkbox list items, reusing
+///   the same checkbox recognition as [`toggle_task`] (FR-030).
+///
+/// **reading_minutes** is `ceil(words / 200)` (research §D): a non-empty document
+/// is at least 1 minute, an empty one is 0.
+///
+/// Pure and cheap — recomputable on every edit within the FR-031a budget. Fenced
+/// code blocks are still counted as words/chars (they are document content); only
+/// the *outline* excludes fenced regions ([`outline`]).
+#[must_use]
+pub fn stats(source: &str) -> DocStats {
+    let chars = u32::try_from(source.chars().count()).unwrap_or(u32::MAX);
+
+    let mut words: u32 = 0;
+    let mut tasks_total: u32 = 0;
+    let mut tasks_done: u32 = 0;
+
+    for line in source.lines() {
+        words = words.saturating_add(count_words(line));
+        if let Some(done) = task_completion(line) {
+            tasks_total = tasks_total.saturating_add(1);
+            if done {
+                tasks_done = tasks_done.saturating_add(1);
+            }
+        }
+    }
+
+    let reading_minutes = words.div_ceil(WORDS_PER_MINUTE);
+
+    DocStats {
+        words,
+        chars,
+        reading_minutes,
+        tasks_done,
+        tasks_total,
+    }
+}
+
+/// Count the "words" on a single line: whitespace-delimited tokens that contain
+/// at least one alphanumeric character, so a bare punctuation run (`#`, `-`,
+/// `**`, `>`, `|`) is not counted as a word (FR-029).
+fn count_words(line: &str) -> u32 {
+    let n = line
+        .split_whitespace()
+        .filter(|tok| tok.chars().any(char::is_alphanumeric))
+        .count();
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Whether `line` is a task checkbox list item, and if so its completion state:
+/// `Some(true)` for `[x]`/`[X]`, `Some(false)` for `[ ]`, `None` if the line is
+/// not a task list item at all. Reuses [`find_checkbox`] so the recognition
+/// matches [`toggle_task`] exactly (FR-030/FR-014).
+fn task_completion(line: &str) -> Option<bool> {
+    let bracket = find_checkbox(line)?;
+    // `find_checkbox` guarantees `[<c>]`, so the char between the brackets exists.
+    match line.as_bytes().get(bracket + 1) {
+        Some(b'x' | b'X') => Some(true),
+        Some(b' ') => Some(false),
+        _ => None,
+    }
+}
+
+/// Extract the heading outline from a document's Markdown `source` (US6 ·
+/// FR-031/031a; FFI contract §4 `outline`).
+///
+/// Returns one [`OutlineItem`] per ATX heading (`#`..`######` followed by a
+/// space) in document order, each carrying its level, trimmed title (with any
+/// closing `#` run removed), and **1-based source line number** so the editor can
+/// scroll to it on click (FR-031).
+///
+/// Fenced code blocks (```` ``` ````/`~~~`) are skipped, so a `#` inside a code
+/// block (a shell comment, a C preprocessor directive) is never mistaken for a
+/// heading. Setext headings (`===`/`---` underlines) are not part of the v1
+/// outline — ATX headings are what the editor produces and the dimmed-syntax
+/// surface encourages.
+///
+/// Pure and incremental-friendly: a single line scan, recomputable within the
+/// FR-031a budget.
+#[must_use]
+pub fn outline(source: &str) -> Vec<OutlineItem> {
+    let mut items = Vec::new();
+    let mut in_fence = false;
+    // Track the active fence marker char (` ``` ` vs `~~~`) so a `~~~` opener is
+    // only closed by `~~~`, per CommonMark.
+    let mut fence_char = b'`';
+
+    for (idx, line) in source.lines().enumerate() {
+        // 1-based source line number for click→scroll (FR-031).
+        let line_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+
+        if let Some(marker) = fence_marker(line) {
+            if in_fence {
+                // Inside a fence: only a matching marker closes it.
+                if marker == fence_char {
+                    in_fence = false;
+                }
+            } else {
+                in_fence = true;
+                fence_char = marker;
+            }
+            continue;
+        }
+        if in_fence {
+            continue; // contents of a code block are never headings
+        }
+
+        if let Some((level, title)) = parse_atx_heading(line) {
+            items.push(OutlineItem {
+                level,
+                title,
+                line: line_no,
+            });
+        }
+    }
+
+    items
+}
+
+/// If `line` is a fenced-code-block delimiter (`` ``` `` or `~~~`, optionally
+/// indented up to 3 spaces, optionally with an info string), return its fence
+/// char (`` b'`' `` or `b'~'`); else `None`. Used by [`outline`] to skip fenced
+/// regions so a `#` inside code is not read as a heading.
+fn fence_marker(line: &str) -> Option<u8> {
+    let trimmed = line.trim_start_matches(' ');
+    // CommonMark allows up to 3 leading spaces; more makes it indented code (not
+    // a fence), but treating any indentation as a fence opener is harmless for
+    // the outline's purpose (it still only toggles "skip headings").
+    for (marker, prefix) in [(b'`', "```"), (b'~', "~~~")] {
+        if trimmed.starts_with(prefix) {
+            return Some(marker);
+        }
+    }
+    None
+}
+
+/// Parse `line` as an ATX heading, returning `(level, title)` or `None`.
+///
+/// A valid ATX heading is up to 3 leading spaces, a run of 1..=6 `#`, **at least
+/// one space**, then the title — with an optional trailing run of `#`
+/// (and surrounding spaces) stripped (`## Title ##` → `Title`). `#nospace` is not
+/// a heading (CommonMark requires the space), and a 7+ `#` run is not a heading.
+fn parse_atx_heading(line: &str) -> Option<(u8, String)> {
+    let trimmed = line.trim_start_matches(' ');
+    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let rest = &trimmed[hashes..];
+    // CommonMark: the `#` run must be followed by a space (or end of line for an
+    // empty heading). `#nospace` is a paragraph, not a heading.
+    let after = match rest.strip_prefix(' ') {
+        Some(after) => after,
+        None if rest.is_empty() => rest, // `###` alone is an empty heading
+        None => return None,
+    };
+    // Strip an optional closing `#` run (and the spaces around it): `## T ##`.
+    let title = after
+        .trim_end()
+        .trim_end_matches('#')
+        .trim_end()
+        .trim_start()
+        .to_owned();
+    let level = u8::try_from(hashes).unwrap_or(6);
+    Some((level, title))
 }
 
 /// Resolve a `[[wiki link]]` target to a single absolute note path, using the

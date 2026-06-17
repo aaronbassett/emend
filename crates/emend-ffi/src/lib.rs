@@ -33,6 +33,15 @@ pub mod error;
 pub mod handles;
 pub mod panic;
 
+/// BYOM AI summary FFI projection (T112/T113, US6): the streaming
+/// `summarize_document` + `test_ai_config` exports over reqwest + the shared
+/// `tokio` runtime, the `AiHandle` (`cancel()`/supersede → `AiCancelled`,
+/// NFR-002/FR-036a), and the `AiRequestConfig` record. The transient API key is
+/// wrapped in the core's redacting `ApiKey`, set only on the `Authorization`
+/// header, never logged/persisted (NFR-006). The SSE framing + max-input guard
+/// live in the pure `emend_core::ai`. See `contracts/ffi-interface.md` §7.
+pub mod ai;
+
 /// Streaming, supersedable Quick Open FFI projection (T074, US3): the
 /// `SearchHandle` (`cancel()` supersedes an in-flight query, NFR-002) and the
 /// async driver that runs `emend_core::search::quick_open` on the shared `tokio`

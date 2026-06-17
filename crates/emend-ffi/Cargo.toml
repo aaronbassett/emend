@@ -32,6 +32,19 @@ thiserror.workspace = true
 tokio.workspace = true
 # `CancellationToken` backing the Rust-owned cancellation handles (research §A1).
 tokio-util.workspace = true
+# AI BYOM HTTP client — the NETWORK half of the AI client (research §B5). Lives
+# here (NOT emend-core) so the core stays reqwest-free (Constitution V; CI proves
+# `cargo tree -p emend-core -i reqwest` finds nothing). The streaming summary
+# orchestration drives `reqwest::bytes_stream()` through the core
+# `emend_core::ai::SseParser`, with a per-chunk `tokio::time::timeout` inactivity
+# guard + `CancellationToken`/`tokio::select!` cancellation. macOS-native TLS
+# (`native-tls`), minimal features (see the workspace catalog note).
+reqwest.workspace = true
+# `StreamExt::next` to drain reqwest's `bytes_stream()` chunk-by-chunk.
+futures-util.workspace = true
+# OpenAI-compatible JSON shapes are built/parsed by the core (`emend_core::ai`);
+# emend-ffi needs no serde directly, but `test_ai_config` reads a non-streaming
+# response body (a plain `String`), so no serde dep is required here.
 
 [dev-dependencies]
 # Temp files for the read_file_at export round-trip test.

@@ -135,8 +135,36 @@ notify = "8.2"
 notify-debouncer-full = "0.7"
 # atomic+durable writes
 tempfile = "3"
-# AI / HTTP (BYOM, OpenAI-compatible, SSE streaming)
-reqwest = { version = "0.13", features = ["json", "stream"] }
+# AI / HTTP (BYOM, OpenAI-compatible, SSE streaming) — emend-ffi ONLY (the core
+# stays reqwest-free, Constitution V).
+#
+# MSRV + TLS backend (verified 2026-06-17 against crates.io with the installed
+# 1.85.0 toolchain, NOT from memory): `reqwest 0.13.4` + `hyper 1.10.1` build
+# cleanly under the workspace's pinned rust-version = "1.85". TLS = the
+# **macOS-native** backend (`native-tls` → Security framework via
+# `security-framework 3.7.0`), deliberately NOT rustls/ring (avoids the
+# ring/aws-lc MSRV churn the brief warns about). `default-features = false` drops
+# `default-tls`/`http2`/`json`/etc.; we enable ONLY `stream` (the `bytes_stream()`
+# SSE body) + `native-tls`. No blocking, no cookies. HTTP/1.1 is sufficient for
+# OpenAI-compatible SSE; `http2` is intentionally left off to keep the feature
+# surface (and MSRV exposure) minimal.
+#
+# IMPORTANT — `idna_adapter` pin (below) is LOAD-BEARING for the 1.85 MSRV: the
+# default `idna_adapter 1.2.x` pulls `icu_* 2.x`, which require rustc 1.86. We
+# pin `idna_adapter = "=1.1.0"` (its `unicode-*` backend has a lower MSRV) so the
+# whole reqwest→url→idna tree builds under 1.85 (CI proves it).
+reqwest = { version = "0.13", default-features = false, features = [
+    "stream",
+    "native-tls",
+] }
+# Pin `idna_adapter` to the pre-icu-2.x line so reqwest's url→idna transitive
+# dependency stays ≤ MSRV 1.85 (see the reqwest note above). DO NOT bump without
+# re-running `cargo +1.85.0 check --all`.
+idna_adapter = "=1.1.0"
+# `StreamExt::next` for draining reqwest's `bytes_stream()` (emend-ffi only). Already
+# a transitive dep of reqwest, so this adds nothing to the tree; minimal `std`
+# feature only (no executors). MSRV well under 1.85 (edition-2018, no rust-version).
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # FFI binding generator (only emend-ffi depends on this)
