@@ -124,7 +124,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T048 [GIT] Commit: smart lists, shortcuts, autosave
 - [x] T049 [US1] [test] `app/Emend/EmendTests/EditorPersistenceTests.swift`: drive the real editor coordinator + autosave so typed edits round-trip to disk through the core (headless app-hosted test; XCUITest dropped — its runner cannot bootstrap under CI's `CODE_SIGNING_ALLOWED=NO`, and the project's CI is GUI/signing-free by design, Constitution VII)
 - [x] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
-- [ ] T051 [GIT] Push; create/update PR "US1 (MVP): live editor"; verify CI green; report PR ready status
+- [x] T051 [GIT] Push; create/update PR "US1 (MVP): live editor"; verify CI green; report PR ready status — PR #3 squash-merged to main (code review resolved, CI green)
 
 **Checkpoint**: 🎯 MVP — Emend can open, edit (dimmed syntax + smart lists + shortcuts), and autosave a Markdown file.
 
@@ -136,7 +136,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Add a nested folder, tree renders, open in a tab, rename/move via drag-drop, edit a file externally → app refreshes without manual reload.
 
-- [ ] T052 [US2] Create `retro/P4.md`; [GIT] commit
+- [x] T052 [US2] Create `retro/P4.md`; [GIT] commit
 - [ ] T053 [P] [US2] [test] `crates/emend-core/tests/watcher.rs`: `git mv` → one rename event; autosave → zero external-change callbacks; 10k-file burst is bounded (FR-006a/b) (use devs:rust-dev agent)
 - [ ] T054 [P] [US2] [test] `crates/emend-core/tests/workspace_ops.rs`: collision-safe create/rename/move; conflict truth table (clean→reload, dirty→preserve) (FR-004a/FR-006c) (use devs:rust-dev agent)
 - [ ] T055 [P] [US2] [test] `crates/emend-core/tests/index.rs`: single create/rename/delete updates the index in O(1), no full rescan (FR-017a) (use devs:rust-dev agent)
