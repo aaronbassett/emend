@@ -281,15 +281,15 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Purpose**: Quality, performance, and verification across stories.
 
-- [ ] T130 Create `retro/P10.md`; [GIT] commit
-- [ ] T131 [P] Run all perf benches + Swift `measure` tests; record results vs budgets (SC-002/003/004) in `specs/001-markdown-editor/perf-report.md`; review regressions (tracked, non-blocking per Principle IV) (use devs:rust-dev agent)
-- [ ] T132 [P] Verify bounded memory (NFR-005): closing a tab releases the document buffer — add `app/Emend/EmendTests/MemoryReleaseTests.swift`
-- [ ] T133 [P] Large-file handling (FR-027a): max-size read-only fallback test in `crates/emend-core/tests/large_file.rs` (use devs:rust-dev agent)
-- [ ] T134 [P] Add accessibility identifiers across editor/sidebar/quick-open for XCUITest stability
-- [ ] T135 Security review pass against Principles II/III: audit every outbound call, key handling, and atomic-write path; document in `specs/001-markdown-editor/security-review.md`
-- [ ] T136 [P] Run `quickstart.md` validation end-to-end; fix any drift
+- [x] T130 Create `retro/P10.md`; [GIT] commit
+- [x] T131 [P] Run all perf benches + Swift `measure` tests; record results vs budgets (SC-002/003/004) in `specs/001-markdown-editor/perf-report.md`; review regressions (tracked, non-blocking per Principle IV) (use devs:rust-dev agent)
+- [x] T132 [P] Verify bounded memory (NFR-005): closing a tab releases the document buffer — add `app/Emend/EmendTests/MemoryReleaseTests.swift`
+- [x] T133 [P] Large-file handling (FR-027a): max-size read-only fallback test in `crates/emend-core/tests/large_file.rs` (use devs:rust-dev agent)
+- [x] T134 [P] Add accessibility identifiers across editor/sidebar/quick-open for XCUITest stability
+- [x] T135 Security review pass against Principles II/III: audit every outbound call, key handling, and atomic-write path; document in `specs/001-markdown-editor/security-review.md`
+- [x] T136 [P] Run `quickstart.md` validation end-to-end; fix any drift
 - [ ] T137 [GIT] Commit: performance report, memory/large-file tests, a11y ids, security review
-- [ ] T138 Generate `CHANGELOG.md` from Conventional Commits (DS-007)
+- [x] T138 Generate `CHANGELOG.md` from Conventional Commits (DS-007)
 - [ ] T139 Run final `/sdd:map incremental`; review `retro/P10.md` → CLAUDE.md (conservative); [GIT] commit
 - [ ] T140 [GIT] Push; PR "Polish & cross-cutting"; verify CI green; report PR ready status
 
