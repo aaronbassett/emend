@@ -196,7 +196,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T084 [US4] Implement `crates/emend-core/src/parse/preview.rs` (comrak + line anchors) and `crates/emend-core/src/parse/code_highlight.rs` (syntect classed HTML, lazy binary-dump load from T083a) (research §B1/§B6) (use devs:rust-dev agent)
 - [x] T085 [US4] Export `render_preview_html`/`preview_assets_dir` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [x] T086 [GIT] Commit: core preview rendering + FFI
-- [ ] T087 [US4] Implement `app/Emend/Emend/Preview/PreviewWebView.swift` (WKWebView, offline CSP, nonPersistent store, navigation-blocking delegate, Mermaid/KaTeX) (research §C2)
+- [x] T087 [US4] Implement `app/Emend/Emend/Preview/PreviewWebView.swift` (WKWebView, offline CSP, nonPersistent store, navigation-blocking delegate, Mermaid/KaTeX) (research §C2)
 - [ ] T088 [P] [US4] Implement `app/Emend/Emend/Preview/ScrollSync.swift` (bidirectional `data-line` anchor sync, feedback-loop guard) (research §C3)
 - [ ] T089 [US4] Implement `app/Emend/Emend/Preview/PDFExport.swift` via `NSPrintOperation` on an offscreen WKWebView (paginated, `@media print`) (research §C4)
 - [ ] T090 [GIT] Commit: preview WebView, scroll sync, PDF export

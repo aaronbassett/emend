@@ -14,6 +14,8 @@ struct MainWindow: View {
     @StateObject private var tabs = TabModel()
     @StateObject private var conflict = ConflictController()
     @StateObject private var quickOpen = QuickOpenModel()
+    @StateObject private var preview = PreviewModel()
+    @State private var showPreview = false
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +33,15 @@ struct MainWindow: View {
             ToolbarItem(placement: .secondaryAction) {
                 Button("Add Location", systemImage: "folder.badge.plus") { workspace.addLocation() }
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showPreview.toggle()
+                } label: {
+                    Label("Toggle Preview", systemImage: "rectangle.split.2x1")
+                }
+                .help("Show or hide the live preview")
+                .disabled(tabs.active == nil)
+            }
         }
         // ⌘P opens Quick Open (US3, FR-017). A hidden button registers the
         // shortcut window-wide without occupying the toolbar.
@@ -47,7 +58,12 @@ struct MainWindow: View {
         .task {
             conflict.attach(tabs: tabs, workspace: workspace)
             quickOpen.attach(workspace: workspace.workspace) { url in tabs.open(url: url) }
+            tabs.onDocEdit = { [weak preview] in preview?.scheduleRefresh() }
+            preview.isVisible = showPreview
+            preview.setActiveDocument(tabs.active?.handle)
         }
+        .onChange(of: tabs.activeID) { _, _ in preview.setActiveDocument(tabs.active?.handle) }
+        .onChange(of: showPreview) { _, visible in preview.isVisible = visible }
     }
 
     @ViewBuilder private var quickOpenOverlay: some View {
@@ -91,7 +107,16 @@ struct MainWindow: View {
             if let activeID = tabs.activeID, conflict.isConflicted(activeID) {
                 conflictBanner(activeID)
             }
-            editorStack
+            if showPreview, tabs.active != nil {
+                HSplitView {
+                    editorStack
+                        .frame(minWidth: 280)
+                    PreviewWebView(model: preview)
+                        .frame(minWidth: 240)
+                }
+            } else {
+                editorStack
+            }
         }
         .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
     }
