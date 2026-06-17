@@ -34,11 +34,28 @@ final class WorkspaceNode {
     }
 }
 
+/// Bridges the Rust watcher's `DocObserver` callbacks — delivered on a background
+/// thread — to a `@Sendable` closure. Holds only an immutable closure, so it is
+/// safely `Sendable`.
+final class FsObserver: DocObserver {
+    private let onChange: @Sendable (ChangeEvent) -> Void
+
+    init(onChange: @escaping @Sendable (ChangeEvent) -> Void) {
+        self.onChange = onChange
+    }
+
+    func onDerivedChanged() {}
+    func onFsChange(change: ChangeEvent) {
+        onChange(change)
+    }
+}
+
 /// Owns the Rust `WorkspaceHandle` plus the Swift-side concerns the core can't
 /// hold: the security-scoped folder bookmarks (the sandbox scope Rust reads and
 /// watches inside, research §A4) and their persistence across launches. The
 /// handle is the source of truth for the workspace/index; this model adds the
-/// scope lifecycle and the sidebar's root nodes.
+/// scope lifecycle, the sidebar's root nodes, and per-location file watchers
+/// (FR-006) that live-refresh the tree on external change.
 @MainActor
 final class WorkspaceModel: ObservableObject {
     let workspace: WorkspaceHandle
@@ -48,6 +65,9 @@ final class WorkspaceModel: ObservableObject {
     /// every incidental SwiftUI update — which would collapse expanded folders).
     @Published private(set) var roots: [WorkspaceNode] = []
     @Published private(set) var revision = 0
+    /// Bumped when external filesystem changes need the outline to reload the
+    /// affected (already-loaded) folders — see `consumePendingReloads()`.
+    @Published private(set) var fsRefreshTick = 0
 
     /// Path-keyed app state the core models in memory but does not persist
     /// (favorites/pins/icons). Persisted Swift-side here and replayed into the
@@ -66,7 +86,13 @@ final class WorkspaceModel: ObservableObject {
     /// Per-location: the bookmark (for persistence) and the held security scope.
     private var bookmarks: [UInt64: Data] = [:]
     private var heldScopes: [UInt64: URL] = [:]
+    private var watchers: [UInt64: WatchHandle] = [:]
+    private var pendingReloads: [WorkspaceNode] = []
     private var appState = AppState()
+    private lazy var fsObserver = FsObserver { [weak self] change in
+        Task { @MainActor in self?.handleFsChange(change) }
+    }
+
     /// Stable synthetic root for the Favorites group (stable identity matters for
     /// `NSOutlineView`); its children are refreshed when favorites change.
     private let favoritesGroup = WorkspaceNode(
@@ -148,6 +174,7 @@ final class WorkspaceModel: ObservableObject {
 
     func removeLocation(_ node: WorkspaceNode) {
         guard case let .location(id) = node.kind else { return }
+        if let watcher = watchers.removeValue(forKey: id) { try? watcher.stop() }
         try? workspace.removeLocation(id: id)
         bookmarks.removeValue(forKey: id)
         if let url = heldScopes.removeValue(forKey: id) {
@@ -210,7 +237,43 @@ final class WorkspaceModel: ObservableObject {
         return true
     }
 
-    // MARK: - Private
+    /// Outline nodes whose (already-loaded) children changed on disk and need a
+    /// targeted reload. Cleared on read.
+    func consumePendingReloads() -> [WorkspaceNode] {
+        defer { pendingReloads.removeAll() }
+        return pendingReloads
+    }
+}
+
+// MARK: - Private helpers (in an extension so the main type stays under the
+
+// SwiftLint type-body-length limit as US2 grows).
+
+private extension WorkspaceModel {
+    /// React to an external filesystem change (FR-006): invalidate the affected
+    /// loaded folder(s) and the Favorites group so the outline reloads them.
+    func handleFsChange(_ change: ChangeEvent) {
+        let paths: [String] = switch change {
+        case let .created(path), let .modified(path), let .removed(path):
+            [path]
+        case let .renamed(from, to):
+            [from, to]
+        }
+        var changed = false
+        for path in paths {
+            let parent = URL(fileURLWithPath: path).deletingLastPathComponent().path
+            guard let node = node(withPath: parent) else { continue }
+            node.children = nil
+            pendingReloads.append(node)
+            changed = true
+        }
+        if !appState.favorites.isEmpty {
+            refreshFavorites()
+            pendingReloads.append(favoritesGroup)
+            changed = true
+        }
+        if changed { fsRefreshTick += 1 }
+    }
 
     /// Carry favorite/pin/icon state across a move/rename of `oldPath`. Descendant
     /// paths of a moved folder are not repathed (rare; refreshed on next listing).
@@ -239,6 +302,12 @@ final class WorkspaceModel: ObservableObject {
                 name: location.displayName,
                 kind: .location(id: location.id)
             ))
+            if let watcher = try? startWatching(
+                root: resolved.url.path(percentEncoded: false),
+                observer: fsObserver
+            ) {
+                watchers[location.id] = watcher
+            }
             if persist { persistBookmarks() }
             revision += 1
         } catch {

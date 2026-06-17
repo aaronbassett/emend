@@ -52,6 +52,7 @@ struct WorkspaceOutlineView: NSViewRepresentable {
 
     func updateNSView(_: NSScrollView, context: Context) {
         context.coordinator.syncRootsIfChanged(revision: model.revision)
+        context.coordinator.applyPendingReloads(model.consumePendingReloads())
     }
 }
 
@@ -85,6 +86,15 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         guard revision != lastRevision else { return }
         lastRevision = revision
         outline?.reloadData()
+    }
+
+    /// Targeted reload of folders whose contents changed on disk (FR-006 live
+    /// refresh) — only reloads currently-visible items, preserving expansion.
+    func applyPendingReloads(_ nodes: [WorkspaceNode]) {
+        guard let outline else { return }
+        for node in nodes where outline.row(forItem: node) >= 0 {
+            outline.reloadItem(node, reloadChildren: true)
+        }
     }
 
     // MARK: - NSOutlineViewDataSource
