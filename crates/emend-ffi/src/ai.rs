@@ -41,8 +41,8 @@ use crate::error::FfiError;
 use crate::handles::{try_runtime, AiSink};
 use crate::panic::contain_panic;
 use emend_core::ai::{
-    build_auth_header, build_request_body, chat_completions_url, check_input_size, AiConfig,
-    ApiKey, SseEvent, SseParser, DEFAULT_SUMMARY_SYSTEM_PROMPT,
+    build_auth_header, build_probe_body, build_request_body, chat_completions_url,
+    check_input_size, AiConfig, ApiKey, SseEvent, SseParser, DEFAULT_SUMMARY_SYSTEM_PROMPT,
 };
 use futures_util::StreamExt;
 use std::sync::Arc;
@@ -424,8 +424,10 @@ async fn probe(config: &AiConfig, key: &ApiKey) -> Result<(), FfiError> {
     })?;
     let url = chat_completions_url(&config.base_url);
     let auth = build_auth_header(key);
-    // A 1-token, non-streaming probe — cheap and auth-revealing (FR-037).
-    let body = build_request_body(&config.model, "ping", "ping").map_err(FfiError::from)?;
+    // A 1-token, NON-streaming probe — cheap and auth-revealing (FR-037). The
+    // `stream: false` + `max_tokens: 1` shape comes from the core `build_probe_body`
+    // so "Test Connection" never opens a full streaming generation it won't read.
+    let body = build_probe_body(&config.model, "ping", "ping").map_err(FfiError::from)?;
 
     let response = client
         .post(&url)
@@ -453,8 +455,17 @@ async fn probe(config: &AiConfig, key: &ApiKey) -> Result<(), FfiError> {
 /// Build the shared HTTP client. macOS-native TLS (via the catalog's
 /// `native-tls` feature); no whole-request timeout is set here — streaming uses
 /// the per-chunk timeout in [`stream_body`] (research §B5).
+///
+/// **Redirects are disabled** ([`reqwest::redirect::Policy::none`]): an
+/// OpenAI-compatible `/chat/completions` endpoint never legitimately redirects,
+/// and reqwest's default (follow up to 10) would risk re-attaching the
+/// `Authorization: Bearer <key>` header on a hop to a different host behind a
+/// user-pasted BYOM base URL. Refusing to follow keeps the secret pinned to the
+/// configured origin (privacy hardening, NFR-006).
 fn build_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder().build()
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
 }
 
 /// Map a reqwest transport error to a typed, **key-free** [`FfiError`] (NFR-006).

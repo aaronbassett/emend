@@ -38,8 +38,10 @@ final class InfoModel: ObservableObject {
             if Task.isCancelled { return }
             let computed = await Self.compute(handle)
             if Task.isCancelled { return }
-            guard let self else { return }
-            stats = computed.stats
+            // A failed compute (e.g. handle closed mid-switch) yields nil stats —
+            // leave the previous insight in place rather than clearing the panel.
+            guard let self, let computedStats = computed.stats else { return }
+            stats = computedStats
             outline = computed.outline
         }
     }

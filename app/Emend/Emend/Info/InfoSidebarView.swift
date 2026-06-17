@@ -29,10 +29,8 @@ struct InfoSidebarView: View {
                 .font(.headline)
             statRow("Words", "\(stats.words)")
             statRow("Characters", "\(stats.chars)")
-            statRow(
-                "Reading time",
-                stats.readingMinutes <= 1 ? "1 min" : "\(stats.readingMinutes) min"
-            )
+            // No reading time for a wordless doc (core reports 0) — don't floor to "1 min".
+            statRow("Reading time", stats.words == 0 ? "—" : "\(stats.readingMinutes) min")
             if stats.tasksTotal > 0 {
                 statRow("Tasks", "\(stats.tasksDone) of \(stats.tasksTotal)")
                 ProgressView(value: Double(stats.tasksDone), total: Double(stats.tasksTotal))

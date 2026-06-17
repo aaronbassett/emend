@@ -63,6 +63,10 @@ final class SummaryModel: ObservableObject {
         handle?.cancel()
         handle = nil
         isStreaming = false
+        // Bump the generation so the stream's deferred `AiCancelled` terminal is
+        // treated as a superseded (late) callback and dropped — a user Stop should
+        // leave a clean idle state, not surface an error banner.
+        generation += 1
     }
 
     private func append(_ chunk: String, _ gen: Int) {

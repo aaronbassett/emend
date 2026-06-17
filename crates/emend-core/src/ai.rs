@@ -60,27 +60,32 @@ pub const DEFAULT_SUMMARY_SYSTEM_PROMPT: &str =
 pub struct ApiKey(String);
 
 impl ApiKey {
-    /// Wrap a raw key string. The value is never copied into any logging surface;
-    /// it is only readable via [`expose`](Self::expose).
+    /// Wrap a raw key string, **trimming** surrounding whitespace once at this
+    /// choke point. A pasted key often carries a trailing newline or stray spaces
+    /// (e.g. `"sk-abc\n"`); trimming here guarantees the bytes that later reach
+    /// [`build_auth_header`] form a clean `Bearer <key>` value rather than a
+    /// header corrupted by an embedded `\n`. The value is never copied into any
+    /// logging surface; it is only readable via [`expose`](Self::expose).
     #[must_use]
     pub fn new(key: String) -> Self {
-        Self(key)
+        Self(key.trim().to_owned())
     }
 
-    /// The real secret bytes, for setting the `Authorization` header. This is the
-    /// **only** way to read the key — named explicitly so an accidental
-    /// `{}`/`{:?}` can never surface it (NFR-006).
+    /// The real secret bytes (already trimmed), for setting the `Authorization`
+    /// header. This is the **only** way to read the key — named explicitly so an
+    /// accidental `{}`/`{:?}` can never surface it (NFR-006).
     #[must_use]
     pub fn expose(&self) -> &str {
         &self.0
     }
 
-    /// Whether the key is blank (empty or all-whitespace) — effectively "no key",
-    /// so the FFI layer can map it to [`EmendError::AiNotConfigured`] rather than
-    /// sending an empty bearer token.
+    /// Whether the key is blank — effectively "no key", so the FFI layer can map
+    /// it to [`EmendError::AiNotConfigured`] rather than sending an empty bearer
+    /// token. Since [`new`](Self::new) trims, an all-whitespace input is already
+    /// stored as `""`, so a plain emptiness check suffices.
     #[must_use]
     pub fn is_blank(&self) -> bool {
-        self.0.trim().is_empty()
+        self.0.is_empty()
     }
 }
 
@@ -339,9 +344,13 @@ pub fn build_auth_header(key: &ApiKey) -> String {
 /// Build the JSON request **body** for a streaming summary request, as a
 /// serialized string (pure data; no network).
 ///
-/// Produces an OpenAI Chat-Completions body with `stream: true`, a system
-/// message carrying `system_prompt`, and a user message carrying `document`. The
-/// caller (FFI transport) sets it as the request body.
+/// Produces an OpenAI Chat-Completions body with `stream: true` and **no**
+/// `max_tokens` cap (summaries run to completion), a system message carrying
+/// `system_prompt`, and a user message carrying `document`. The caller (FFI
+/// transport) sets it as the request body.
+///
+/// For the non-streaming, token-capped connection probe, use
+/// [`build_probe_body`] instead; both delegate to [`build_body`].
 ///
 /// # Errors
 ///
@@ -352,9 +361,46 @@ pub fn build_request_body(
     system_prompt: &str,
     document: &str,
 ) -> Result<String, EmendError> {
+    build_body(model, system_prompt, document, true, None)
+}
+
+/// Build the JSON request **body** for the **non-streaming** connection probe
+/// used by `test_ai_config` (FR-037), as a serialized string (pure data; no
+/// network).
+///
+/// Produces an OpenAI Chat-Completions body with `stream: false` and
+/// `max_tokens: 1`: a minimal reachability/auth check that the settings UI awaits
+/// and never streams. Capping at one token keeps "Test Connection" from opening a
+/// full generation it would only throw away.
+///
+/// # Errors
+///
+/// [`EmendError::Internal`] if serialization fails (it does not for these plain
+/// types, but the boundary stays no-panic — NFR-003).
+pub fn build_probe_body(
+    model: &str,
+    system_prompt: &str,
+    document: &str,
+) -> Result<String, EmendError> {
+    build_body(model, system_prompt, document, false, Some(1))
+}
+
+/// Shared body builder behind [`build_request_body`] and [`build_probe_body`].
+///
+/// `stream` toggles the OpenAI `stream` flag; `max_tokens` adds an optional
+/// upper bound on the completion length (omitted from the JSON when `None`, so an
+/// uncapped summary sends no `max_tokens` at all).
+fn build_body(
+    model: &str,
+    system_prompt: &str,
+    document: &str,
+    stream: bool,
+    max_tokens: Option<u32>,
+) -> Result<String, EmendError> {
     let body = ChatRequest {
         model,
-        stream: true,
+        stream,
+        max_tokens,
         messages: vec![
             ChatMessage {
                 role: "system",
@@ -377,6 +423,10 @@ pub fn build_request_body(
 struct ChatRequest<'a> {
     model: &'a str,
     stream: bool,
+    /// Optional completion-length cap. `None` omits the field entirely (uncapped
+    /// summaries); `Some(1)` is the probe's minimal-cost reachability check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     messages: Vec<ChatMessage<'a>>,
 }
 
@@ -398,8 +448,8 @@ mod tests {
     )]
 
     use super::{
-        build_auth_header, build_request_body, chat_completions_url, check_input_size, ApiKey,
-        SseEvent, SseParser,
+        build_auth_header, build_probe_body, build_request_body, chat_completions_url,
+        check_input_size, ApiKey, SseEvent, SseParser,
     };
     use crate::EmendError;
 
@@ -420,6 +470,23 @@ mod tests {
         assert!(!format!("{key}").contains("secret"));
         assert_eq!(format!("{key}"), "***");
         assert_eq!(key.expose(), "sk-secret-123");
+    }
+
+    #[test]
+    fn api_key_trims_surrounding_whitespace_before_exposure() {
+        // M2: a pasted key with a trailing newline / surrounding spaces must be
+        // trimmed once at the boundary so the Authorization header is clean. We
+        // assert via `build_auth_header` (the only sanctioned read path), never by
+        // printing the key — Display/Debug stay redacted.
+        let key = ApiKey::new("  sk-abc\n".to_owned());
+        assert_eq!(build_auth_header(&key), "Bearer sk-abc");
+        // Redaction is unaffected by trimming.
+        assert_eq!(format!("{key}"), "***");
+        assert!(!format!("{key:?}").contains("sk-abc"));
+
+        // An all-whitespace key trims to empty → blank (→ AiNotConfigured upstream).
+        assert!(ApiKey::new("  \n\t ".to_owned()).is_blank());
+        assert!(!ApiKey::new("sk-x".to_owned()).is_blank());
     }
 
     #[test]
@@ -457,6 +524,34 @@ mod tests {
         assert!(body.contains("\"model\":\"m\""));
         assert!(body.contains("\"stream\":true"));
         assert!(body.contains("doc"));
+    }
+
+    #[test]
+    fn summary_body_streams_with_no_token_cap() {
+        // H1: the streaming summary path must keep `stream: true` and send NO
+        // `max_tokens` (summaries run to completion).
+        let body = build_request_body("m", "sys", "doc").expect("body");
+        assert!(body.contains("\"stream\":true"));
+        assert!(
+            !body.contains("max_tokens"),
+            "summary body must not cap tokens, got {body}"
+        );
+    }
+
+    #[test]
+    fn probe_body_is_non_streaming_and_token_capped() {
+        // H1: the connection probe must be `stream: false` with `max_tokens: 1`
+        // (a minimal reachability/auth check, never a full generation).
+        let body = build_probe_body("m", "ping", "ping").expect("body");
+        assert!(
+            body.contains("\"stream\":false"),
+            "probe body must be non-streaming, got {body}"
+        );
+        assert!(
+            body.contains("\"max_tokens\":1"),
+            "probe body must cap at 1 token, got {body}"
+        );
+        assert!(body.contains("\"model\":\"m\""));
     }
 
     #[test]
