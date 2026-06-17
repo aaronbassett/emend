@@ -68,9 +68,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 ### Core text document substrate (UTF-16 boundary)
 
-- [ ] T018 [P] [test] Tests in `crates/emend-core/tests/document.rs`: UTF-16 offset↔(line,col) mapping incl. astral chars; `push_edit` delta application (use devs:rust-dev agent)
-- [ ] T019 Implement `crates/emend-core/src/document.rs`: shadow rope + UTF-16 line/offset index, `open_document`/`close_document`/`push_edit` (sync, non-blocking) returning a doc handle (research §A2/§A3) (use devs:rust-dev agent)
-- [ ] T020 [GIT] Commit: core document session with UTF-16 mapping
+- [x] T018 [P] [test] Tests in `crates/emend-core/tests/document.rs`: UTF-16 offset↔(line,col) mapping incl. astral chars; `push_edit` delta application (use devs:rust-dev agent)
+- [x] T019 Implement `crates/emend-core/src/document.rs`: shadow rope + UTF-16 line/offset index, `open_document`/`close_document`/`push_edit` (sync, non-blocking) returning a doc handle (research §A2/§A3) (use devs:rust-dev agent)
+- [x] T020 [GIT] Commit: core document session with UTF-16 mapping
 
 ### Atomic file IO + tolerant reads
 
