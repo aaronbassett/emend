@@ -22,17 +22,13 @@ struct MarkdownEditorView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
 
+        let textView = Self.makeTextView(baseFont: context.coordinator.baseFont)
         textView.isEditable = !isReadOnly
-        textView.isRichText = false
-        textView.allowsUndo = true
-        textView.isAutomaticQuoteSubstitutionEnabled = false
-        textView.isAutomaticDashSubstitutionEnabled = false
-        textView.isAutomaticTextReplacementEnabled = false
-        textView.font = context.coordinator.baseFont
-        textView.textContainerInset = NSSize(width: 24, height: 24)
 
         // Load the initial text BEFORE wiring the storage delegate, so the load is
         // not mis-read as a user edit (the core already has this text).
@@ -42,10 +38,136 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.textStorage?.delegate = context.coordinator
         context.coordinator.attach(textView)
         context.coordinator.reattribute()
+
+        scrollView.documentView = textView
         return scrollView
     }
 
     func updateNSView(_: NSScrollView, context _: Context) {}
+
+    /// Build a TextKit 2 `MarkdownTextView` (research §C1): an explicit
+    /// `NSTextContentStorage`/`NSTextLayoutManager` stack keeps incremental layout
+    /// while letting us use our `NSTextView` subclass for list/formatting keys.
+    private static func makeTextView(baseFont: NSFont) -> MarkdownTextView {
+        let contentStorage = NSTextContentStorage()
+        let layoutManager = NSTextLayoutManager()
+        contentStorage.addTextLayoutManager(layoutManager)
+
+        let maxDimension = CGFloat.greatestFiniteMagnitude
+        let container = NSTextContainer(size: NSSize(width: 0, height: maxDimension))
+        container.widthTracksTextView = true
+        layoutManager.textContainer = container
+
+        let textView = MarkdownTextView(frame: .zero, textContainer: container)
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.font = baseFont
+        textView.textContainerInset = NSSize(width: 24, height: 24)
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: maxDimension, height: maxDimension)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        return textView
+    }
+}
+
+/// `NSTextView` subclass that turns list/formatting key input into Markdown edits
+/// via the pure `SmartLists`/`FormattingCommands` transforms. Edits go through
+/// `shouldChangeText`/`didChangeText`, so they register undo and reach the Rust
+/// core through the coordinator's storage delegate exactly like typed text.
+final class MarkdownTextView: NSTextView {
+    override func insertNewline(_ sender: Any?) {
+        if handleNewline() { return }
+        super.insertNewline(sender)
+    }
+
+    override func insertTab(_ sender: Any?) {
+        if applyListEdit({ SmartLists.indent(in: $0, selection: $1) }) { return }
+        super.insertTab(sender)
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        if applyListEdit({ SmartLists.outdent(in: $0, selection: $1) }) { return }
+        super.insertBacktab(sender)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleFormattingShortcut(event) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    // MARK: - List editing
+
+    /// Continue/terminate the list on Return, then renumber the affected ordered
+    /// block (grouped as a single undo step). Returns `false` for non-list lines.
+    private func handleNewline() -> Bool {
+        guard isEditable, let storage = textStorage else { return false }
+        guard let edit = SmartLists.newline(
+            in: storage.string as NSString,
+            selection: selectedRange()
+        )
+        else { return false }
+        undoManager?.beginUndoGrouping()
+        apply(range: edit.range, replacement: edit.replacement, selection: edit.selectionAfter)
+        renumberCurrentBlock()
+        undoManager?.endUndoGrouping()
+        return true
+    }
+
+    /// Renumber the ordered block at the caret (no-op for bullet lists). Run after
+    /// inserting a new ordered item so the tail stays sequential.
+    private func renumberCurrentBlock() {
+        guard let storage = textStorage,
+              let edit = SmartLists.renumber(
+                  in: storage.string as NSString,
+                  selection: selectedRange()
+              )
+        else { return }
+        apply(range: edit.range, replacement: edit.replacement, selection: edit.selectionAfter)
+    }
+
+    private func applyListEdit(_ transform: (NSString, NSRange) -> SmartLists.Edit?) -> Bool {
+        guard isEditable, let storage = textStorage else { return false }
+        guard let edit = transform(storage.string as NSString, selectedRange())
+        else { return false }
+        apply(range: edit.range, replacement: edit.replacement, selection: edit.selectionAfter)
+        return true
+    }
+
+    // MARK: - Formatting shortcuts (⌘B / ⌘I / ⌘K / ⌘⇧T)
+
+    private func handleFormattingShortcut(_ event: NSEvent) -> Bool {
+        guard isEditable, let storage = textStorage else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let command = flags == [.command]
+        let commandShift = flags == [.command, .shift]
+        let text = storage.string as NSString
+        let selection = selectedRange()
+        let edit: FormattingCommands.Edit
+        switch key {
+        case "b" where command: edit = FormattingCommands.bold(in: text, selection: selection)
+        case "i" where command: edit = FormattingCommands.italic(in: text, selection: selection)
+        case "k" where command: edit = FormattingCommands.link(in: text, selection: selection)
+        case "t" where commandShift: edit = FormattingCommands.task(in: text, selection: selection)
+        default: return false
+        }
+        apply(range: edit.range, replacement: edit.replacement, selection: edit.selectionAfter)
+        return true
+    }
+
+    // MARK: - Apply
+
+    private func apply(range: NSRange, replacement: String, selection: NSRange) {
+        guard shouldChangeText(in: range, replacementString: replacement) else { return }
+        textStorage?.replaceCharacters(in: range, with: replacement)
+        didChangeText()
+        setSelectedRange(selection)
+    }
 }
 
 /// Owns the per-document editing loop: delta extraction → core `pushEdit` →
