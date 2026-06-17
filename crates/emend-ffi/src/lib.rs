@@ -3,9 +3,11 @@
 //! Thin projection of `emend-core` to Swift. Keep ALL business logic in the
 //! core; this crate holds only `#[uniffi::export]` wrappers, the
 //! `#[derive(uniffi::Error)]` projection of `EmendError` ([`error`]), the
-//! panic-containment posture ([`panic`]), and — in later phases — the
-//! handle/callback types for cancellation and streaming (research §A1, §B7;
-//! contract in `contracts/ffi-interface.md`).
+//! panic-containment posture ([`panic`]), and the async-infrastructure
+//! scaffolding ([`handles`]) — the long-lived `tokio` runtime, the Rust-owned
+//! cancellation handle, and the foreign-trait streaming sinks that later AI /
+//! search tasks plug into (research §A1, §B7; contract in
+//! `contracts/ffi-interface.md`).
 //!
 //! ## UniFFI 0.31 wiring (pure proc-macro mode)
 //!
@@ -17,12 +19,13 @@
 //! becomes the Swift module namespace. We keep the default so the namespace
 //! tracks the crate name.
 //!
-//! `/sdd:implement` (later tasks) adds:
-//!   - `#[uniffi::export]` functions matching `contracts/ffi-interface.md`
-//!   - foreign-trait sinks (`SearchSink`, `AiSink`, `DocObserver`)
-//!   - Rust-owned cancellation handles for async AI/search work.
+//! `/sdd:implement` (later tasks) adds the `#[uniffi::export]` functions that
+//! match `contracts/ffi-interface.md` and drive the [`handles`] sinks; the
+//! sinks, cancellation handle, and runtime accessor themselves live in
+//! [`handles`] as of T024.
 
 pub mod error;
+pub mod handles;
 pub mod panic;
 
 uniffi::setup_scaffolding!();

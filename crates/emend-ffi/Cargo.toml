@@ -24,6 +24,14 @@ uniffi.workspace = true
 # Used for the `#[derive(thiserror::Error)]` on the FFI error projection so the
 # Swift-facing error keeps the same `Display` wording as the core type.
 thiserror.workspace = true
+# Async-infrastructure scaffolding (research §A1): the long-lived multi-thread
+# runtime the core owns for cancellable AI/search work. Features come from the
+# workspace catalog (rt-multi-thread, macros, time, sync). The runtime lives in
+# emend-ffi (not emend-core) because it is part of the boundary's async wiring;
+# emend-core stays toolchain-free for plain `cargo test` (Constitution V / §B8).
+tokio.workspace = true
+# `CancellationToken` backing the Rust-owned cancellation handles (research §A1).
+tokio-util.workspace = true
 
 [lints]
 workspace = true
