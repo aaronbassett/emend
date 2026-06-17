@@ -122,7 +122,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T046 [P] [US1] Implement formatting shortcuts (bold/italic/link/task) in `app/Emend/Emend/Editor/FormattingCommands.swift`
 - [x] T047 [US1] Wire debounced atomic autosave (core `flush`) + self-write suppression in `app/Emend/Emend/Editor/AutosaveController.swift` (FR-009/FR-006a) (use devs:rust-dev agent for the core `flush` export)
 - [x] T048 [GIT] Commit: smart lists, shortcuts, autosave
-- [ ] T049 [US1] [test] `app/Emend/EmendUITests/EditorFlowTests.swift`: type into a doc, confirm text persists round-trip
+- [x] T049 [US1] [test] `app/Emend/EmendTests/EditorPersistenceTests.swift`: drive the real editor coordinator + autosave so typed edits round-trip to disk through the core (headless app-hosted test; XCUITest dropped — its runner cannot bootstrap under CI's `CODE_SIGNING_ALLOWED=NO`, and the project's CI is GUI/signing-free by design, Constitution VII)
 - [ ] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
 - [ ] T051 [GIT] Push; create/update PR "US1 (MVP): live editor"; verify CI green; report PR ready status
 

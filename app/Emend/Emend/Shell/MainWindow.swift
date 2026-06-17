@@ -119,7 +119,10 @@ struct MainWindow: View {
             .text
         ].compactMap(\.self)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        open(url: url)
+    }
 
+    private func open(url: URL) {
         let path = url.path(percentEncoded: false)
         let handle: OpenDocHandle
         do {
