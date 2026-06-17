@@ -225,7 +225,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T102 [P] [US5] Implement embed rendering in preview + inline image drag-drop in `app/Emend/Emend/Editor/ImageDrop.swift`
 - [x] T103 [GIT] Commit: wiki-link autocomplete, checkboxes, embeds, image drop
 - [x] T104 [US5] [test] `app/Emend/EmendUITests/LinksFlowTests.swift`: autocomplete → click navigate → checkbox toggle
-- [ ] T105 [US5] Run `/sdd:map incremental`; review `retro/P7.md` → CLAUDE.md; [GIT] commit
+- [x] T105 [US5] Run `/sdd:map incremental`; review `retro/P7.md` → CLAUDE.md; [GIT] commit
 - [ ] T106 [GIT] Push; PR "US5: links & embeds"; verify CI green; report PR ready status
 
 **Checkpoint**: Linking, embeds, tasks, and image drop work.

@@ -2,7 +2,7 @@
 
 > **Purpose**: Document all external services, APIs, databases, and third-party integrations.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (US5 additions: wiki-links, embeds, tasks, attachments)
 
 ## Data Stores
 
@@ -10,14 +10,16 @@
 
 | Service | Type | Purpose | Configuration |
 |---------|------|---------|----------------|
-| macOS File System | Local Filesystem | Primary note storage (plain `.md` files organized in user-selected folders) | User selects folder(s) via security-scoped bookmarks (research §A4); multiple locations supported (Phase 4 US2) |
+| macOS File System | Local Filesystem | Primary note storage (plain `.md` files organized in user-selected folders); attachments stored in note-relative `attachments/` subdirectories | User selects folder(s) via security-scoped bookmarks (research §A4); multiple locations supported (Phase 4 US2); attachments keyed off note's disk path (Phase 7 US5) |
 
 **Connection Patterns:**
 
 - **Reading**: `emend_core::fs::read_tolerant` (UTF-8 BOM stripping, CRLF preservation, lossy UTF-8 decode)
-- **Writing**: `emend_core::fs::write_atomic` (temp file + fsync + atomic rename + fsync dir for durability)
+- **Writing notes**: `emend_core::fs::write_atomic` (temp file + fsync + atomic rename + fsync dir for durability)
+- **Writing attachments**: `emend_core::fs::store_attachment()` (atomic write to `attachments/` subdir with collision-safe naming, e.g., `image 2.png`; FFI export `/uniffi:store_attachment` — free function; Phase 7 US5)
 - **Watching**: `notify` + `notify-debouncer-full` (FS events debounced 100ms, self-write suppression via FileIdCache; wired Phase 4 US2)
-- **Indexing**: `workspace.rs` (metadata: locations, folders, file tree) + `index.rs` (incremental in-memory search haystack)
+- **Indexing**: `workspace.rs` (metadata: locations, folders, file tree) + `index.rs` (incremental in-memory search haystack with `nucleo-matcher`)
+- **Link/embed/task extraction**: `derived.rs` (pure Markdown scanning, deterministic wiki-link resolution policy, embed expansion guards, task checkbox toggling; Phase 7 US5)
 - **Conflict Detection**: conflict model when files modified externally (wired Phase 4 US2)
 - **No migration**: Plain Markdown; app-managed state lives in `NSUserDefaults` and Keychain
 
@@ -26,7 +28,7 @@
 | Component | Type | Purpose | Implementation |
 |-----------|------|---------|-----------------|
 | `workspace.rs` | In-memory metadata | Workspace state: set of [`Location`]s, per-path favorites, pins, custom folder icons, manual child order | Pure Rust, no FFI/tokio, O(1) file operations via collision-safe naming (`free_name` scheme) |
-| `index.rs` | Search haystack | Incremental in-memory index backed by `nucleo-matcher`: fuzzy matching for Quick Open + wiki-link resolution | Synchronous, arena-based `Vec<Option<Entry>>` + path/name maps; O(1) event dispatch; handles tens-of-thousands of files (FR-018) |
+| `index.rs` | Search haystack | Incremental in-memory index backed by `nucleo-matcher`: fuzzy matching for Quick Open + wiki-link suggestions (Phase 7 US5) | Synchronous, arena-based `Vec<Option<Entry>>` + path/name maps; O(1) event dispatch; handles tens-of-thousands of files (FR-018) |
 | `watcher.rs` | FS event stream | Live file-watcher: detects creates, deletes, renames, moves on disk; surfaces via `WatchHandle` | Thread-based (not tokio) debouncer; conflict state machine; optional user prompt on external changes |
 
 **Conflict Handling (Phase 4 US2):**
@@ -36,6 +38,31 @@ When a file is externally modified while open in Emend, the watcher detects it (
 **Location Identity (NFR-007):**
 
 Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sensitivity delegated to the host filesystem. Symlink cycles bounded by recursion depth + visited-path set.
+
+### Derived Data: Links, Embeds, Tasks (Phase 7 US5)
+
+| Component | Type | Purpose | Implementation |
+|-----------|------|---------|-----------------|
+| `derived.rs` | Per-document analytics | Extract `[[wiki links]]` and `![[embeds]]`, resolve links deterministically, and toggle task checkboxes (FR-014, FR-019/019a, FR-020, FR-021/021a) | Pure `std` — no tokio/uniffi. Three functions: (1) `extract_links()` scans source for link/embed tokens with UTF-16 ranges; (2) `resolve_wikilink()` applies FR-019a tiebreak policy (same-directory → shallowest → lex-smallest) over index candidates, returns `None` for stale links; (3) `toggle_task()` flips `[ ]`↔`[x]` on a line |
+| `parse/embed.rs` | Embed expansion | Recursively splice embedded note sources into the preview document before comrak rendering (FR-021/021a) | Pure source-level pass: replaces `![[Target]]` with target's source text. Two termination guards: (1) cycle detection (stack-based `on_stack` set); (2) depth bound ([`MAX_EMBED_DEPTH`] = 8, research §D). Embeds are a reading aid — unresolved/cyclic/out-of-depth tokens rendered as placeholders, not errors |
+
+**FFI Exports (Phase 7 US5):**
+
+- [`OpenDocHandle::links()`](crates/emend-ffi/src/document.rs) — returns all `[[…]]` + `![[…]]` tokens in the current buffer with UTF-16 ranges (FFI contract §4)
+- [`OpenDocHandle::toggle_task(at: U16Range)`](crates/emend-ffi/src/document.rs) — toggle checkbox on the line containing the UTF-16 offset; applies edit via full-document delta so shadow Document + Highlighter stay in lock-step
+- [`OpenDocHandle::render_preview_html_resolving(workspace:)`](crates/emend-ffi/src/document.rs) — preview engine parameterized by a resolver closure (so embeds can be expanded mid-render via workspace index lookup)
+- [`WorkspaceHandle::resolve_wikilink(from_note, raw_target)`](crates/emend-ffi/src/workspace.rs) — resolve a `[[link]]` using FR-019a policy, returns `Option<String>` absolute path or `None`
+- [`WorkspaceHandle::wikilink_suggestions(prefix, limit)`](crates/emend-ffi/src/workspace.rs) — autocomplete suggestions for `[[` (FFI contract §5 `wikilink_suggestions`; FR-020); returns ranked [`SearchHit`]s from the index
+- [`store_attachment(note_path, bytes, suggested_name)`](crates/emend-ffi/src/workspace.rs) — free function (not a workspace method); writes bytes atomically to `note_path`'s parent dir's `attachments/` subdir with collision-safe naming; returns portable Markdown reference (FFI contract §2; FR-013/013a)
+
+**App-side Integration (Swift):**
+
+- `NSTextView` completion popup on `[[` for wiki-link autocomplete (calls `WorkspaceHandle.wikilink_suggestions()`)
+- Clickable link tokens (`[[Target]]`) resolve via `WorkspaceHandle.resolve_wikilink()` to navigate between notes
+- Dragged media files trigger `store_attachment()` and insert the returned reference into the editor
+- Checkable task lines (`- [ ]` / `- [x]`) call `OpenDocHandle.toggle_task()` on click, auto-update the editor
+- Preview renderer calls `render_preview_html_resolving()` to expand embeds before display
+- Info sidebar / outline (Future, FR-031a) will pull links/embeds/tasks debounced from `OpenDocHandle.links()` for a derived summary
 
 ### App Preferences & Configuration
 
@@ -112,7 +139,7 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 
 | Service | Purpose | Implementation | Status |
 |---------|---------|-----------------|--------|
-| Workspace search index (`nucleo-matcher`) | Fast fuzzy matching for Quick Open + wiki-link resolution (search 10K+ notes instantly) | In-memory arena-based `Index`; synchronous `query()` ranks by basename ≫ path; O(1) event dispatch on create/rename/delete | **WIRED** Phase 4 US2; incremental updates to `index.rs` |
+| Workspace search index (`nucleo-matcher`) | Fast fuzzy matching for Quick Open + wiki-link resolution (search 10K+ notes instantly); reused for wiki-link suggestions (Phase 7 US5) | In-memory arena-based `Index`; synchronous `query()` ranks by basename ≫ path; O(1) event dispatch on create/rename/delete | **WIRED** Phase 4 US2 (Quick Open); Phase 7 US5 (wiki-link suggestions via `wikilink_suggestions()`) |
 
 **Ranking:**
 
@@ -123,18 +150,20 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 **Code Location:**
 
 - `crates/emend-core/src/index.rs` — `Index` struct + `query()` + incremental updates
+- `crates/emend-core/src/derived.rs` — `wikilink_suggestions()` (Phase 7 US5)
 - `crates/emend-ffi/src/index.rs` — FFI `IndexHandle` + `search_index_query()` export
-- `app/Emend/Emend/Tabs/TabModel.swift` + `app/Emend/Emend/Sidebar/WorkspaceModel.swift` — UI consumers (Quick Open, tree rendering)
+- `crates/emend-ffi/src/workspace.rs` — `WorkspaceHandle::wikilink_suggestions()` FFI export (Phase 7 US5)
+- `app/Emend/Emend/Tabs/TabModel.swift` + `app/Emend/Emend/Sidebar/WorkspaceModel.swift` — UI consumers (Quick Open, tree rendering, wiki-link autocomplete)
 
 ---
 
-## Markdown Processing & Preview Rendering (Phase 6 US4)
+## Markdown Processing & Preview Rendering (Phase 6 US4 + Phase 7 US5)
 
 ### Preview Engine (Authoritative)
 
 | Component | Purpose | Technology | Status |
 |-----------|---------|-----------|--------|
-| Preview HTML rendering | Whole-document CommonMark + GFM (tables, tasklist, strikethrough, autolinks) + native extensions (wikilinks, `==highlight==`→`<mark>`) with scroll-sync anchors | `comrak` 0.52 with `render.sourcepos` → `data-line` attributes (research §B1, §C3) | **WIRED** — Phase 6 US4; `crates/emend-core/src/parse/preview.rs`; FFI export `OpenDocHandle::render_preview_html()` |
+| Preview HTML rendering | Whole-document CommonMark + GFM (tables, tasklist, strikethrough, autolinks) + native extensions (wikilinks, `==highlight==`→`<mark>`, embeds via source splice) with scroll-sync anchors | `comrak` 0.52 with `render.sourcepos` → `data-line` attributes (research §C3); embeds expanded by `parse/embed.rs` pre-render pass before comrak (Phase 7 US5, FR-021/021a) | **WIRED** — Phase 6 US4 (Preview + PDF export); Phase 7 US5 (embeds); `crates/emend-core/src/parse/preview.rs`; FFI exports `OpenDocHandle::render_preview_html()` + `render_preview_html_resolving(workspace:)` |
 
 **Key Properties:**
 
@@ -143,11 +172,13 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 - **Scroll-sync anchors**: Each block emits `data-line="<line>"` for editor ↔ preview synchronization (research §C3).
 - **No remote loads**: Embedded URLs are emitted literally; never dereferenced (verified by CSP on Swift side).
 - **Code highlighting**: Fenced code blocks colored by syntect (see below).
+- **Embeds**: Recursive expansion with cycle + depth guards (Phase 7 US5); resolved via closure so the app supplies the resolver (comrak + fs reading are separate concerns).
 
 **Code Location:**
 
-- Core engine: `crates/emend-core/src/parse/preview.rs` — `render_preview_html()`
-- FFI: `crates/emend-ffi/src/document.rs` — method `OpenDocHandle::render_preview_html()` 
+- Core engine: `crates/emend-core/src/parse/preview.rs` — `render_preview_html()` and `render_preview_html_with_embeds()`
+- Embed expansion: `crates/emend-core/src/parse/embed.rs` — `expand_embeds()` pre-render pass with cycle/depth guards
+- FFI: `crates/emend-ffi/src/document.rs` — methods `OpenDocHandle::render_preview_html()` and `render_preview_html_resolving()`
 - Swift: `app/Emend/Emend/Preview/PreviewWebView.swift` — loads HTML into `WKWebView`
 
 ### Code Block Syntax Highlighting (Preview)
@@ -204,17 +235,17 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 
 | Service | Purpose | Configuration | Security |
 |---------|---------|----------------|----------|
-| `WKWebView` (macOS AppKit) | Render comrak preview HTML + bundled Mermaid diagrams + KaTeX math | `nonPersistent` session, navigation delegate (blocks remote loads), CSP header, `loadFileURL` for bundled assets | No remote scripts/images/stylesheets; all resources bundled in app |
+| `WKWebView` (macOS AppKit) | Render comrak preview HTML + bundled Mermaid diagrams + KaTeX math + embedded notes | `nonPersistent` session, navigation delegate (blocks remote loads), CSP header, `loadFileURL` for bundled assets | No remote scripts/images/stylesheets; all resources bundled in app |
 
 **Properties:**
 
-- **Rendering**: Displays `render_preview_html()` output with embedded `<script data-mermaid>` and `<math>` tags from comrak.
+- **Rendering**: Displays `render_preview_html_resolving()` output with embedded `<script data-mermaid>` and `<math>` tags from comrak.
 - **Bundled assets**: Mermaid.js 11.15, KaTeX 0.17 + fonts under `app/Emend/Emend/Resources/preview/`; loaded via `loadFileURL`.
 - **Scroll sync**: `bridge.js` handles editor ↔ preview scroll linking via `data-line` anchors (research §C3).
 - **CSP**: Blocks inline `<script>`, external `src=`, and all `fetch()`; enforced by `theme.css` `<meta>` headers.
 - **User data only**: Renders note HTML; no AI-generated content, no ambient telemetry.
 
-**Implementation Status**: Phase 6 US4 (wired preview); scroll-sync in `PreviewModel.swift`
+**Implementation Status**: Phase 6 US4 (wired preview); Phase 7 US5 (embeds); scroll-sync in `PreviewModel.swift`
 
 **Code Location:**
 
@@ -278,11 +309,11 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 | Service | Purpose | API | Status |
 |---------|---------|-----|--------|
 | Security framework (Keychain) | Secure API key storage | `SecKeychain` C APIs via Swift FFI | **WIRED** — core to AI key management |
-| NSTextView / TextKit 2 | Native editor surface with split-paragraph storage | AppKit / SwiftUI integration + `MarkdownEditorView` NSViewRepresentable | **WIRED** — phase 0 skeleton, Phase 3 US1 MVP (editor transforms) |
+| NSTextView / TextKit 2 | Native editor surface with split-paragraph storage; completion popup for `[[` wiki-link autocomplete | AppKit / SwiftUI integration + `MarkdownEditorView` NSViewRepresentable | **WIRED** — phase 0 skeleton, Phase 3 US1 MVP (editor transforms), Phase 7 US5 (completion popup) |
 | NSOutlineView | Folder/file tree sidebar with expansion/collapse | AppKit | **WIRED** — Phase 4 US2 (`WorkspaceOutlineView.swift`) |
-| WKWebView | Preview rendering + scroll-sync + PDF export | WebKit framework | **WIRED** — Phase 6 US4 (`PreviewWebView.swift`, `PDFExport.swift`) |
+| WKWebView | Preview rendering + scroll-sync + PDF export + embedded note display | WebKit framework | **WIRED** — Phase 6 US4 (`PreviewWebView.swift`, `PDFExport.swift`), Phase 7 US5 (embed rendering) |
 | NSPrintOperation | Paginated PDF export | AppKit | **WIRED** — Phase 6 US4 (`PDFExport.swift`) |
-| Pasteboard | Copy/paste support | `NSPasteboard` API | Planned phase 1–2 |
+| Pasteboard | Copy/paste support + drag-drop for attachments | `NSPasteboard` API | **WIRED** phase 7 US5 (drop→`store_attachment`); copy/paste planned phase 1–2 |
 | Security-scoped bookmarks | Persistent folder access permission | AppKit / Swift Security Framework | **WIRED** — Phase 0, research §A4; resolves on launch to a usable filesystem path |
 
 ---
@@ -311,11 +342,17 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | File watcher overflow | FS event queue saturates (many rapid changes) | Watcher silently misses events; user can manually refresh (FR-006c) |
 | Symlink cycle | User adds folder with symlink loops | Bounded by `max_depth` + visited-path canonicalization set (NFR-007) |
 | Collision on create/rename/move | Target basename already exists | Collision-safe naming appends space + lowest free integer (`note 2.md` scheme, FR-004a) |
+| Collision on attachment drop | Attachment with same name exists in `attachments/` | Collision-safe naming appends space + lowest free integer before extension (`image 2.png` scheme, FR-013a) |
 | AI not configured | User invokes AI feature with no API key | Return `EmendError::AiNotConfigured`; UI shows setup prompt |
 | AI endpoint unreachable | Network error or 5xx response | `EmendError::AiHttp` with redacted status; user can retry or abort |
 | AI SSE malformed | Broken event stream | `EmendError::AiStreamMalformed`; cancel the request gracefully |
 | AI timeout | Request exceeds timeout | `EmendError::AiTimeout`; user can retry |
 | User cancels AI request | Cancel token triggered mid-stream | `EmendError::AiCancelled`; clean shutdown of the stream task |
+| Wiki-link unresolved | Target note not found or renamed | `resolve_wikilink()` returns `None`; editor shows broken-link styling; no auto-rewrite in v1 |
+| Embed unresolved | Embed target not found | Placeholder rendered (not an error); embed is a reading aid, not load-bearing |
+| Embed cycle | `A→B→A` or `A→A` | Cycle detection stops re-entrance; note expands at most once per path |
+| Embed too deep | Nesting exceeds `MAX_EMBED_DEPTH` (8) | Depth-bound stops recursion; token at bound rendered as placeholder |
+| Attachment drop fails | I/O or permission error writing to `attachments/` dir | `EmendError::PermissionDenied` or `EmendError::IoFailure`; user sees error dialog |
 | Preview render fails | Unexpected comrak error | Fall back to plain-text display or re-render |
 | PDF export: template missing | App bundle error | `PDFExport.Failure.templateMissing`; user sees error dialog |
 | PDF export: render failed | WebView fails to load HTML or JS error | `PDFExport.Failure.renderFailed(detail)`; user sees error with details |
@@ -332,9 +369,9 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 - Security policies → `SECURITY.md`
 - Dependency versions and selection → `STACK.md`
 - File system operations / Keychain access patterns → See `crates/emend-core/src/fs.rs`, `crates/emend-core/src/workspace.rs`, `crates/emend-core/src/watcher.rs`, `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`
-- Editor-UI transforms (smart lists, formatting) → `CONVENTIONS.md`
-- Markdown engines (two-engine architecture) → `CONVENTIONS.md` (patterns) & `ARCHITECTURE.md` (design)
+- Editor-UI transforms (smart lists, formatting, task toggling) → `CONVENTIONS.md`
+- Markdown engines (two-engine architecture, embed expansion) → `CONVENTIONS.md` (patterns) & `ARCHITECTURE.md` (design)
 
 ---
 
-*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, or PDF export.*
+*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, or PDF export.*

@@ -2,14 +2,14 @@
 
 > **Purpose**: Document what executes in this codebase — languages, runtimes, frameworks, and critical dependencies.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (US5 additions: links, embeds, tasks, attachments)
 
 ## Languages & Runtimes
 
 | Language | Version | Purpose |
 |----------|---------|---------|
-| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, preview rendering, AI client |
-| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export |
+| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, preview rendering, link/task/embed resolution, AI client |
+| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export, wiki-link autocomplete |
 | C (via UniFFI) | ABI shim | FFI boundary between Rust and Swift |
 
 ## Frameworks
@@ -31,11 +31,11 @@ These packages are actively wired into the runtime:
 | `ropey` | 1.6.1 | Shadow rope for UTF-16/line indexing in the per-keystroke editor hot path | **WIRED** — backing the `Document` model and `Highlighter` rope |
 | `tree-sitter` | 0.26 | Incremental parser runtime for editor-highlight engine (block + inline grammars) | **WIRED** — Phase 3 US1 (Editor MVP), `parse/highlight.rs` |
 | `tree-sitter-md` | 0.5 | Split Markdown grammar (block + inline); wrapped by `MarkdownParser`/`MarkdownTree` | **WIRED** — Phase 3 US1, `parse/highlight.rs` |
-| `comrak` | 0.52 | CommonMark + GFM preview engine (authoritative, whole-document); distinct from tree-sitter editor highlighter ("two engines on purpose") | **WIRED** — Phase 6 US4 (Preview + PDF export), `parse/preview.rs`; rendered via `render_preview_html()` FFI export with comrak's `render.sourcepos` + `data-line` scroll-sync anchors (research §C3) |
+| `comrak` | 0.52 | CommonMark + GFM preview engine (authoritative, whole-document); distinct from tree-sitter editor highlighter ("two engines on purpose"); renders wikilinks natively | **WIRED** — Phase 6 US4 (Preview + PDF export), Phase 7 US5 (embeds), `parse/preview.rs`; rendered via `render_preview_html()` / `render_preview_html_with_embeds()` FFI exports with comrak's `render.sourcepos` + `data-line` scroll-sync anchors (research §C3) |
 | `syntect` | 5.3 | Code-block syntax highlighting (20+ languages) for preview fenced blocks; loads vendored binary `SyntaxSet`/`ThemeSet` dump (`assets/syntaxes-themes.packdump`) | **WIRED** — Phase 6 US4, `parse/code_highlight.rs`; drives `ClassedHTMLGenerator` via `EmendSyntectAdapter` plugged into comrak; theme CSS exported via `preview_theme_css()` FFI |
-| `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename | **WIRED** — used in `fs::write_atomic` |
+| `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename | **WIRED** — used in `fs::write_atomic` and `fs::store_attachment` (Phase 7 US5) |
 | `thiserror` | 2.x | Error type Display/Error derive for `EmendError` enum | **WIRED** — core error handling |
-| `nucleo-matcher` | 0.3.1 | Synchronous fuzzy-matching primitive for workspace search index (lighter than full `nucleo`) | **WIRED** — Phase 4 US2, `index.rs` — in-memory haystack for Quick Open + wiki-link resolution |
+| `nucleo-matcher` | 0.3.1 | Synchronous fuzzy-matching primitive for workspace search index and wiki-link suggestions (lighter than full `nucleo`); used in both Quick Open and link autocomplete | **WIRED** — Phase 4 US2, Phase 7 US5 `derived::wikilink_suggestions()`, `index.rs` — in-memory haystack for Quick Open + wiki-link resolution |
 | `notify` | 8.2 | File system watching (macOS FSEvents recursive watcher) | **WIRED** — Phase 4 US2, `watcher.rs` — detects external note edits and changes |
 | `notify-debouncer-full` | 0.7 | Debounced file watcher with self-write suppression (FileIdCache) | **WIRED** — Phase 4 US2, `watcher.rs` — coalesces FS bursts, prevents echo-back on autosaves |
 
@@ -60,7 +60,7 @@ No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (gener
 
 ### Swift (`app/Emend`)
 
-Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, and tab model are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, and wiki-link `[[` autocomplete (via `NSTextView` completion) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
 
 ### Catalogued but Inert (Not Yet Wired)
 
@@ -90,7 +90,7 @@ These will be imported into `emend-core` as the corresponding user stories land 
 | **OS Target** | macOS 14.0+ (Sonoma+) |
 | **Architecture** | arm64 (Apple Silicon) only |
 | **Deployment** | Native .app bundle (single-window macOS application) |
-| **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for API key) and user defaults |
+| **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for API key) and user defaults; attachments stored in note-relative `attachments/` subdirectories |
 | **No Network by Default** | Zero outbound network unless AI is configured AND invoked by the user |
 
 ## Build Profile
@@ -106,14 +106,18 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 ## Cross-Boundary Semantics
 
 - **Text buffer**: Swift owns the canonical `NSTextStorage`; Rust shadows it with a `ropey::Rope` for off-main-thread queries and incremental tree-sitter highlighting.
-- **Coordinates**: FFI boundary uses **UTF-16 code units** (not UTF-8 offsets) to map 1:1 onto `NSRange` and avoid per-keystroke transcoding (research §A2).
+- **Coordinates**: FFI boundary uses **UTF-16 code units** (not UTF-8 offsets) to map 1:1 onto `NSRange` and avoid per-keystroke transcoding (research §A2). Link/embed token ranges and task checkbox ranges are all UTF-16.
 - **Async wiring**: Rust tokio runtime lives in `emend-ffi`; `emend-core` stays purely synchronous for testability (Constitution V, research §B8).
 - **Two highlight/preview engines** (Constitution guardrail): `tree-sitter-md` (editor, incremental, advisory) ≠ `comrak` (preview, authoritative, whole-document). Never unified.
   - Editor highlight: `tree-sitter-md` (split block + inline grammar) runs incrementally on the per-keystroke hot path (≤50 ms budget, SC-003); is advisory-only (does not affect preview rendering).
   - Preview render: `comrak` (CommonMark + GFM + wikilinks + `==highlight==`) runs off-main on demand; outputs authoritative preview HTML with `render.sourcepos` source-line anchors; fenced code blocks colored by `syntect` via `ClassedHTMLGenerator`.
+  - Embeds expansion: source-level pre-render pass (`parse/embed.rs`) that replaces `![[Target]]` tokens with the referenced note's Markdown before passing to comrak, so embedded content is parsed in the surrounding document's context.
 - **Preview theme CSS**: Syntect's theme dump is vendored (`assets/syntaxes-themes.packdump`); the matching CSS is exported by `preview_theme_css()` FFI and injected by Swift into the WebView template (research §B6).
-- **Workspace and file watching**: `emend-core` provides synchronous workspace metadata (`workspace.rs`) and incremental search index (`index.rs`); file watcher (`notify` + `notify-debouncer-full`) runs on a dedicated `std::thread`, not tokio (Constitution V).
+- **Workspace and file watching**: `emend-core` provides synchronous workspace metadata (`workspace.rs`), incremental search index (`index.rs`), and link/embed/task extraction (`derived.rs`); file watcher (`notify` + `notify-debouncer-full`) runs on a dedicated `std::thread`, not tokio (Constitution V).
 - **PDF export**: `WKWebView` renders comrak HTML off-screen; `NSPrintOperation` paginates it to PDF with `@media print` rules from `theme.css` (research §C4).
+- **Wiki-link resolution**: Deterministic FR-019a policy in `derived::resolve_wikilink()` — same-directory tiebreak → shallowest path → lexicographically smallest. Returns `None` for unresolved/renamed links (stale links are not auto-rewritten in v1).
+- **Attachment storage**: Atomic writes to note-relative `attachments/` subdirectory via `fs::store_attachment()` (reuses `write_atomic_bytes` + `fsync` durability); returns portable Markdown reference for insertion.
+- **Task toggling**: Synchronous line-based toggle of `[ ]`↔`[x]` via `derived::toggle_task()`, applied as a full-document edit delta so the shadow Document and Highlighter stay in lock-step.
 
 ## What Does NOT Belong Here
 

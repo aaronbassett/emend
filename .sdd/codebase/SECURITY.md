@@ -2,11 +2,11 @@
 
 > **Purpose**: Document authentication, authorization, security controls, and vulnerability status.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US4 Phase 6 complete — preview + PDF export security controls)
+> **Last Updated**: 2026-06-17 (US5 Phase 7 complete — embed resolution, links, tasks, attachments with cycle/depth guards and collision-safe storage)
 
 ## Overview
 
-Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US4 Phase 6 (complete)**: faithful Markdown preview with offline bundled Mermaid + KaTeX, PDF export with three-layer privacy enforcement (CSP + nonPersistent store + navigation delegate), comrak HTML escaping as the trust boundary for untrusted markdown input.
+Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US5 Phase 7 (complete)**: wiki-link resolution, embed (`![[…]]`) inlining with cycle + depth guards, task list syntax, and attachment storage with collision-safe naming and path normalization.
 
 ---
 
@@ -122,7 +122,6 @@ Untrusted user Markdown is the threat model; the trust boundary is **comrak's HT
 | **Raw HTML escaping** | comrak default: `unsafe_` = `false`. User-supplied HTML tags are entity-escaped (e.g., `<script>` → `&lt;script&gt;`) | `crates/emend-core/src/parse/preview.rs::build_options()` (line 129) |
 | **Remote URLs emitted as-is** | Image + link URLs are emitted as literal `src=` / `href=` attributes; comrak does **not** dereference them | `crates/emend-core/src/parse/preview.rs::build_options()` (comment lines 131–132) |
 | **Code block syntax highlighting** | Colored code is wrapped in `<span class=…>` (syntect classed HTML, no inline styles or `<script>` | `crates/emend-core/src/parse/code_highlight.rs` (inert until Phase 1 T079) |
-| **No embed processing** | Embed syntax `![[…]]` renders literally; embed resolution (with cycle/depth guards) is deferred to US5 | `crates/emend-core/src/parse/preview.rs::build_options()` (lines 120–123) |
 
 **Verification**: Test suite `crates/emend-core/tests/preview_render.rs` validates that comrak renders GFM, wikilinks, and highlight syntax correctly without injecting extra HTML.
 
@@ -139,6 +138,91 @@ The off-screen PDF export path (`PDFExport`) uses an identical offline template 
 | **Print pagination** | Delegates to `NSPrintOperation` with `@media print` CSS rules in `theme.css` for true multi-page output (avoids `createPDF`'s single-tall-page limitation) | `PDFExport.swift::OffscreenPrintHost.paginate()` (lines 97–120) |
 
 **Privacy guarantee**: PDF export is offline and uses the same isolation (CSP + nonPersistent + offline assets) as the on-screen preview. The printed output is deterministic (Mermaid + KaTeX are bundled and run synchronously in the off-screen view).
+
+---
+
+## Embed Resolution Security (US5)
+
+### Embed Cycle & Depth Guards (FR-021a)
+
+Wiki-link embeds (`![[Target]]`) inline another note's content recursively with two independent termination guards:
+
+| Guard | Mechanism | Implementation | Location |
+|-------|-----------|-----------------|----------|
+| **Cycle detection** | An `on_stack` set of targets currently being expanded on this path. Re-entering a note already on the stack (A→B→A or A→A) is refused; the token is replaced with an unresolved placeholder. | Cycle expands each note **at most once per path** and then stops; prevents infinite loops. | `crates/emend-core/src/parse/embed.rs::expand_embeds()` (lines 107–109, 149–151) |
+| **Depth bound** | Recursion stops at `MAX_EMBED_DEPTH` (default 8 per research §D). A long acyclic chain A→B→C→… is cut off at the bound. | A target at depth `>= MAX_EMBED_DEPTH` is left as an unresolved placeholder (visible, not silently dropped). | `crates/emend-core/src/parse/embed.rs::MAX_EMBED_DEPTH = 8` (line 49) + `expand_inner()` (lines 146–148) |
+| **Unresolved placeholders** | Cyclic, too-deep, or missing targets render as ` *(unresolved embed: {target})*` (italic text, visible to user). | Graceful degradation (FR-022): output is always finite; user sees the embed did not expand. | `crates/emend-core/src/parse/embed.rs::unresolved_placeholder()` (lines 192–194) |
+
+**Verification**: Unit tests in `crates/emend-core/tests/embeds.rs` verify cycle detection, depth bound, and placeholder rendering with synthetic resolver closures.
+
+**Trust boundary**: Embed resolution is a pure source-level transform (no async, no IO in the logic layer). The FFI/preview layer supplies a resolver closure that consults the workspace index + reads files tolerantly, but the recursion and guard logic are unit-testable and contained in `embed.rs`.
+
+### Embed Content Flow
+
+| Stage | Security Posture | Location |
+|-------|------------------|----------|
+| **Resolution** | Resolver closure `(target: &str) -> Option<String>` provided by FFI layer; returns note's raw Markdown source or `None` (unresolved). | `render_preview_html_with_embeds()` → FFI layer wires workspace index + `read_tolerant()` |
+| **Expansion** | Pure string transform: `expand_embeds(source, options, resolve)` splices resolved notes into the Markdown source recursively. | `crates/emend-core/src/parse/embed.rs::expand_embeds()` (lines 84–109) |
+| **Rendering** | Spliced Markdown is handed to comrak for authoritative HTML generation (same HTML escaping as non-embedded content). | `render_html()` → comrak with `unsafe_=false` escaping | `crates/emend-core/src/parse/preview.rs::render_html()` (lines 141–156) |
+
+**Security property**: Embedded note content is subject to the same HTML escaping and XSS protections as inline content. No embed-specific trust boundary: embeds are transparent to comrak (it sees the spliced-together Markdown as one document).
+
+---
+
+## Wiki-Link Resolution (US5)
+
+### Link Target Matching
+
+Wiki-link targets (e.g., `[[Daily Note]]` or `[[notes/daily]]`) are resolved against the workspace index using normalized-name matching:
+
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **Name normalization** | Targets are lowercased and trimmed (matching the index's normalization). Collisions (two notes sharing a basename, e.g., `notes/a.md` and `archive/a.md`) are resolved deterministically by shortest path. | `crates/emend-core/src/index.rs` (Phase 1 T074, deferred) |
+| **Unresolved links** | A target that does not match any note renders as literal `[[Target]]` text in the preview; the Swift editor may provide visual indication (e.g., red underline) in Phase 1. | Graceful degradation per FR-022. |
+| **Relative image refs** | An image `![…](image.png)` inserted on drag-drop is stored as a relative path; comrak emits it as a literal `src=` attribute. The WebView's `baseURL` does not resolve relative image refs (only `file://` absolute paths load images in CSP-constrained WKWebView). | Known gap: relative images don't preview. Follow-up in Phase 1 (local-image preview display). |
+
+**Trust boundary**: Wiki-link resolution is an index lookup (not code execution). No new trust boundary introduced by US5.
+
+---
+
+## Attachment Storage (US5)
+
+### Storage Location & Directory Isolation (FR-013/FR-013a)
+
+Dropped media is written into a security-scoped attachment directory beside the note:
+
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **Subdirectory** | Attachments go into `attachments/` subdirectory of the note's own folder (Obsidian convention). | `crates/emend-core/src/fs.rs::ATTACHMENTS_DIR = "attachments"` (line 64) |
+| **Creation** | Directory is created with `std::fs::create_dir_all(&attach_dir)` (idempotent, no error if exists). | `store_attachment()` (line 191) |
+| **Untitled notes** | For unsaved notes, attachments land in `./attachments/` (current working directory fallback). Swift must relocate them when the note is first saved. | `store_attachment(note_path: None)` → `note_dir = PathBuf::from(".")` (line 187) |
+| **Scope enforcement** | Rust writes within the location's security-scoped bookmark (granted by Swift at location registration). Only files within the bookmark's scope can be written. | Rust FFI calls all go through `emend-ffi` boundary; scope is held by Swift during write. |
+
+**Atomic writes**: All attachment bytes are written via [`write_atomic_bytes`], ensuring the file is never half-written (FR-009a applies to attachments too).
+
+### Collision-Safe Naming (FR-013a)
+
+When a dropped file's name exists in the attachments directory, a suffix is inserted before the extension:
+
+| Case | Behavior | Example |
+|------|----------|---------|
+| **Free name** | Use the suggested name as-is | Drop `photo.png` → stored as `photo.png` |
+| **Collision** | Append ` 2`, ` 3`, … before the extension | Drop `photo.png` (exists) → stored as `photo 2.png` |
+| **No extension** | Suffix appends to the end | Drop `image` (exists) → stored as `image 2` |
+| **Empty/extension-only name** | Use `untitled` as fallback stem | Drop `.png` → stored as `untitled.png`; drop `""` → `untitled` |
+| **Multi-dot names** | Keep only the final extension; ` 2` inserts before the final dot | Drop `archive.tar.gz` (exists) → stored as `archive.tar 2.gz` |
+
+**Location**: `crates/emend-core/src/fs.rs::free_name()` (lines 234–261) + `sanitize_attachment_name()` (lines 207–224)
+
+**Path normalization**: The returned string uses forward slashes (portable Markdown) regardless of the host separator, e.g., `attachments/photo 2.png` (never `attachments\photo 2.png` on Windows-like systems).
+
+### Attachment Reference in Markdown
+
+| Aspect | Format | Location |
+|--------|--------|----------|
+| **Insertion** | Note-relative path with forward slashes, formatted as a Markdown image: `![…](attachments/<chosen-name>)` | `store_attachment()` returns the reference string; Swift inserts it. |
+| **Preview rendering** | comrak renders the relative `src=` attribute literally (does not dereference). WebView receives the relative path but CSP + navigation delegate prevent loading. | Known gap: local image refs don't preview; Phase 1 follow-up to use security-scoped `file://` URLs. |
+| **Lossless round-trip** | The relative reference is stored in the note's Markdown source; on open, the path remains intact (no normalization of slashes). | `write_atomic()` preserves the note text exactly. |
 
 ---
 
@@ -238,8 +322,10 @@ All fallible operations return `Result<T, EmendError>`:
 | **File content (write)** | Atomic write via tempfile; no special escaping (Markdown is plain text) | `crates/emend-core/src/fs.rs::write_atomic` | ✅ Implemented |
 | **Markdown syntax (edit)** | tree-sitter (editor) handles malformed input gracefully (incremental reparse, no crash) | `crates/emend-core/src/parse.rs` | Phase 1 T072 |
 | **Markdown syntax (preview)** | comrak (CommonMark) handles malformed input gracefully (no crash, renders as-is) with HTML escaping (no raw user HTML) | `crates/emend-core/src/parse/preview.rs` | ✅ US4 T084 (implemented) |
-| **Wiki links** | Resolved deterministically by name + path; unresolved links marked visually | `crates/emend-core/src/index.rs` | Phase 1 T074 |
-| **Embed depth** | Max depth of 8 enforced; cycles detected and stopped | `crates/emend-core/src/parse.rs` | Phase 1 T080 |
+| **Wiki links** | Resolved deterministically by name + path; unresolved links marked visually; no `..` traversal | `crates/emend-core/src/index.rs` | Phase 1 T074 |
+| **Embed cycles** | Max depth of 8 enforced; cycles detected and stopped; unresolved embeds render as visible placeholders | `crates/emend-core/src/parse/embed.rs` | ✅ US5 (implemented) |
+| **Embed targets** | Normalized (lowercased, trimmed) before lookup; resolver closure fails gracefully (returns `None`) if unresolved | `crates/emend-core/src/parse/embed.rs::normalize_target()` | ✅ US5 (implemented) |
+| **Attachment names** | Sanitized: only the final path component used (strip directory parts), empty/extension-only names use fallback stem | `crates/emend-core/src/fs.rs::sanitize_attachment_name()` | ✅ US5 (implemented) |
 
 ### AI Input (Deferred to Phase 1)
 
@@ -352,6 +438,11 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | **Bookmark resolution** | Add folder, quit, relaunch → reads + watches without new prompt | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | ✅ Implemented (plain bookmarks, unsandboxed test) |
 | **Bookmark scope lifecycle** | Stale bookmark re-creation, balanced start/stop calls | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | ✅ Implemented |
 | **Path identity** | Symlink cycles terminated; same file via two paths has one identity | `crates/emend-core/tests/workspace_ops.rs` (Phase 1 T048) | Headless test ready; manual signed-app test pending |
+| **Embed cycles** | A→B→A → both notes inline once, then stop; A→A → stops at A | `crates/emend-core/tests/embeds.rs` | ✅ US5 (implemented) |
+| **Embed depth bound** | Chain A→B→C→…→H→I at depth 8 stops at H; I is unresolved placeholder | `crates/emend-core/tests/embeds.rs` | ✅ US5 (implemented) |
+| **Embed unresolved** | Missing target renders as placeholder `*(unresolved embed: Target)*` | `crates/emend-core/tests/embeds.rs` | ✅ US5 (implemented) |
+| **Attachment naming** | Collisions: `photo.png` exists → store as `photo 2.png`; empty name → `untitled` | `crates/emend-core/src/fs.rs` (unit tests) | ✅ US5 (implemented) |
+| **Attachment atomic write** | Bytes written atomically; half-written files impossible | `write_atomic_bytes()` uses tempfile + rename | ✅ US5 (implemented) |
 | **Self-write suppression** | Post-persist `(mtime,len)` suppresses matching event; third-party edits not suppressed | `crates/emend-core/tests/watcher_unit.rs` (planned Phase 1 T066) | Deferred to Phase 1 |
 | **Conflict resolution** | Clean buffer + external change → reload; dirty buffer + external change → preserve local + flag | `crates/emend-core/tests/watcher_unit.rs` (planned Phase 1 T067) | Deferred to Phase 1 |
 | **Preview offline (core path)** | Markdown render is a pure `&str -> String` function; remote URLs emitted as literal `src=`/`href=` (never fetched) | `crates/emend-core/tests/preview_offline.rs` | ✅ US4 T083 (implemented) |
@@ -372,7 +463,8 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 5. **Performance regression testing** for incremental parsing is deferred (tracked in TD-002).
 6. **Folder move re-pathing** for descendants' favorite/pin state is deferred (known limitation captured in CONCERNS.md).
 7. **Preview scroll-sync runtime path** (Section §C3): the pure core logic for data-line anchors is tested; the runtime integration (editor↔preview scroll sync) requires manual UI verification in the signed app.
-8. **Embed resolution** (`![[…]]` with cycle/depth guards) is deferred to US5 and will require a future security review of embed trust boundaries.
+8. **Relative image preview** for drag-dropped attachments: relative refs stored correctly; preview display deferred to Phase 1 (local-image preview).
+9. **Wiki-link ambiguity resolution** is deterministic (shortest path wins) but may surprise users; a future UI enhancement could disambiguate.
 
 ---
 
