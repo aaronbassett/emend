@@ -1,7 +1,14 @@
 import AppKit
+import Combine
 import EmendCore
 import SwiftUI
 import UniformTypeIdentifiers
+
+private extension Notification.Name {
+    /// Posted by `AutosaveController.onError` so the window can surface a failed
+    /// flush in the status area (Constitution III — never lose data silently).
+    static let emendAutosaveFailed = Notification.Name("com.aaronbassett.Emend.autosaveFailed")
+}
 
 /// The single-window three-pane shell: locations sidebar | editor | info.
 ///
@@ -47,6 +54,25 @@ struct MainWindow: View {
                 Button("Add Location", systemImage: "folder.badge.plus", action: addLocation)
             }
         }
+        // Durability (FR-009/FR-009a): flush pending edits before the app quits or
+        // the window closes, since autosave is otherwise only debounced.
+        .onReceive(willTerminatePublisher) { _ in openDoc?.autosave.flushNow() }
+        .onReceive(willClosePublisher) { _ in openDoc?.autosave.flushNow() }
+        .onReceive(autosaveFailedPublisher) { note in
+            if let message = note.userInfo?["message"] as? String { status = message }
+        }
+    }
+
+    private var willTerminatePublisher: NotificationCenter.Publisher {
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+    }
+
+    private var willClosePublisher: NotificationCenter.Publisher {
+        NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)
+    }
+
+    private var autosaveFailedPublisher: NotificationCenter.Publisher {
+        NotificationCenter.default.publisher(for: .emendAutosaveFailed)
     }
 
     private var sidebar: some View {
@@ -142,12 +168,25 @@ struct MainWindow: View {
             previous.autosave.flushNow()
             try? previous.handle.close()
         }
+        let autosave = AutosaveController(handle: handle)
+        // Surface a failed flush instead of dropping it (Constitution III). The
+        // callback runs on the autosave queue, so hop to the main actor.
+        autosave.onError = { error in
+            let message = error.userMessage
+            Task { @MainActor in
+                NotificationCenter.default.post(
+                    name: .emendAutosaveFailed,
+                    object: nil,
+                    userInfo: ["message": message]
+                )
+            }
+        }
         openDoc = OpenDocument(
             name: url.lastPathComponent,
             handle: handle,
             text: text,
             isReadOnly: false,
-            autosave: AutosaveController(handle: handle)
+            autosave: autosave
         )
         status = "Editing “\(url.lastPathComponent)”."
     }

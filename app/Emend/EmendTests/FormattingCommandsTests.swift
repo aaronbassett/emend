@@ -56,6 +56,26 @@ final class FormattingCommandsTests: XCTestCase {
         XCTAssertEqual(applied(edit, to: text), "*hi*")
     }
 
+    func testItalicOnBareDoubleAsteriskIsNotDeleted() {
+        // "**" selected with the italic marker "*" must NOT unwrap to "" (data loss).
+        let text = "**"
+        let edit = FormattingCommands.italic(
+            in: text as NSString,
+            selection: NSRange(location: 0, length: 2)
+        )
+        XCTAssertNotEqual(applied(edit, to: text), "")
+    }
+
+    func testBoldOnBareMarkersIsNotDeleted() {
+        // "****" selected with the bold marker "**" must NOT unwrap to "" (data loss).
+        let text = "****"
+        let edit = FormattingCommands.bold(
+            in: text as NSString,
+            selection: NSRange(location: 0, length: 4)
+        )
+        XCTAssertNotEqual(applied(edit, to: text), "")
+    }
+
     // MARK: - Link
 
     func testLinkWrapsSelectionAndSelectsURL() {

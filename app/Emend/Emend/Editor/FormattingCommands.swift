@@ -92,8 +92,10 @@ enum FormattingCommands {
         let markerLength = (marker as NSString).length
         let selected = text.substring(with: selection) as NSString
 
-        // The selection itself spans the markers: "**word**" → "word".
-        let spansMarkers = selected.length >= 2 * markerLength
+        // The selection itself spans the markers with non-empty inner content:
+        // "**word**" → "word". Strict `>` (not `>=`) so a bare "**"/"*" selection
+        // isn't treated as an empty wrap and silently deleted.
+        let spansMarkers = selected.length > 2 * markerLength
             && selected.hasPrefix(marker) && selected.hasSuffix(marker)
         if spansMarkers {
             let innerLength = selected.length - 2 * markerLength
