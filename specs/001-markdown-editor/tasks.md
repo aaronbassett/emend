@@ -238,20 +238,20 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Info sidebar shows stats/tasks/outline live; with no AI config nothing is sent externally; configure an OpenAI-compatible model → summary appears.
 
-- [ ] T107 [US6] Create `retro/P8.md`; [GIT] commit
-- [ ] T108 [P] [US6] [test] `crates/emend-core/tests/derived_stats.rs`: word/char/reading-time + N-of-M tasks + outline; live update ≤300ms (FR-029/030/031a) (use devs:rust-dev agent)
-- [ ] T109 [P] [US6] [test] `crates/emend-core/tests/ai_sse.rs`: SSE parse with `data:` split across chunks + `[DONE]`; cancel stops emission; oversized input rejected before send (FR-036a) (use devs:rust-dev agent)
-- [ ] T110 [P] [US6] [test] `crates/emend-core/tests/ai_privacy.rs`: no network when unconfigured; key never appears in captured logs (SC-008/NFR-006) (use devs:rust-dev agent)
-- [ ] T111 [US6] Implement `outline`/`stats`/`links` + `DocObserver` live push in `crates/emend-core/src/derived.rs` (use devs:rust-dev agent)
-- [ ] T112 [US6] Implement `crates/emend-core/src/ai.rs`: reqwest SSE streaming, `CancellationToken`, timeout, max-input guard, redacting key newtype; `summarize_document`/`test_ai_config` (research §B5) (use devs:rust-dev agent)
-- [ ] T113 [US6] Export AI + derived APIs (with `AiSink`) in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
-- [ ] T114 [GIT] Commit: core derived data + AI client + FFI
-- [ ] T115 [US6] Implement `app/Emend/Emend/Info/InfoSidebarView.swift` (stats, task completion, live clickable outline → scroll)
-- [ ] T116 [US6] Implement `app/Emend/Emend/Platform/KeychainStore.swift` (SecItem wrapper) + `app/Emend/Emend/AI/AISettingsView.swift` (baseURL/model/key→Keychain, test config) (research §C5)
-- [ ] T117 [US6] Implement `app/Emend/Emend/AI/SummaryView.swift` (streamed summary, cancel/supersede, error states)
-- [ ] T118 [GIT] Commit: info sidebar, AI settings (Keychain), summary UI
-- [ ] T119 [US6] [test] `app/Emend/EmendTests/KeychainStoreTests.swift` (headless) + `app/Emend/EmendUITests/InfoSidebarTests.swift`
-- [ ] T120 [US6] Run `/sdd:map incremental`; review `retro/P8.md` → CLAUDE.md; [GIT] commit
+- [x] T107 [US6] Create `retro/P8.md`; [GIT] commit
+- [x] T108 [P] [US6] [test] `crates/emend-core/tests/derived_stats.rs`: word/char/reading-time + N-of-M tasks + outline; live update ≤300ms (FR-029/030/031a) (use devs:rust-dev agent)
+- [x] T109 [P] [US6] [test] `crates/emend-core/tests/ai_sse.rs`: SSE parse with `data:` split across chunks + `[DONE]`; cancel stops emission; oversized input rejected before send (FR-036a) (use devs:rust-dev agent)
+- [x] T110 [P] [US6] [test] `crates/emend-core/tests/ai_privacy.rs`: no network when unconfigured; key never appears in captured logs (SC-008/NFR-006) (use devs:rust-dev agent)
+- [x] T111 [US6] Implement `outline`/`stats`/`links` + `DocObserver` live push in `crates/emend-core/src/derived.rs` (use devs:rust-dev agent)
+- [x] T112 [US6] Implement `crates/emend-core/src/ai.rs`: reqwest SSE streaming, `CancellationToken`, timeout, max-input guard, redacting key newtype; `summarize_document`/`test_ai_config` (research §B5) (use devs:rust-dev agent)
+- [x] T113 [US6] Export AI + derived APIs (with `AiSink`) in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
+- [x] T114 [GIT] Commit: core derived data + AI client + FFI
+- [x] T115 [US6] Implement `app/Emend/Emend/Info/InfoSidebarView.swift` (stats, task completion, live clickable outline → scroll)
+- [x] T116 [US6] Implement `app/Emend/Emend/Platform/KeychainStore.swift` (SecItem wrapper) + `app/Emend/Emend/AI/AISettingsView.swift` (baseURL/model/key→Keychain, test config) (research §C5)
+- [x] T117 [US6] Implement `app/Emend/Emend/AI/SummaryView.swift` (streamed summary, cancel/supersede, error states)
+- [x] T118 [GIT] Commit: info sidebar, AI settings (Keychain), summary UI
+- [x] T119 [US6] [test] `app/Emend/EmendTests/KeychainStoreTests.swift` (headless) + `app/Emend/EmendUITests/InfoSidebarTests.swift`
+- [x] T120 [US6] Run `/sdd:map incremental`; review `retro/P8.md` → CLAUDE.md; [GIT] commit
 - [ ] T121 [GIT] Push; PR "US6: info sidebar + AI"; verify CI green; report PR ready status
 
 **Checkpoint**: Document insight + BYOM AI summary work; privacy preserved.

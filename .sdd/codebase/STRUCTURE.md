@@ -2,18 +2,18 @@
 
 > **Purpose**: Document directory layout, module boundaries, and where to add new code.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (incremental: US5 links, embeds, tasks, attachments)
+> **Last Updated**: 2026-06-18 (incremental: US6 info sidebar + BYOM AI summary)
 
 ## Directory Layout
 
 ```
 emend/
 ├── crates/                          # Rust workspace
-│   ├── emend-core/                  # Core engine: files, documents, parsing, search, AI
-│   │   ├── Cargo.toml               # Core manifest (NO FFI dep)
+│   ├── emend-core/                  # Core engine: files, documents, parsing, search, AI, stats/outline
+│   │   ├── Cargo.toml               # Core manifest (NO FFI dep, NO tokio/reqwest)
 │   │   ├── src/
 │   │   │   ├── lib.rs               # Module map + U16Range type
-│   │   │   ├── error.rs             # EmendError enum (error source of truth)
+│   │   │   ├── error.rs             # EmendError enum (error source of truth; AI variants US6)
 │   │   │   ├── fs.rs                # Atomic writes + tolerant reads
 │   │   │   ├── document.rs          # Shadow rope + UTF-16/line indices
 │   │   │   ├── workspace.rs         # File-based workspace model (US2)
@@ -23,25 +23,26 @@ emend/
 │   │   │   ├── parse.rs             # Markdown parsing: two-engine split
 │   │   │   ├── parse/
 │   │   │   │   ├── highlight.rs     # Incremental tree-sitter highlight (editor, advisory)
-│   │   │   │   ├── preview.rs       # **Authoritative comrak HTML + scroll-sync (US4 · T084)**
-│   │   │   │   ├── code_highlight.rs # **syntect classed code coloring (US4 · T084)**
-│   │   │   │   └── embed.rs         # **Embed resolution + inlining (US5 · T097)**
-│   │   │   ├── **derived.rs**       # **Per-document link/task scanning + resolution (US5 · T097)**
-│   │   │   └── ai.rs                # OpenAI-compatible client (placeholder)
+│   │   │   │   ├── preview.rs       # Authoritative comrak HTML + scroll-sync (US4 · T084)
+│   │   │   │   ├── code_highlight.rs # syntect classed code coloring (US4 · T084)
+│   │   │   │   └── embed.rs         # Embed resolution + inlining (US5 · T097)
+│   │   │   ├── derived.rs           # **Per-document link/task scanning + stats/outline (US5 · T097 / US6 · T111)**
+│   │   │   └── **ai.rs**            # **Pure SSE parser + request builder + secret redaction (US6 · T112)**
 │   │   └── tests/                   # Integration tests (cargo test)
 │   │       └── search_supersede.rs  # Quick Open batching + supersede (US3)
 │   │
-│   ├── emend-ffi/                   # UniFFI shim (thin projection of core)
+│   ├── emend-ffi/                   # UniFFI shim (thin projection of core + streaming orchestration)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs               # #[uniffi::export] entry points
 │   │       ├── error.rs             # FfiError projection of EmendError
 │   │       ├── panic.rs             # Panic containment hook
-│   │       ├── document.rs          # OpenDocHandle + document ops (T039); render_preview_html (US4 · T084); extract_links, toggle_task, store_attachment (US5 · T097)
-│   │       ├── workspace.rs         # WorkspaceHandle + file ops (T059); resolve_wikilink, wikilink_suggestions, resolve_embed_source (US5 · T097)
+│   │       ├── document.rs          # OpenDocHandle + document ops; **stats/outline (US6 · T111)**; render_preview_html (US4); extract_links, toggle_task, store_attachment (US5)
+│   │       ├── workspace.rs         # WorkspaceHandle + file ops; resolve_wikilink, wikilink_suggestions, resolve_embed_source (US5)
 │   │       ├── search.rs            # SearchHandle + quick_open_query (US3 · T074)
-│   │       ├── watcher.rs           # WatchHandle + conflict model (T059)
-│   │       └── handles.rs           # Async runtime + cancellation tokens + LinkRef/LinkKind projections (US5 · T097)
+│   │       ├── watcher.rs           # WatchHandle + conflict model
+│   │       ├── **ai.rs**            # **Network streaming orchestration + reqwest (US6 · T112/T113); ONLY place reqwest lives**
+│   │       └── handles.rs           # Async runtime + cancellation + **DocStats/OutlineItem/AiHandle projections (US6)**
 │   │
 │   └── emend-bench/                 # Criterion benchmarks
 │       ├── Cargo.toml
@@ -68,10 +69,11 @@ emend/
 │       ├── Emend/                   # App sources
 │       │   ├── EmendApp.swift       # @main entry point
 │       │   ├── Shell/
-│       │   │   └── MainWindow.swift # Three-pane layout (US1+) + preview pane (US4); ⌘P Quick Open button (US3); Export PDF button (US4)
+│       │   │   └── MainWindow.swift # **Four-pane layout (US6)**: sidebar | editor | preview | info sidebar. ⌘P button, Export PDF, Settings menu
 │       │   ├── Platform/
 │       │   │   ├── SecurityScopedBookmarks.swift
-│       │   │   └── FsObserver.swift # FS event → @MainActor callback bridge
+│       │   │   ├── FsObserver.swift # FS event → @MainActor callback bridge
+│       │   │   └── **KeychainStore.swift** # **BYOM API key storage (US6 · research §C5, NFR-006)**
 │       │   ├── Sidebar/
 │       │   │   ├── WorkspaceModel.swift      # @MainActor: workspace + index + bookmarks
 │       │   │   ├── WorkspaceOutlineView.swift # NSOutlineView over file tree
@@ -84,45 +86,52 @@ emend/
 │       │   ├── QuickOpen/                    # Quick Open palette (US3)
 │       │   │   ├── QuickOpenModel.swift      # @MainActor: search state + batching guard
 │       │   │   └── QuickOpenView.swift       # ⌘P overlay palette UI
-│       │   ├── **Links/**                    # **Wiki-link completion + navigation (US5)**
-│       │   │   └── **WikiLinkAutocomplete.swift** # **Pure helpers: partialRange, enclosingLink, allLinks**
-│       │   ├── Preview/                      # **Live preview pane (US4)**
-│       │   │   ├── PreviewModel.swift        # **@MainActor: debounced render state + visibility**
-│       │   │   ├── PreviewWebView.swift      # **NSViewRepresentable wrapping WKWebView (offline, bundled Mermaid+KaTeX)**
-│       │   │   ├── ScrollSync.swift          # **Bidirectional editor ↔ preview scroll sync (FR-024, research §C3)**
-│       │   │   └── PDFExport.swift           # **Off-screen PDF render + NSPrintOperation paginate (FR-026, research §C4)**
-│       │   ├── Editor/              # Editor pane (US1)
+│       │   ├── Links/                        # Wiki-link completion + navigation (US5)
+│       │   │   └── WikiLinkAutocomplete.swift # Pure helpers: partialRange, enclosingLink, allLinks
+│       │   ├── **Info/**                     # **Info sidebar (US6)**
+│       │   │   ├── **InfoModel.swift**       # **@MainActor: document stats + outline (FR-029..031)**
+│       │   │   └── **InfoSidebarView.swift** # **Info pane UI: stats grid + heading outline tree**
+│       │   ├── **AI/**                       # **BYOM AI summary (US6)**
+│       │   │   ├── **AIConfig.swift**        # **AIConfigStore: base URL, model, timeout config (persisted); test_ai_config button**
+│       │   │   ├── **AISettingsView.swift**  # **Modal for AI config input**
+│       │   │   └── **SummaryView.swift**     # **Streaming summary display + SummaryModel**
+│       │   ├── Preview/                      # Live preview pane (US4)
+│       │   │   ├── PreviewModel.swift        # @MainActor: debounced render state; calls renderPreviewHtmlResolving (US5)
+│       │   │   ├── PreviewWebView.swift      # NSViewRepresentable wrapping offline WKWebView
+│       │   │   ├── ScrollSync.swift          # Bidirectional editor ↔ preview scroll sync (FR-024, research §C3)
+│       │   │   └── PDFExport.swift           # Off-screen PDF render + NSPrintOperation paginate (FR-026, research §C4)
+│       │   ├── Editor/                       # Editor pane (US1)
 │       │   │   ├── MarkdownEditorView.swift     # NSViewRepresentable over TextKit 2
 │       │   │   ├── MarkdownTextView.swift       # NSTextView subclass + list/format keys
-│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate + sync/re-attribute; signals PreviewModel.scheduleRefresh(); owns workspace for wiki-link resolution (US5)
+│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate; **signals InfoModel.refresh() (US6)**; owns workspace (US5)
 │       │   │   ├── SyntaxAttributing.swift      # Pure: spans → attributes
-│       │   │   ├── SmartLists.swift             # Pure: newline/renumber/indent/outdent
-│       │   │   ├── FormattingCommands.swift     # Pure: bold/italic/link/task
+│       │   │   ├── SmartLists.swift             # Pure transforms: newline/renumber/indent/outdent
+│       │   │   ├── FormattingCommands.swift     # Pure transforms: bold/italic/link/task
 │       │   │   ├── AutosaveController.swift     # Debounced atomic flush; records self-writes
 │       │   │   ├── ConflictController.swift     # Conflict detection + resolution (US2)
-│       │   │   ├── **TaskCheckbox.swift**       # **Pure helpers: checkboxRange, toggleEdit (US5 · T097)**
-│       │   │   └── **ImageDrop.swift**          # **Pure helpers: imageFileURLs, markdown (US5 · T097)**
-│       │   ├── Screens/             # Pane views (US2/US6+)
-│       │   ├── Models/              # SwiftUI state (US2/US6+)
-│       │   ├── Bindings/            # Rust↔Swift type adapters (US2+)
-│       │   ├── Services/            # UI-facing core wrappers (US2+)
+│       │   │   ├── TaskCheckbox.swift           # Pure helpers: checkboxRange, toggleEdit (US5)
+│       │   │   └── ImageDrop.swift              # Pure helpers: imageFileURLs, markdown (US5)
+│       │   ├── Screens/                     # Pane views (US2/US6+)
+│       │   ├── Models/                      # SwiftUI state (US2/US6+)
+│       │   ├── Bindings/                    # Rust↔Swift type adapters (US2+)
+│       │   ├── Services/                    # UI-facing core wrappers (US2+)
 │       │   └── Resources/
-│       │       ├── preview/         # **Vendored Mermaid + KaTeX + theme CSS (bundled, offline)**
-│       │       │   ├── template.html # **One offline WKWebView shell (two render entry points: __emendRender live, __emendRenderForPrint async)**
-│       │       │   ├── theme.css    # **Syntect code-highlight CSS + @media print rules (US4)**
-│       │       │   ├── bridge.js    # **JS scroll-sync + Mermaid/KaTeX render orchestration (US4)**
-│       │       │   ├── mermaid.min.js # **Vendored Mermaid (bundled, offline)**
-│       │       │   ├── katex/       # **Vendored KaTeX (bundled, offline)**
+│       │       ├── preview/                 # **Vendored Mermaid + KaTeX + theme CSS (bundled, offline)**
+│       │       │   ├── template.html        # **One offline WKWebView shell (two render entry points: __emendRender live, __emendRenderForPrint async)**
+│       │       │   ├── theme.css            # **Syntect code-highlight CSS + @media print rules (US4)**
+│       │       │   ├── bridge.js            # **JS scroll-sync + Mermaid/KaTeX render orchestration (US4)**
+│       │       │   ├── mermaid.min.js       # **Vendored Mermaid (bundled, offline)**
+│       │       │   ├── katex/               # **Vendored KaTeX (bundled, offline)**
 │       │       │   │   ├── katex.min.js
 │       │       │   │   ├── katex.min.css
-│       │       │   │   └── fonts/   # KaTeX fonts
-│       │       │   └── VERSIONS.md  # Vendored library versions + pinning info
+│       │       │   │   └── fonts/           # KaTeX fonts
+│       │       │   └── VERSIONS.md          # Vendored library versions + pinning info
 │       │       └── Emend.entitlements
-│       └── EmendTests/              # App unit tests
+│       └── EmendTests/                      # App unit tests
 │           ├── BookmarkResolutionTests.swift
-│           ├── WorkspaceFlowTests.swift   # WorkspaceModel + outline tests
+│           ├── WorkspaceFlowTests.swift     # WorkspaceModel + outline tests
 │           ├── EditorPersistenceTests.swift # AutosaveController + disk I/O
-│           ├── SmartListsTests.swift      # Pure transform tests
+│           ├── SmartListsTests.swift        # Pure transform tests
 │           ├── SyntaxAttributingTests.swift
 │           ├── FormattingCommandsTests.swift
 │           └── EmendCoreLinkageTests.swift
@@ -131,10 +140,10 @@ emend/
 │   └── 001-markdown-editor/         # Main feature spec
 │       ├── spec.md                  # User stories + requirements
 │       ├── plan.md                  # Implementation phases
-│       ├── research.md              # Architecture rationale (read-first); includes §B1 (two engines), §B6 (syntect), §C3 (scroll sync), §C4 (PDF)
+│       ├── research.md              # Architecture rationale (read-first); includes §B1 (two engines), §B5 (AI SSE), §B6 (syntect), §C3 (scroll sync), §C4 (PDF), §C5 (Keychain)
 │       ├── data-model.md            # Document/state schema
 │       ├── contracts/
-│       │   └── ffi-interface.md     # UniFFI export signatures (§3: document; §6: preview US4; §5: links/tasks/embeds US5)
+│       │   └── ffi-interface.md     # UniFFI export signatures (§3: document; §6: preview US4; §5: links/tasks/embeds US5; §4: stats/outline US6; §7: AI US6)
 │       ├── checklists/              # Phase-by-phase acceptance criteria
 │       └── retro/                   # Phase retrospectives
 │
@@ -170,7 +179,7 @@ emend/
 | File | Purpose | Key Types/Functions |
 |---|---|---|
 | `lib.rs` | Module map, `U16Range` type, public exports | `U16Range`, re-exports all public modules |
-| `error.rs` | `EmendError` enum (error source of truth) | `EmendError` (exhaustive variants for UI rendering) |
+| `error.rs` | `EmendError` enum (error source of truth; AI variants US6) | `EmendError` (exhaustive variants for UI rendering) |
 | `fs.rs` | Atomic writes, tolerant reads, file I/O gateway | `read_tolerant()`, `write_atomic()` |
 | `document.rs` | Shadow rope, UTF-16/char/line indices | `Document`, `Document::push_edit()`, `highlight_spans()` |
 | `workspace.rs` | File-based workspace model (US2) | `Workspace`, `Location`, `FsNode`, `free_name()` |
@@ -179,18 +188,18 @@ emend/
 | `watcher.rs` | File watching + self-write suppression + conflict model | `FsWatcher`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
 | `parse.rs` | **Two-engine Markdown parsing** | **Module map: `highlight`, `preview`, `code_highlight`, `embed`** |
 | `parse/highlight.rs` | **Incremental tree-sitter for editor (advisory)** | **`Highlighter`, `highlight_range()`** |
-| `parse/preview.rs` | **Authoritative comrak HTML + scroll-sync anchors (US4 · T084)** | **`render_preview_html()`, `render_preview_html_with_embeds()` (US5 · T097)** |
+| `parse/preview.rs` | **Authoritative comrak HTML + scroll-sync anchors (US4 · T084)** | **`render_preview_html()`, `render_preview_html_with_embeds()` (US5)**
 | `parse/code_highlight.rs` | **syntect classed HTML code colouring (US4 · T084)** | **`theme_css()`, `SyntaxHighlighterAdapter`** |
 | `parse/embed.rs` | **Embed resolution + content inlining (US5 · T097)** | **`resolve_and_inline_embed(resolver)`, recursive depth guard** |
-| `**derived.rs**` | **Per-document link/task scanning + FR-019a resolution (US5 · T097)** | **`extract_links()`, `resolve_wikilink()`, `wikilink_suggestions()`, `toggle_task()`** |
-| `ai.rs` (placeholder) | OpenAI-compatible SSE streaming client | (to be implemented) |
+| `derived.rs` | **Per-document link/task scanning + FR-019a resolution + stats/outline (US5 · T097 / US6 · T111)** | **`extract_links()`, `resolve_wikilink()`, `wikilink_suggestions()`, `toggle_task()`, `stats()`, `outline()`** |
+| **`ai.rs`** | **Pure SSE parser + request builder + secret redaction (US6 · T112)** | **`SseParser`, `ApiKey`, `check_input_size()`, `build_request_body()`, `build_auth_header()`** |
 
 **Naming conventions**:
-- **Modules**: snake_case (e.g., `document`, `error`, `fs`, `parse`, `derived`)
-- **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`, `LinkRef`)
-- **Enums**: PascalCase (e.g., `EmendError`, `ChangeEvent`, `LinkKind`)
-- **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`, `extract_links`, `resolve_wikilink`, `toggle_task`)
-- **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`)
+- **Modules**: snake_case (e.g., `document`, `error`, `fs`, `parse`, `derived`, `ai`)
+- **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`, `LinkRef`, `DocStats`, `OutlineItem`, `ApiKey`)
+- **Enums**: PascalCase (e.g., `EmendError`, `ChangeEvent`, `LinkKind`, `SseEvent`)
+- **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`, `extract_links`, `resolve_wikilink`, `toggle_task`, `stats`, `outline`)
+- **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`, `DEFAULT_SUMMARY_SYSTEM_PROMPT`)
 
 ### `crates/emend-core/tests/` — Core Integration Tests
 
@@ -205,13 +214,14 @@ emend/
 | `lib.rs` | `#[uniffi::export]` entry points; `uniffi::setup_scaffolding!()` | `read_file_at()`, `core_abi_version()`, `preview_theme_css()` (US4) |
 | `error.rs` | `#[derive(uniffi::Error)] FfiError` — mirror of `EmendError` | `FfiError` (exhaustive From impls) |
 | `panic.rs` | Custom panic hook for debugging (if needed) | (reserved) |
-| `document.rs` | Document FFI ops: open, close, push_edit, highlight, **render_preview_html, render_preview_html_resolving** (US4/US5), **extract_links, toggle_task, store_attachment** (US5), flush | `OpenDocHandle`, `open_document()`, `push_edit()`, `highlight_spans()`, **`render_preview_html()`, `render_preview_html_resolving()`**, **`extract_links()`, `toggle_task()`, `store_attachment()`** (US5 · T097) |
-| `workspace.rs` | Workspace + index FFI ops: locations, file ops, search; **link/embed resolution** (US5) | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()`, `quick_open_query()` (US3), `reindex_all()` (T078), **`resolve_wikilink()`, `wikilink_suggestions()`, `resolve_embed_source()`** (US5 · T097) |
-| `search.rs` | **FFI Quick Open async shim (US3 · T074)** | **`SearchHandle` (Arc<Self>, UniFFI Object), `start_query()`, `SharedIndex` type alias** |
-| `watcher.rs` | Watcher FFI ops: start watching, track self-writes, resolve conflicts | `WatchHandle`, `ChangeEvent`, `ConflictState`, `ConflictChoice`, `start_watching()`, `record_self_write()`, `apply_conflict_choice()` |
-| `handles.rs` | tokio runtime, `CancellationToken`, foreign-trait sinks, **LinkRef/LinkKind value projections** (US5) | `SearchHit`, `**LinkRef`, `LinkKind**` (US5), `DocObserver`, `SearchSink`, `AiSink` foreign traits |
+| `document.rs` | Document FFI ops: open, close, push_edit, highlight, **stats, outline (US6)**, render_preview_html, extract_links, toggle_task, store_attachment (US5), flush | `OpenDocHandle`, `open_document()`, `push_edit()`, **`stats()`, `outline()`** |
+| `workspace.rs` | Workspace + index FFI ops: locations, file ops, search; resolve_wikilink, wikilink_suggestions, resolve_embed_source (US5) | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()`, `quick_open_query()` (US3) |
+| `search.rs` | **FFI Quick Open async shim (US3 · T074)** | **`SearchHandle` (Arc<Self>, UniFFI Object), `start_query()`, `SharedIndex`** |
+| `watcher.rs` | Watcher FFI ops: start watching, track self-writes, resolve conflicts | `WatchHandle`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
+| **`ai.rs`** | **FFI streaming AI client (US6 · T112/T113); ONLY place reqwest + tokio network orchestration** | **`summarize_document()`, `test_ai_config()`, `AiHandle.cancel()`, per-chunk timeout orchestration** |
+| `handles.rs` | tokio runtime, `CancellationToken`, foreign-trait sinks, **DocStats/OutlineItem/AiHandle projections (US6)** | `SearchHit`, **`DocStats`, `OutlineItem`, `AiHandle`**, `DocObserver`, `SearchSink`, **`AiSink`** |
 
-**Rule**: Keep FFI free of business logic. If you're tempted to add logic here, move it to the core instead.
+**Rule**: Keep FFI free of business logic (except streaming orchestration, which is unavoidable).
 
 ### `crates/emend-bench/benches/` — Benchmarks
 
@@ -234,14 +244,16 @@ emend/
 | Directory | Purpose | Key Components |
 |---|---|---|
 | `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Shell/` | Window and pane structure | `MainWindow: View` (three-pane layout + preview pane US4); ⌘P shortcut button (US3); Export PDF button (US4) |
-| `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift` |
+| `Shell/` | Window and pane structure | `MainWindow: View` (**four-pane layout US6**: sidebar \| editor \| preview \| info); ⌘P shortcut button (US3); Export PDF button (US4); Settings menu (AI config) |
+| `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift`, **`KeychainStore.swift` (US6)** |
 | `Sidebar/` | Workspace outline + navigation | `WorkspaceModel` (@MainActor), `WorkspaceOutlineView` (NSViewRepresentable over NSOutlineView), `WorkspaceNode` (outline item), `OutlineDragDrop`, `FolderIconPicker` |
 | `Tabs/` | Open-document management | `TabModel` (@MainActor), `TabBarView` (tab bar UI) |
 | `QuickOpen/` | **Quick Open palette (US3)** | **`QuickOpenModel` (@MainActor, streaming sink bridge), `QuickOpenView` (⌘P overlay, arrow/Return/Escape handlers)** |
 | **`Links/`** | **Wiki-link completion + navigation (US5)** | **`WikiLinkAutocomplete` (pure helpers)** |
+| **`Info/`** | **Info sidebar (US6)** | **`InfoModel` (@MainActor, stats + outline), `InfoSidebarView` (stats grid + heading tree)** |
+| **`AI/`** | **BYOM AI summary (US6)** | **`AIConfig.swift` (AIConfigStore + test button), `AISettingsView` (config modal), `SummaryView` (streaming summary display + SummaryModel)** |
 | **`Preview/`** | **Live preview pane (US4)** | **`PreviewModel` (@MainActor, debounced render, embed resolution US5), `PreviewWebView` (NSViewRepresentable over offline WKWebView), `ScrollSync` (bidirectional scroll), `PDFExport` (async multi-page)** |
-| `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator` (owns workspace for wiki-link resolution US5), `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController`, **`TaskCheckbox`, `ImageDrop`** (US5 · T097) |
+| `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator` (owns workspace for wiki-link resolution US5; signals `InfoModel.refresh()` US6), `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController`, **`TaskCheckbox`, `ImageDrop`** (US5) |
 | `Screens/` (US2+) | Major feature screens | (to be implemented) |
 | `Models/` (US2+) | SwiftUI `@Observable` state | (to be implemented) |
 | `Bindings/` (US2+) | Rust↔Swift type adapters | (to be implemented) |
@@ -251,10 +263,11 @@ emend/
 
 **Naming conventions**:
 - **Views**: PascalCase (e.g., `MainWindow`, `EditorPane`, `WorkspaceOutlineView`)
-- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `PreviewModel`)
+- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `PreviewModel`, `InfoModel`, `SummaryModel`)
 - **Controllers**: PascalCase + `Controller` suffix (e.g., `ConflictController`, `AutosaveController`)
 - **Observers**: PascalCase + `Observer` suffix (e.g., `FsObserver`)
-- **Pure helpers**: PascalCase, no suffix (e.g., `WikiLink`, `TaskCheckbox`, `ImageDrop`)
+- **Config/Store**: PascalCase + suffix (e.g., `AIConfigStore`, `KeychainStore`)
+- **Pure helpers**: PascalCase, no suffix (e.g., `WikiLinkAutocomplete`, `TaskCheckbox`, `ImageDrop`)
 
 ### `app/Emend/Emend/Sidebar/` — Workspace Navigation (US2)
 
@@ -290,11 +303,42 @@ emend/
 
 | File | Purpose | Key Types |
 |---|---|---|
-| `WikiLinkAutocomplete.swift` | **Pure helpers for link detection + completion (US5 · T097)** | **`WikiLink` enum: `partialRange()`, `enclosingLink()`, `allLinks()`** |
+| `WikiLinkAutocomplete.swift` | **Pure helpers for link detection + completion (US5 · T097)** | **`WikiLinkAutocomplete` enum: `partialRange()`, `enclosingLink()`, `allLinks()`** |
 
-**Data flow (autocomplete)**: User types `[[` → completion fires → `WikiLink.partialRange()` detects open link and returns range → `EditorCoordinator` calls `workspace.wikilink_suggestions()` → results stream via SearchSink → user selects → inserted via native completion.
+**Data flow (autocomplete)**: User types `[[` → completion fires → `WikiLinkAutocomplete.partialRange()` detects open link and returns range → `EditorCoordinator` calls `workspace.wikilink_suggestions()` → results stream via SearchSink → user selects → inserted via native completion.
 
-**Data flow (navigation)**: User ⌘-clicks `[[target]]` → `WikiLink.enclosingLink()` finds the link → `EditorCoordinator.workspace.resolve_wikilink()` applies FR-019a → opens target in new tab.
+**Data flow (navigation)**: User ⌘-clicks `[[target]]` → `WikiLinkAutocomplete.enclosingLink()` finds the link → `EditorCoordinator.workspace.resolve_wikilink()` applies FR-019a → opens target in new tab.
+
+### `app/Emend/Emend/Info/` — Info Sidebar (US6)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `InfoModel.swift` | **@MainActor: document stats + outline (FR-029..031 · T111)** | **`InfoModel: ObservableObject`, `@Published words/chars/readingMinutes/tasksDone/tasksTotal/outlineItems`** |
+| `InfoSidebarView.swift` | **Toggleable right sidebar showing stats grid + heading outline tree** | **`InfoSidebarView: View`, renders stats + clickable outline** |
+
+**Data flow**: `EditorCoordinator` signals `InfoModel.refresh()` on each edit → `InfoModel` calls `document.stats()`/`outline()` off-main (Task.detached) → updates @Published properties → `InfoSidebarView` renders stats grid + outline tree → user clicks heading → calls `ScrollSync.scrollToLine()` → editor jumps to line.
+
+### `app/Emend/Emend/AI/` — BYOM AI Summary (US6)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `AIConfig.swift` | **Config holder + test button (US6 · FR-037)** | **`AIConfigStore` (base URL, model, timeout persisted to UserDefaults), test_ai_config() call** |
+| `AISettingsView.swift` | **Settings modal for BYOM endpoint config** | **`AISettingsView: View`, text fields for URL/model/timeout, Save button** |
+| `SummaryView.swift` | **Streaming summary display + state (US6 · T112)** | **`SummaryModel: ObservableObject`, `@Published fullText`, `SummaryView: View`** |
+
+**Data flow**: User requests AI summary → `AISettingsView` collects config (base URL, model, timeout) + reads key from `KeychainStore` → calls `emend_core::summarize_document()` → FFI streams tokens to foreign `AiSink` → `SummaryModel` accumulates text → `SummaryView` displays streaming result → cancel button calls `handle.cancel()`.
+
+**Key constraint**: API key lives **only** in Keychain; it is read on each request, wrapped in the redacting `ApiKey` newtype on the Rust side, set only on the Authorization header, and never persisted/logged (NFR-006, research §C5).
+
+### `app/Emend/Emend/Platform/` — macOS Integration (US6 additions)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `SecurityScopedBookmarks.swift` | Bookmark handling for security-scoped folders | `SecurityScopedBookmark` helpers |
+| `FsObserver.swift` | FS event → @MainActor callback bridge | `FsObserver` (Sendable bridge pattern) |
+| **`KeychainStore.swift`** | **BYOM API key Keychain storage (US6 · research §C5, NFR-006)** | **`KeychainStore` enum: `save()`, `read()`, `delete()`, `hasKey()`** |
+
+**Keychain design**: Generic password, device-local only (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), no iCloud sync. Account is `"ai-api-key"`, service is bundle ID. Read on each request, never persisted Rust-side.
 
 ### `app/Emend/Emend/Preview/` — Live Preview Pane (US4)
 
@@ -317,7 +361,7 @@ emend/
 |---|---|---|
 | `MarkdownEditorView.swift` | NSViewRepresentable, builds TextKit 2 stack | `MarkdownEditorView: NSViewRepresentable` |
 | `MarkdownTextView.swift` | NSTextView subclass, intercepts list/format keys; integrates task checkbox clicking and image drag-drop (US5) | `MarkdownTextView: NSTextView` |
-| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop; signals PreviewModel.scheduleRefresh(); owns workspace for wiki-link resolution (US5) | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
+| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop; **signals PreviewModel.scheduleRefresh() and InfoModel.refresh()**; owns workspace for wiki-link resolution (US5) | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
 | `SyntaxAttributing.swift` | Pure: spans → attributes | `SyntaxAttributing` (enum with static methods) |
 | `SmartLists.swift` | Pure transforms: newline/renumber/indent/outdent | `SmartLists` (enum with static methods) |
 | `FormattingCommands.swift` | Pure transforms: bold/italic/link/task | `FormattingCommands` (enum with static methods) |
@@ -326,7 +370,7 @@ emend/
 | **`TaskCheckbox.swift`** | **Pure helpers: task checkbox detection + toggle edit (US5 · T097)** | **`TaskCheckbox` enum: `checkboxRange()`, `toggleEdit()`** |
 | **`ImageDrop.swift`** | **Pure helpers: image drag-drop URL filtering + Markdown generation (US5 · T097)** | **`ImageDrop` enum: `imageFileURLs()`, `markdown()`** |
 
-**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → signals `PreviewModel.scheduleRefresh()` to debounce preview render → `AutosaveController` rearms debounce.
+**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → signals `PreviewModel.scheduleRefresh()` + **`InfoModel.refresh()` (US6)** → `AutosaveController` rearms debounce.
 
 **Formatting & list commands** are **pure functions**: no access to editor state. They take `(text: NSString, selection: NSRange)` and return an `Edit`. This makes them unit-testable without a window (Constitution VII).
 
@@ -372,6 +416,13 @@ emend_core::derived::extract_links()               // Public (US5 · T097)
 emend_core::derived::resolve_wikilink()            // Public (US5 · T097)
 emend_core::derived::wikilink_suggestions()        // Public (US5 · T097)
 emend_core::derived::toggle_task()                 // Public (US5 · T097)
+emend_core::derived::stats()                       // **Public (US6 · T111)**
+emend_core::derived::outline()                     // **Public (US6 · T111)**
+emend_core::ai::SseParser                          // **Public (US6 · T112)**
+emend_core::ai::ApiKey                             // **Public (US6 · T112)**
+emend_core::ai::check_input_size()                 // **Public (US6 · T112)**
+emend_core::ai::build_request_body()               // **Public (US6 · T112)**
+emend_core::ai::build_auth_header()                // **Public (US6 · T112)**
 emend_core::U16Range              // Public (boundary type)
 ```
 
@@ -397,6 +448,14 @@ pub fn new_workspace() -> Arc<WorkspaceHandle> {
 
 #[uniffi::export]
 impl OpenDocHandle {
+    pub fn stats(&self) -> Result<DocStats, FfiError> {  // US6 · T111
+        // T111: calls core's derived::stats
+    }
+
+    pub fn outline(&self) -> Result<Vec<OutlineItem>, FfiError> {  // US6 · T111
+        // T111: calls core's derived::outline
+    }
+
     pub fn render_preview_html(&self) -> Result<String, FfiError> {
         // T084: calls core's render_preview_html
     }
@@ -416,6 +475,21 @@ impl OpenDocHandle {
     pub fn store_attachment(&self, data: Vec<u8>, ext: String) -> Result<String, FfiError> {
         // T097: calls core's fs::store_attachment
     }
+}
+
+#[uniffi::export]
+pub fn summarize_document(  // US6 · T112
+    h: Arc<OpenDocHandle>,
+    cfg: AiRequestConfig,
+    api_key: String,
+    sink: Arc<dyn AiSink>,
+) -> Arc<AiHandle> {
+    // T112: validates pre-network, spawns async request, returns handle for cancel
+}
+
+#[uniffi::export]
+pub fn test_ai_config(cfg: AiRequestConfig, api_key: String) -> Result<(), FfiError> {  // US6 · FR-037
+    // FR-037: validates AI config with a minimal probe request
 }
 
 #[uniffi::export]
@@ -461,8 +535,12 @@ let htmlWithEmbeds = try openDocHandle.renderPreviewHtmlResolving(workspace: wor
 let links = try openDocHandle.extractLinks()  // US5 · T097
 let newSource = try openDocHandle.toggleTask(offset: 123)  // US5 · T097
 let ref = try openDocHandle.storeAttachment(data: imageData, ext: "png")  // US5 · T097
+let stats = try openDocHandle.stats()  // **US6 · T111**
+let outline = try openDocHandle.outline()  // **US6 · T111**
 let resolved = try workspace.resolveWikilink(target: "Launch Plan", fromNote: "/notes/meeting.md")  // US5 · T097
 let suggestions = try workspace.wikiLinkSuggestions(partial: "Launch")  // US5 · T097
+let aiHandle = summarizeDocument(doc, config, key, sink)  // **US6 · T112**
+try testAiConfig(config, key)  // **US6 · FR-037**
 ```
 
 ### App Layer
@@ -497,12 +575,26 @@ final class PreviewModel: ObservableObject {
     // Calls handle.renderPreviewHtmlResolving(workspace) for embeds (US5)
 }
 
-// app/Emend/Emend/Editor/EditorCoordinator.swift (US5)
+// **app/Emend/Emend/Info/InfoModel.swift (US6)**
+@MainActor
+final class InfoModel: ObservableObject {
+    @Published var words = 0
+    @Published var chars = 0
+    @Published var readingMinutes = 0
+    @Published var tasksDone = 0
+    @Published var tasksTotal = 0
+    @Published var outlineItems: [OutlineItem] = []
+    private var handle: OpenDocHandle?
+    // Calls handle.stats() / handle.outline() off-main
+}
+
+// app/Emend/Emend/Editor/EditorCoordinator.swift (US5/US6)
 @MainActor
 final class EditorCoordinator: NSTextStorageDelegate {
     var workspace: WorkspaceHandle?  // For wiki-link resolution (US5)
     var notePath = ""  // Current note's path (US5)
     var onOpenLink: ((URL) -> Void)?  // Tab-opening callback (US5)
+    var infoModel: InfoModel?  // **For stats/outline refresh (US6)**
 }
 ```
 
@@ -518,24 +610,28 @@ final class EditorCoordinator: NSTextStorageDelegate {
 | **Core preview logic** (US4) | `crates/emend-core/src/parse/preview.rs` | Preview HTML generation, scroll-sync anchor insertion, extension handling |
 | **Core code-highlight logic** (US4) | `crates/emend-core/src/parse/code_highlight.rs` | Syntect adapter, theme CSS, language detection |
 | **Core embed logic** (US5) | `crates/emend-core/src/parse/embed.rs` | Embed resolution, content inlining, recursion guards |
-| **Core link/task logic** (US5) | `crates/emend-core/src/derived.rs` | Link extraction, resolution, suggestions, task toggle |
+| **Core link/task/stats/outline logic** (US5/US6) | `crates/emend-core/src/derived.rs` | Link extraction, resolution, suggestions, task toggle, stats, outline |
+| **Core AI logic** (US6) | `crates/emend-core/src/ai.rs` | SSE parsing, request building, secret redaction (pure, no tokio/reqwest) |
 | **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/{module}.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
 | **FFI value type projection** | `crates/emend-ffi/src/{module}.rs` (with exhaustive From impl) | `#[derive(uniffi::Record)] pub struct MyRecord { ... }` |
-| **FFI async shim** (tokio, cancellation, streaming) | `crates/emend-ffi/src/search.rs` or `handles.rs` | Extend `pub struct SearchHandle`, foreign-trait sinks |
+| **FFI async shim** (tokio, cancellation, streaming) | `crates/emend-ffi/src/search.rs` or `ai.rs` or `handles.rs` | Extend `pub struct SearchHandle`, foreign-trait sinks, async orchestration |
 | **Core benchmark** | `crates/emend-bench/benches/{name}.rs` | Performance-sensitive paths (e.g., Quick Open SC-004) |
-| **Core integration test** | `crates/emend-core/tests/{name}.rs` | Testable decision logic (e.g., `search_supersede.rs`, link resolution) |
+| **Core integration test** | `crates/emend-core/tests/{name}.rs` | Testable decision logic (e.g., `search_supersede.rs`, link resolution, AI streaming) |
 | **Swift wrapper** (idiomatic adapters over UniFFI bindings) | `swift/EmendCore/Sources/EmendCore/*.swift` | `extension EmendCore`, `struct AsyncStreamAdapter` |
 | **App-level state model** | `app/Emend/Emend/{Feature}Model.swift` (e.g., Sidebar/WorkspaceModel.swift) | `@MainActor final class WorkspaceModel: ObservableObject` |
 | **App-level controller** | `app/Emend/Emend/Editor/{Feature}Controller.swift` | `@MainActor final class ConflictController: ObservableObject` |
 | **Editor UI view** | `app/Emend/Emend/Editor/{FeatureName}.swift` | `struct EditorPane: View` |
 | **Quick Open UI view** | `app/Emend/Emend/QuickOpen/{FeatureName}.swift` | Views in the Quick Open palette namespace |
 | **Preview UI view** (US4) | `app/Emend/Emend/Preview/{FeatureName}.swift` | Preview pane views, scroll-sync, PDF export coordination |
+| **Info UI view** (US6) | **`app/Emend/Emend/Info/{FeatureName}.swift`** | **Info sidebar stats, outline tree, headings** |
+| **AI UI view** (US6) | **`app/Emend/Emend/AI/{FeatureName}.swift`** | **Settings modal, summary display, progress** |
 | **Link UI helpers** (US5) | `app/Emend/Emend/Links/{FeatureName}.swift` | Pure helpers: `WikiLinkAutocomplete`, link styling |
 | **Pure transform** (formatting, lists, etc.) | `app/Emend/Emend/Editor/SmartLists.swift` or `FormattingCommands.swift` | `static func indent(in:selection:) -> Edit?` |
 | **Pure helper** (task checkbox, image drop, etc.) (US5) | `app/Emend/Emend/Editor/{FeatureName}.swift` | `static func checkboxRange()`, `static func imageFileURLs()` |
 | **Outline view** | `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` | `struct WorkspaceOutlineView: NSViewRepresentable` |
 | **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct SearchResultsPane: View` (US2+) |
 | **App service** (wrapper over EmendCore) | `app/Emend/Emend/Services/{Feature}Service.swift` | `class EditorService` (US2+) |
+| **Keychain storage** (US6) | `app/Emend/Emend/Platform/KeychainStore.swift` | Expand `save()`, `read()`, `delete()` for new keys |
 | **Preview asset** (HTML, CSS, JS, vendored libs) (US4) | `app/Emend/Emend/Resources/preview/{file}` | Template updates, theme refinements, bundled library updates |
 | **App-level test** | `app/Emend/EmendTests/{Feature}Tests.swift` | `final class SmartListsTests` |
 
@@ -551,7 +647,8 @@ use crate::search::quick_open;  // US3
 use crate::parse::preview;      // US4 · T084
 use crate::parse::code_highlight; // US4 · T084
 use crate::parse::embed;        // US5 · T097
-use crate::derived;             // US5 · T097
+use crate::derived;             // US5 · T097 / US6 · T111
+use crate::ai;                  // **US6 · T112**
 use crate::U16Range;  // Re-exported from lib.rs
 
 // Outside emend-core, import like any Rust crate
@@ -560,7 +657,8 @@ use emend_core::search::{quick_open, Cancel};
 use emend_core::parse::preview::{render_preview_html, PreviewOptions}; // US4
 use emend_core::parse::code_highlight::theme_css; // US4
 use emend_core::parse::embed;  // US5 · T097
-use emend_core::derived::{extract_links, resolve_wikilink, LinkKind, LinkRef};  // US5 · T097
+use emend_core::derived::{extract_links, resolve_wikilink, LinkKind, LinkRef, stats, outline};  // **US5/US6 · T097/T111**
+use emend_core::ai::{SseParser, ApiKey, check_input_size, build_request_body};  // **US6 · T112**
 ```
 
 ### FFI Imports
@@ -573,7 +671,8 @@ use emend_core::search::{quick_open, Cancel};  // US3 · T074
 use emend_core::parse::preview;              // US4 · T084
 use emend_core::parse::code_highlight;       // US4 · T084
 use emend_core::parse::embed;                // US5 · T097
-use emend_core::derived::{extract_links, resolve_wikilink};  // US5 · T097
+use emend_core::derived::{extract_links, resolve_wikilink, stats, outline};  // **US5/US6 · T097/T111**
+use emend_core::ai::{SseParser, ApiKey, check_input_size, build_request_body};  // **US6 · T112**
 
 // Export via UniFFI
 #[uniffi::export]
@@ -588,6 +687,14 @@ pub fn preview_theme_css() -> String {  // US4
 
 #[uniffi::export]
 impl OpenDocHandle {
+    pub fn stats(&self) -> Result<DocStats, FfiError> {  // **US6 · T111**
+        // T111: calls core's derived::stats
+    }
+
+    pub fn outline(&self) -> Result<Vec<OutlineItem>, FfiError> {  // **US6 · T111**
+        // T111: calls core's derived::outline
+    }
+
     pub fn render_preview_html(&self) -> Result<String, FfiError> {  // US4
         // T084: calls core's render_preview_html
     }
@@ -599,6 +706,16 @@ impl OpenDocHandle {
     pub fn extract_links(&self) -> Result<Vec<LinkRef>, FfiError> {  // US5 · T097
         // T097: calls core's derived::extract_links
     }
+}
+
+#[uniffi::export]
+pub fn summarize_document(  // **US6 · T112**
+    h: Arc<OpenDocHandle>,
+    cfg: AiRequestConfig,
+    api_key: String,
+    sink: Arc<dyn AiSink>,
+) -> Arc<AiHandle> {
+    // T112: validate pre-network, spawn async
 }
 
 #[uniffi::export]
@@ -631,6 +748,8 @@ let html = try openDocHandle.renderPreviewHtml()  // US4 · T084
 let htmlWithEmbeds = try openDocHandle.renderPreviewHtmlResolving(workspace: workspace)  // US5 · T097
 let css = EmendCore.previewThemeCss()  // US4 · T084
 let links = try openDocHandle.extractLinks()  // US5 · T097
+let stats = try openDocHandle.stats()  // **US6 · T111**
+let outline = try openDocHandle.outline()  // **US6 · T111**
 let resolved = try workspace.resolveWikilink(target: target, fromNote: notePath)  // US5 · T097
 let suggestions = try workspace.wikiLinkSuggestions(partial: partial)  // US5 · T097
 ```
@@ -650,16 +769,28 @@ let preview: PreviewModel  // @StateObject
 let html = try preview.handle?.renderPreviewHtml()  // US4
 let htmlWithEmbeds = try preview.handle?.renderPreviewHtmlResolving(workspace: workspace)  // US5 · T097
 
-// Editor coordinator (US5)
+// **Info model (US6)**
+let info: InfoModel  // **@StateObject**
+let stats = try info.handle?.stats()  // **US6 · T111**
+let outline = try info.handle?.outline()  // **US6 · T111**
+
+// **AI model (US6)**
+let aiConfig: AIConfigStore  // **Persisted config**
+let key = KeychainStore.read()  // **Read key transiently**
+let aiHandle = summarizeDocument(doc, aiConfig.config, key, sink)  // **US6 · T112**
+
+// Editor coordinator (US5/US6)
 let editor: EditorCoordinator
 editor.workspace = workspace
 editor.notePath = "/notes/meeting.md"
+editor.infoModel = infoModel  // **For refresh signals (US6)**
 let links = try editor.handle.extractLinks()  // US5 · T097
 
 // Views read model state
 @State var model: WorkspaceModel
 @State var quickOpen: QuickOpenModel
 @ObservedObject var preview: PreviewModel  // US4/US5
+@ObservedObject var info: InfoModel  // **US6**
 ```
 
 ## Generated Files
@@ -680,13 +811,15 @@ Files that are auto-generated and should NOT be manually edited:
 | `crates/emend-ffi/src/lib.rs` | FFI entry points | Swift via UniFFI |
 | `swift/EmendCore/Sources/EmendCore/EmendCore.swift` | Public Swift API | App |
 | `app/Emend/Emend/EmendApp.swift` | App entry point | macOS launcher |
-| `app/Emend/Emend/Shell/MainWindow.swift` | Main window + three panes + preview (US4) | App |
+| `app/Emend/Emend/Shell/MainWindow.swift` | Main window + **four panes (US6)** | App |
 | `app/Emend/Emend/Sidebar/WorkspaceModel.swift` | Workspace state owner | MainWindow |
 | `app/Emend/Emend/Tabs/TabModel.swift` | Open-document owner | MainWindow |
 | `app/Emend/Emend/QuickOpen/QuickOpenModel.swift` | Quick Open state owner (US3) | MainWindow |
 | `app/Emend/Emend/Preview/PreviewModel.swift` | **Preview render state owner (US4/US5)** | **MainWindow** |
+| **`app/Emend/Emend/Info/InfoModel.swift`** | **Info sidebar state owner (US6)** | **MainWindow** |
+| **`app/Emend/Emend/AI/AIConfig.swift`** | **AI config holder (US6)** | **Settings menu** |
 | `app/Emend/Emend/Editor/MarkdownEditorView.swift` | Live editor pane | MainWindow |
-| `app/Emend/Emend/Editor/EditorCoordinator.swift` | **Per-keystroke editor loop; wiki-link resolution (US5)** | **MarkdownEditorView** |
+| `app/Emend/Emend/Editor/EditorCoordinator.swift` | **Per-keystroke editor loop; wiki-link resolution (US5); info refresh signal (US6)** | **MarkdownEditorView** |
 
 ## Phase Milestones
 
@@ -699,7 +832,8 @@ Structure changes as phases land:
 | 2 (complete · US3) | **`app/Emend/QuickOpen/`** | **`search` (T073: pure driver)** | **`quick_open_query`, `reindex_all`, `SearchHandle` (T074)** | **`QuickOpenModel`, `QuickOpenView`** |
 | **3 (complete · US4)** | **`app/Emend/Preview/`, `app/Emend/Resources/preview/`** | **`parse/preview` (T084: comrak HTML), `parse/code_highlight` (syntect)** | **`render_preview_html` (T084), `preview_theme_css` (T084)** | **`PreviewModel`, `PreviewWebView`, `ScrollSync`, `PDFExport`; bundled Mermaid + KaTeX** |
 | **4 (complete · US5)** | **`app/Emend/Links/`** | **`parse/embed` (T097: embed resolution), `derived` (T097: links/tasks)** | **`render_preview_html_resolving`, `extract_links`, `toggle_task`, `store_attachment`, `resolve_wikilink`, `wikilink_suggestions`, `resolve_embed_source` (all US5 · T097)** | **`WikiLinkAutocomplete`, `TaskCheckbox`, `ImageDrop`; PreviewModel embed resolution (US5)** |
-| 5+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
+| **5 (complete · US6)** | **`app/Emend/Info/`, `app/Emend/AI/`, `app/Emend/Platform/KeychainStore`** | **`derived::stats()`, `derived::outline()` (T111), `ai` (T112: SSE parser + request builder)** | **`stats()`, `outline()`, `summarize_document()`, `test_ai_config()` (US6 · T111/T112/T113)** | **`InfoModel`, `InfoSidebarView`, `AIConfigStore`, `AISettingsView`, `SummaryView`, `SummaryModel`, `KeychainStore`; EditorCoordinator signals InfoModel** |
+| 6+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
 
 ---
 
@@ -708,7 +842,7 @@ Structure changes as phases land:
 ```
    App (Swift/SwiftUI)
     ↑
-    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync (@MainActor models)
+    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync, InfoModel, AIConfigStore (@MainActor models)
     │  ↑
     │  └─ EmendCore (package)
     │     ↑
@@ -718,7 +852,8 @@ Structure changes as phases land:
     │           ├─ parse::preview (T084, comrak HTML + scroll-sync)
     │           ├─ parse::code_highlight (T084, syntect CSS)
     │           ├─ parse::embed (T097, embed resolution + inlining)
-    │           ├─ derived (T097, link extraction + resolution + task toggle)
+    │           ├─ derived (T097/T111, link extraction + stats + outline)
+    │           ├─ ai (T112, streaming orchestration + reqwest)
     │           ├─ search (T073, tokio-free)
     │           ├─ index (search index)
     │           ├─ workspace, watcher, parse, etc.

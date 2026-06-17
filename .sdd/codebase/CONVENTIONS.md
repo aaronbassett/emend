@@ -2,7 +2,7 @@
 
 > **Purpose**: Document code style, naming conventions, error handling, and common patterns.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US5 Phase 7)
+> **Last Updated**: 2026-06-17 (US6 Phase 8)
 
 ## Overview
 
@@ -60,6 +60,7 @@ All fallible operations return `Result<_, EmendError>` using the `thiserror` cra
 - `AiCancelled` — User cancelled request
 - `AiHttp { status, detail }` — HTTP error (redacted, no API keys)
 - `AiStreamMalformed { detail }` — SSE parse failure
+- `AiOversizedInput { bytes, limit }` — Document exceeds input size cap (FR-036a, US6)
 - `Internal { detail }` — Caught panic or unexpected failure
 
 **Contract**: The `emend-ffi` crate mirrors `EmendError` 1:1 via `#[derive(uniffi::Error)]` with an exhaustive `From<EmendError>` impl (no catch-all arm). Adding a variant here triggers a compile error in `emend-ffi` until the projection is updated, making FFI safety a compile-time guarantee.
@@ -71,7 +72,7 @@ All fallible operations return `Result<_, EmendError>` using the `thiserror` cra
 | Type | Convention | Example |
 |------|------------|---------|
 | Crate root | lowercase snake_case | `emend-core`, `emend-ffi` |
-| Module files | lowercase snake_case | `error.rs`, `document.rs` |
+| Module files | lowercase snake_case | `error.rs`, `document.rs`, `ai.rs` |
 | Test integration | `tests/` subdirectory | `crates/emend-core/tests/` |
 | Benchmark crate | Separate workspace member | `crates/emend-bench/` |
 
@@ -81,9 +82,9 @@ All fallible operations return `Result<_, EmendError>` using the `thiserror` cra
 |------|------------|---------|
 | Variables | camelCase | `docPath`, `newText` |
 | Constants | SCREAMING_SNAKE_CASE | `MAX_NOTE_SIZE`, `DEFAULT_BUFFER_SIZE` |
-| Functions | snake_case, verb-prefix when changing state | `open_document()`, `push_edit()`, `len_utf16()` |
-| Structs | PascalCase | `Document`, `EmendError`, `U16Range` |
-| Enums | PascalCase, singular variant names | `LineCol`, `FileWatchEvent`, `LinkKind` |
+| Functions | snake_case, verb-prefix when changing state | `open_document()`, `push_edit()`, `len_utf16()`, `check_input_size()` |
+| Structs | PascalCase | `Document`, `EmendError`, `U16Range`, `ApiKey` |
+| Enums | PascalCase, singular variant names | `LineCol`, `FileWatchEvent`, `LinkKind`, `SseEvent` |
 | Trait names | PascalCase, often verb adjectives | `AiSink`, `SearchSink` |
 
 #### Documentation
@@ -92,7 +93,7 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 
 - **Public types/functions**: Full doc comment with examples where non-obvious
 - **Module root (`lib.rs`)**: Summary of the module's purpose and public surface
-- **Complex invariants**: Annotate in doc comments (e.g., UTF-16↔char conversions in `document.rs`)
+- **Complex invariants**: Annotate in doc comments (e.g., UTF-16↔char conversions in `document.rs`, secret hygiene in `ai.rs`)
 - **Test files (`tests/*.rs`)**: Module-level doc comment (prefixed `//!`) explaining the test scope and test obligations
 
 **Example** (from `tests/document.rs`):
@@ -112,13 +113,15 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 //! 2. **A rename leaves old links unresolved (FR-019a, v1).**
 ```
 
-**Example** (from `tests/embeds.rs`, US5):
+**Example** (from `tests/ai_privacy.rs`, US6):
 ```rust
-//! T096 — embed resolution with cycle + depth guards (US5 · FR-021/021a).
+//! T110 — AI **privacy / secret-hygiene** invariants enforced in the pure core
+//! (US6 · FR-035/036a, NFR-006, SC-008).
 //!
-//! `![[embed]]` inlines another note's content into the preview. Two hazards:
-//! 1. **Cycles must terminate.** Guard via tracking visited paths.
-//! 2. **Depth is bounded.** MAX_EMBED_DEPTH=8 (research §D).
+//! Two structural guarantees that live in `emend-core`:
+//!
+//! 1. **Max input size is rejected BEFORE any send** (FR-036a).
+//! 2. **The API key never leaks via `Debug`/`Display`** (NFR-006).
 ```
 
 ## Swift Code Style
@@ -226,12 +229,14 @@ extension EditorCoordinator {
 | SwiftUI views | PascalCase | `MainWindow.swift`, `EmendApp.swift` |
 | SwiftUI view components | PascalCase | `EditorPane.swift` |
 | Utility extensions | PascalCase + descriptive | `SecurityScopedBookmarks.swift` |
-| Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift` |
+| Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift`, `InfoModel.swift` |
 | Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `EditorCoordinator.swift`, `WorkspaceOutlineView+Coordinator.swift` |
-| Sink bridges (FFI callbacks) | PascalCase + `Sink` suffix | `QuickOpenSink.swift`, `FsObserver.swift` |
+| Sink bridges (FFI callbacks) | PascalCase + `Sink` suffix | `QuickOpenSink.swift`, `FsObserver.swift`, `AiStreamAdapter.swift` |
 | Link/task helpers (US5) | PascalCase + descriptive | `WikiLink.swift`, `TaskCheckbox.swift`, `ImageDrop.swift` |
+| Security/storage | PascalCase | `KeychainStore.swift`, `SecurityScopedBookmarks.swift` |
 | Export/utility enums | PascalCase | `PDFExport.swift` |
-| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `LinkHelpersTests.swift`, `LinksFlowTests.swift` |
+| Info pane models | PascalCase + `Model` suffix | `InfoModel.swift` |
+| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `LinkHelpersTests.swift`, `KeychainStoreTests.swift` |
 
 #### Code Element Naming (Swift)
 
@@ -239,10 +244,10 @@ extension EditorCoordinator {
 |------|------------|---------|
 | Variables | camelCase | `selectedLocation`, `isVisible`, `bookmarkData` |
 | Constants (static) | camelCase (or SCREAMING_SNAKE_CASE for compile-time constants) | `defaultFolderSize` |
-| Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `WikiLink` |
-| Functions/methods | camelCase, verb-prefix for state change | `addLocation()`, `openDocument()`, `onToken(_:)` |
-| Properties | camelCase | `locations`, `selection`, `abiVersion` |
-| Boolean properties | `is`/`has` prefix when non-obvious | `isVisible`, `hasError` |
+| Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `WikiLink`, `KeychainStore` |
+| Functions/methods | camelCase, verb-prefix for state change | `addLocation()`, `openDocument()`, `onToken(_:)`, `save(_:account:)` |
+| Properties | camelCase | `locations`, `selection`, `abiVersion`, `apiKey` |
+| Boolean properties | `is`/`has` prefix when non-obvious | `isVisible`, `hasError`, `hasKey` |
 
 #### SwiftUI Conventions
 
@@ -275,9 +280,9 @@ final class WorkspaceModel: ObservableObject {
 }
 
 @MainActor
-final class TabModel: ObservableObject {
-    @Published private(set) var tabs: [Tab] = []
-    @Published var activeID: Tab.ID?
+final class InfoModel: ObservableObject {
+    @Published private(set) var stats: DocStats?
+    @Published private(set) var outline: [OutlineItem] = []
 }
 ```
 
@@ -380,6 +385,29 @@ let sink = QuickOpenSink(
 )
 ```
 
+**US6 example** (`AiStreamAdapter` bridges AI streaming responses):
+```swift
+/// Bridges the core's AiSink callbacks (on a tokio worker in emend-ffi)
+/// to AsyncThrowingStream. Holds immutable closures; safe for crossing thread
+/// boundaries (mirrors QuickOpenSink).
+public final class AiStreamAdapter: AiSink, Sendable {
+    private let onTerminate: @Sendable () -> Void
+    private let continuation: AsyncThrowingStream<String, Error>.Continuation
+
+    public func onToken(text: String) {
+        continuation.yield(text)
+    }
+
+    public func onDone(full _: String) {
+        continuation.finish()
+    }
+
+    public func onError(err: FfiError) {
+        continuation.finish(throwing: err)
+    }
+}
+```
+
 **Key pattern**:
 1. Sink class is `final` and `Sendable`
 2. Holds only `@Sendable` closures (immutable, can cross threads)
@@ -477,6 +505,103 @@ private func paginate(_ webView: WKWebView, with printInfo: NSPrintInfo) async t
 - Selector-based `didRun:` callback receives the result and resumes the continuation
 - Watchdog timeout (30s) guards against stalled WebKit processes
 - Both `loadTemplate` and `paginate` steps use `withCheckedThrowingContinuation` to bridge callback-based APIs to async/await
+
+## AI Client Patterns (US6)
+
+### Redacting API Key Pattern
+
+The `ApiKey` newtype (in `crates/emend-core/src/ai.rs`) implements **secret hygiene** (NFR-006). Its `Debug` and `Display` implementations render `***`, never the secret:
+
+```rust
+/// A redacting wrapper around the AI API key (NFR-006).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    /// Wrap a raw key string. Only readable via expose().
+    pub fn new(key: String) -> Self { Self(key) }
+    
+    /// The ONLY way to read the secret — explicit naming prevents accidental leaks.
+    pub fn expose(&self) -> &str { &self.0 }
+    
+    /// Whether the key is blank (empty/whitespace).
+    pub fn is_blank(&self) -> bool { self.0.trim().is_empty() }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApiKey(***)")  // Never prints the secret
+    }
+}
+
+impl std::fmt::Display for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")  // Never prints the secret
+    }
+}
+```
+
+**Swift usage** (`KeychainStore`, US6):
+```swift
+/// Secure storage for AI API keys via macOS Keychain (SC-008, NFR-006).
+/// Keys are never retained in Swift memory; they cross the FFI boundary
+/// transient to the Rust core for one request, then dropped.
+final class KeychainStore {
+    static func save(_ key: String, account: String) throws { /* ... */ }
+    static func read(account: String) -> String? { /* ... */ }
+    static func hasKey(account: String) -> Bool { /* ... */ }
+    static func delete(account: String) -> Bool { /* ... */ }
+}
+```
+
+**Key guarantees**:
+- The secret is wrapped at the Rust boundary and never logged/displayed
+- Swift retrieves from Keychain only when needed, keeps it transient
+- No copies in temp variables or default parameters
+
+### Pure SSE Parser Pattern
+
+The `SseParser` in `crates/emend-core/src/ai.rs` is a **pure, tokio-free** line-buffering parser for OpenAI-style Server-Sent-Events (T109, US6):
+
+```rust
+/// Parses OpenAI Chat-Completions SSE chunks (incremental, tokio-free).
+/// - Buffers raw bytes across chunks
+/// - Emits complete SseEvent::Token(delta) for each data: line
+/// - Tolerates CRLF and LF line endings
+/// - Skips comments/heartbeats (: prefix)
+/// - Special-cases data: [DONE] → SseEvent::Done
+/// - Treats closed connection as clean end
+pub struct SseParser { /* ... */ }
+
+impl SseParser {
+    pub fn new() -> Self { /* ... */ }
+    pub fn push_bytes(&mut self, chunk: &[u8]) -> impl Iterator<Item = SseEvent> { /* ... */ }
+    pub fn finish(mut self) -> impl Iterator<Item = SseEvent> { /* ... */ }
+}
+
+pub enum SseEvent {
+    Token(String),  // One complete incremental delta
+    Done,           // data: [DONE] received
+}
+```
+
+**Rationale** (Constitution V — decision logic in core):
+- The parser is pure (no tokio, no reqwest, testable with `cargo test`)
+- FFI layer (`emend_ffi/src/ai.rs`) handles tokio spawning and request orchestration
+- The core's token emission logic is correct in isolation; the FFI layer inherits correctness
+
+### Pre-Send Input Size Guard
+
+The `check_input_size` function (in `crates/emend-core/src/ai.rs`) enforces **pre-send rejection** of oversized inputs (FR-036a, US6):
+
+```rust
+/// Reject an over-limit AI input **before any network call** (FR-036a).
+/// Returns AiOversizedInput if input.len() > max_bytes (boundary inclusive).
+/// Measures UTF-8 bytes (what crosses the wire), not chars.
+pub fn check_input_size(input: &str, max_bytes: u64) -> Result<(), EmendError> { /* ... */ }
+```
+
+**Key property**: The FFI layer calls this **before constructing a request**. Network gating is structural — `emend-core` has no `reqwest` dependency (CI proves `cargo tree -p emend-core -i reqwest` finds nothing).
 
 ## Link & Task Patterns (US5)
 
@@ -751,7 +876,7 @@ Enforced at commit time by `lefthook` hook (see `lefthook.yml` commit-msg sectio
 - `chore` — Maintenance / tooling
 - `revert` — Revert a prior commit
 
-**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`, `(links)` (US5).
+**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`, `(links)` (US5), `(ai)` (US6).
 
 **Breaking change** (optional): Suffix `!` before `:` (e.g., `feat(ffi)!: new ABI version`).
 
@@ -764,6 +889,7 @@ test(document): add astral-char UTF-16 tests
 feat(search): add cancellable quick-open query (US3)
 feat(preview): add PDF export via NSPrintOperation (US4)
 feat(links): add wiki-link resolution + embed inlining (US5)
+feat(ai): implement BYOM AI client with SSE streaming (US6)
 ci: enforce MSRV 1.85
 ```
 
@@ -800,11 +926,13 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`crates/emend-core/src/index.rs`**: Incremental search index (nucleo-based fuzzy ranking, wiki-link O(1) lookup)
 - **`crates/emend-core/src/search.rs`**: Pure, cancellable quick-open search driver (ranks and streams in batches)
 - **`crates/emend-core/src/preview.rs`**: Live Markdown preview (comrak HTML + syntect code highlighting)
-- **`crates/emend-core/src/derived.rs`**: Link extraction, resolution, and task detection (US5 · T095/T096)
-- **`crates/emend-core/src/parse/embed.rs`**: Embed expander with cycle + depth guards (US5 · T096)
+- **`crates/emend-core/src/derived.rs`**: Link extraction, resolution, task detection, and doc stats (US5/US6)
+- **`crates/emend-core/src/parse/embed.rs`**: Embed expander with cycle + depth guards (US5)
+- **`crates/emend-core/src/ai.rs`**: Pure AI client: SSE parser, secret hygiene, max-input guard (US6)
 - **`crates/emend-core/tests/`**: Integration tests (see [Testing](#testing))
 - **`crates/emend-ffi/src/lib.rs`**: UniFFI `#[uniffi::export]` shim + panic containment
 - **`crates/emend-ffi/src/search.rs`**: FFI projection of streaming search (bridges cancellation, spawns worker, panic containment)
+- **`crates/emend-ffi/src/ai.rs`**: FFI projection of AI client (tokio orchestration, request dispatch, token bridging)
 - **`crates/emend-bench/benches/`**: Criterion micro-benchmarks
 
 ### Swift Module Structure
@@ -818,6 +946,8 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
   - **`Editor/`**: Editor view, syntax highlighting, text storage delegates, pure transforms (`SmartLists`, `FormattingCommands`, `WikiLink`, `TaskCheckbox`, `ImageDrop`)
   - **`Preview/`**: Live preview model, off-screen WebView render, PDF export (`PDFExport.swift`, US4)
   - **`QuickOpen/`**: Quick Open palette model + sink bridge (US3)
+  - **`Info/`**: Info sidebar model + view (US6) — displays stats, outline, AI summary
+  - **`Platform/`**: macOS-specific utilities (`KeychainStore.swift`, `SecurityScopedBookmarks.swift`, etc.)
   - **`EditorCoordinator.swift`**: Coordinator for `NSTextView` / editor text handling (US5 split to own file for file_length)
 - **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
 
@@ -854,6 +984,21 @@ Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 - **`app/Emend/EmendTests/LinksFlowTests.swift`**: End-to-end resolution + embedding + attachment storage (T104)
 - **`crates/emend-core/tests/links.rs`**: Core resolution + extraction determinism (T095)
 - **`crates/emend-core/tests/embeds.rs`**: Core embed expansion + cycle/depth guards (T096)
+
+### AI Client Organization (US6)
+
+- **`crates/emend-core/src/ai.rs`**: Pure SSE parser, secret hygiene (ApiKey redacting), max-input guard, request builders
+- **`crates/emend-core/src/derived.rs`**: Doc stats (word/char count, reading time, task N-of-M), outline with line numbers
+- **`crates/emend-ffi/src/ai.rs`**: FFI projection of AI client (tokio orchestration, reqwest dispatch, token bridging)
+- **`app/Emend/Emend/Platform/KeychainStore.swift`**: macOS Keychain wrapper for API key storage (SC-008, NFR-006)
+- **`app/Emend/Emend/Info/InfoModel.swift`**: SwiftUI state for sidebar info pane (stats, outline, AI summary)
+- **`app/Emend/Emend/Info/InfoSidebarView.swift`**: View for stats, outline, AI summary
+- **`swift/EmendCore/Sources/EmendCore/Streaming.swift`**: `AiStreamAdapter` foreign-trait bridge to AsyncThrowingStream (US6)
+- **`crates/emend-core/tests/derived_stats.rs`**: Doc stats + outline correctness (T108, US6)
+- **`crates/emend-core/tests/ai_sse.rs`**: SSE parser edge cases (T109, US6)
+- **`crates/emend-core/tests/ai_privacy.rs`**: Secret hygiene + max-input guard (T110, US6)
+- **`app/Emend/EmendTests/KeychainStoreTests.swift`**: Keychain round-trip (T119, US6)
+- **`app/Emend/EmendTests/InfoSidebarTests.swift`**: Info sidebar stats/outline population (T119, US6)
 
 ### Preview & Export Organization (US4)
 

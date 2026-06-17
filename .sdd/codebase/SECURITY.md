@@ -2,11 +2,11 @@
 
 > **Purpose**: Document authentication, authorization, security controls, and vulnerability status.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US5 Phase 7 complete — embed resolution, links, tasks, attachments with cycle/depth guards and collision-safe storage)
+> **Last Updated**: 2026-06-17 (US6 Phase 8 complete — AI summary with BYOM endpoint; zero outbound network unless configured and invoked; key redaction + max-input guard before any send)
 
 ## Overview
 
-Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US5 Phase 7 (complete)**: wiki-link resolution, embed (`![[…]]`) inlining with cycle + depth guards, task list syntax, and attachment storage with collision-safe naming and path normalization.
+Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US6 Phase 8 (complete)**: AI summary feature with API key redaction (all logs/messages render `***`), max-input guard (bytes validated before send, FR-036a), and zero outbound network without explicit user invocation (SC-008).
 
 ---
 
@@ -31,7 +31,7 @@ The app uses **security-scoped bookmarks** to persist access to user-selected fo
 | **Scope management** | `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` (balanced per scope, held for session) | `SecurityScopedBookmarks.swift` (lines 54–60) + `WorkspaceModel.swift` (lines 136–138) |
 | **Rust-Swift handshake** | Swift opens the scope at location registration; Rust file IO (`read_file_at`, `write_atomic`, `notify` watcher) operates within scope | `crates/emend-ffi/src/lib.rs` (exports) |
 | **Stale bookmark refresh** | Transparently re-creates stale bookmarks on resolution; refreshed data persisted back to UserDefaults | `SecurityScopedBookmarks.resolve()` (lines 32–48) |
-| **Validation** | Security-scoped behavior verified in the signed app; tests use plain bookmarks (test process is unsandboxed) | `app/Emend/EmendTests/BookmarkResolutionTests.swift` |
+| **Validation** | Security-scoped behavior verified in the signed app; tests use plain bookmarks (the test process is unsandboxed) | `app/Emend/EmendTests/BookmarkResolutionTests.swift` |
 | **Scope lifecycle tests** | Plain bookmarks (no `.withSecurityScope`) parameterized into `resolve()` / `makeBookmark()`; stale-bookmark refresh tested | `app/Emend/EmendTests/BookmarkResolutionTests.swift` |
 
 ### Path Identity (NFR-007: Symlink Cycles & Case Folding)
@@ -226,26 +226,36 @@ When a dropped file's name exists in the attachments directory, a suffix is inse
 
 ---
 
-## AI & Network Security
+## AI & Network Security (US6)
 
-### AI Configuration & Key Storage (Deferred to Phase 1)
+### BYOM AI Summary (Bring-Your-Own-Model)
 
-| Aspect | Plan | Principle | Notes |
-|--------|------|-----------|-------|
-| **Storage** | macOS Keychain only (`SecItem` with `kSecClassGenericPassword`, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) | NFR-006, Constitution II | Design specified (research §B5); implementation deferred |
-| **Custody** | Swift reads from Keychain immediately before each request; key passed as transient `String` parameter across FFI | NFR-006 | Not yet wired; hot path reserved for Phase 1 |
-| **Redaction** | Key held in redacting newtype (`Debug`/`Display` → `***`); set only on `Authorization` header, never in logging fields | NFR-006 | Implementation: `crates/emend-core/src/ai.rs` (Phase 1 T112) |
-| **Configuration** | OpenAI-compatible endpoint (baseURL, model, key) stored in Keychain (key) + local app store (baseURL, model metadata) | Constitution II | No API key in app store |
+US6 introduces the first outbound-network feature: **summarize_document** (FFI contract §7, FR-032/035/036a, NFR-006, SC-008/SC-009).
 
-### Network Isolation
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **Zero network without config/invocation** | No outbound calls unless the user explicitly configures an OpenAI-compatible endpoint AND invokes the summarize action. A blank/empty key → `AiNotConfigured` error synchronously, no socket opened (SC-008). | `crates/emend-ffi/src/ai.rs::summarize_document()` (lines 170–174) |
+| **Max-input guard before send** | Document byte size validated **before any HTTP request** (FR-036a). Oversized input → `AiOversizedInput` error locally, no network (zero-network structural guarantee). | `crates/emend-core/src/ai.rs::check_input_size()` (lines 119–128) |
+| **API key redaction** | Key wrapped in redacting newtype [`ApiKey`]; `Debug` AND `Display` render `***` (never the secret). Exposed **only** at the single point where it sets the `Authorization` header (NFR-006). | `crates/emend-core/src/ai.rs::ApiKey` (lines 47–99) + `build_auth_header()` (lines 335–337) |
+| **Key never persisted/logged** | The FFI boundary passes the key as a transient `String`, wraps it, uses it once for the HTTP header, and drops it. No persistence, no logging, no field in error messages. | `crates/emend-ffi/src/ai.rs::summarize_document()` (lines 157–229) |
+| **Error redaction** | HTTP errors (`AiHttp`) carry only the status code + canonical reason phrase (e.g., "unauthorized"), never the Authorization header or request details. Transport errors mapped to generic descriptions (NFR-006). | `crates/emend-ffi/src/ai.rs::transport_error()` (lines 467–477) |
+| **TLS (macOS-native)** | HTTP client built via `reqwest::Client::builder()` with no explicit TLS config; uses macOS Security.framework native TLS. | `crates/emend-ffi/src/ai.rs::build_client()` (lines 456–458) |
 
-| Constraint | Implementation | Status |
-|-----------|---|---|
-| **Default offline** | No network calls without explicit AI configuration + invocation | Phase 1 T110 (test: `ai_privacy.rs`) |
-| **Preview is offline** | WKWebView with CSP blocking remote loads, `nonPersistent` store, navigation delegate cancels non-`file:`/`about:` URLs, PDF export identical | ✅ US4 T087 (implemented) |
-| **Bundled assets** | Mermaid.js + KaTeX vendored locally; loaded via `loadFileURL`, not CDN | ✅ US4 (implemented) |
-| **AI request validation** | Max input size checked before sending; requests are cancellable via `tokio_util::sync::CancellationToken`; per-chunk timeout + overall deadline | Phase 1 T112 |
-| **AI error handling** | Failed or timed-out requests never leave sensitive data in logs | Phase 1 (code review gate) |
+### Streaming & Timeout Safety
+
+| Mechanism | Detail | Location |
+|-----------|--------|----------|
+| **Per-chunk inactivity timeout** | NOT a whole-request timeout (which would fire mid-stream on slow models). Each byte chunk must arrive within `request_timeout_ms`; no chunk → `AiTimeout` error (research §B5). | `crates/emend-ffi/src/ai.rs::stream_body()` (lines 305–367) |
+| **SSE parsing (pure, lenient)** | Complete UTF-8 tokens only (partial bytes buffered across chunks; split code points never emitted). Malformed JSON payloads skipped; server close without `[DONE]` is a clean end. | `crates/emend-core/src/ai.rs::SseParser` (lines 164–220) |
+| **Cancellation** | [`tokio_util::sync::CancellationToken`] + `tokio::select!` on every socket operation. Cancelling immediately delivers `AiCancelled` with no tokens or `on_done` callback (NFR-002 / FR-036a). | `crates/emend-ffi/src/ai.rs::summarize_document()` + `run_summary()` (lines 237–296) |
+
+### API Key Storage (Keychain, Swift-Owned)
+
+| Aspect | Design | Status |
+|--------|--------|--------|
+| **macOS Keychain** | API key stored via Security framework `SecItem` (generic password class, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`). Only the user running the app can read it; locked when the device is locked. | **Design specified** (research §B5); implementation not yet wired to the FFI boundary (Phase 1 task T112). |
+| **Swift owns custody** | Keychain read happens in Swift before each request; key passed as transient `String` to Rust, wrapped + redacted, used once, dropped (never returned to Swift or persisted). | Coordination between `KeychainStore` (not yet implemented) + `summarize_document()` boundary. |
+| **Redaction at boundary** | Rust layer ensures redaction via `ApiKey` newtype; Swift layer respects key transience (pass-once, never cache). | Double layer: Rust redaction + transient boundary passing. |
 
 ---
 
@@ -284,7 +294,7 @@ When a dropped file's name exists in the attachments directory, a suffix is inse
 | **Workspace lint policy** | `[workspace.lints.clippy]`: `unwrap_used = "deny"`, `expect_used = "deny"`, `panic = "deny"` | All `emend-core` crates | `Cargo.toml` (lines 89–92) |
 | **Test module escape hatch** | `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "unit test asserts")]` | Isolated to test modules | `emend-core/src/document.rs` (lines 268–272) |
 | **UniFFI exports** | Every `#[uniffi::export]` wrapped in `catch_unwind` → Swift `Error` | All sync/async exports | `crates/emend-ffi/src/lib.rs` |
-| **Spawned tasks** | `tokio::spawn` bodies wrapped in `contain_panic` → `EmendError::Internal` | AI / search tasks (Phase 1) | `crates/emend-ffi/src/panic.rs` |
+| **Spawned tasks** | `tokio::spawn` bodies wrapped in `contain_panic` → `EmendError::Internal` | AI / search tasks (US6) | `crates/emend-ffi/src/ai.rs::summarize_document()` (lines 212–226) |
 
 **Implementation**: `crates/emend-ffi/src/panic.rs` (contains `catch_unwind` wrappers and `contain_panic` helper)
 
@@ -299,12 +309,12 @@ All fallible operations return `Result<T, EmendError>`:
 | `IoFailure { path, detail }` | Disk I/O error | System error context |
 | `NameCollision { path }` | Name already exists | Prompt rename / disambiguate |
 | `NoteTooLarge { path, bytes, limit }` | Doc exceeds ~5 MB | Open read-only with notice |
-| `AiNotConfigured` | No AI endpoint set | Prompt configuration |
-| `AiTimeout` | Request timed out | Suggest retry or increase timeout |
+| `AiNotConfigured` | No AI endpoint/key set | Prompt configuration (SC-008) |
+| `AiTimeout` | Request timed out | Suggest retry or increase timeout (per-chunk inactivity) |
 | `AiCancelled` | User cancelled request | Silent (expected) |
-| `AiOversizedInput { bytes, limit }` | Input exceeds limit | Refuse request; show size |
-| `AiHttp { status, detail }` | HTTP error (e.g., 401, 429) | Auth error or rate-limit guidance |
-| `AiStreamMalformed { detail }` | SSE stream unparseable | Transient error; suggest retry |
+| `AiOversizedInput { bytes, limit }` | Input exceeds limit | Refuse request; show size (FR-036a) |
+| `AiHttp { status, detail }` | HTTP error (e.g., 401, 429) | Auth error or rate-limit guidance (redacted, NFR-006) |
+| `AiStreamMalformed { detail }` | SSE stream unparseable | Transient error; suggest retry (lenient SSE parsing) |
 | `Internal { detail }` | Caught panic or internal fault | Generic "unexpected" message |
 
 **Location**: `crates/emend-core/src/error.rs` (mirrors via `crates/emend-ffi/src/error.rs`)
@@ -327,13 +337,13 @@ All fallible operations return `Result<T, EmendError>`:
 | **Embed targets** | Normalized (lowercased, trimmed) before lookup; resolver closure fails gracefully (returns `None`) if unresolved | `crates/emend-core/src/parse/embed.rs::normalize_target()` | ✅ US5 (implemented) |
 | **Attachment names** | Sanitized: only the final path component used (strip directory parts), empty/extension-only names use fallback stem | `crates/emend-core/src/fs.rs::sanitize_attachment_name()` | ✅ US5 (implemented) |
 
-### AI Input (Deferred to Phase 1)
+### AI Input (US6: Implemented)
 
-| Constraint | Plan | Status |
-|-----------|------|--------|
-| **Max input size** | Checked **before** network call (document truncated or refused) | Phase 1 T112 |
-| **Streaming parse** | Line-buffered SSE; `data:` split across chunks handled | Phase 1 T112 |
-| **Cancellation** | Safe to cancel mid-stream; no partial state persisted | Phase 1 T113 |
+| Constraint | Implementation | Location |
+|-----------|---|---|
+| **Max input size** | Checked **before** network call via `check_input_size()` (document size vs `max_input_bytes`); returns `AiOversizedInput` with actual size + limit (FR-036a). | `crates/emend-core/src/ai.rs::check_input_size()` + `crates/emend-ffi/src/ai.rs::summarize_document()` (lines 186–189) |
+| **Streaming parse** | Line-buffered SSE via `SseParser` (research §B5); `data:` split across chunks reassembled; complete UTF-8 tokens only. | `crates/emend-core/src/ai.rs::SseParser::push_bytes()` / `finish()` (lines 184–220) |
+| **Cancellation** | Safe to cancel mid-stream via `CancellationToken.cancel()`; no partial state persisted. Cancellation checked on every chunk await. | `crates/emend-ffi/src/ai.rs::summarize_document()` (line 164) + `stream_body()` (lines 323–332) |
 
 ---
 
@@ -348,7 +358,7 @@ No environment variables required for core functionality. AI configuration is st
 | Environment | Method |
 |-------------|--------|
 | **Local dev** | Keychain (same as production); manually tested with mock server (Phase 1) |
-| **CI/testing** | Test fixtures use mock HTTP endpoints (no real API key) | 
+| **CI/testing** | Test fixtures use mock HTTP endpoints (no real API key); tests assert zero-network on blank keys (T110) |
 
 ---
 
@@ -393,9 +403,11 @@ Pinned in `Cargo.toml` workspace `[workspace.dependencies]` and `[workspace.pack
 | `syntect` | 5.3.x | Code highlighting (inert until Phase 1) | ≤ 1.85 |
 | `nucleo` | 0.5.x | Fuzzy search (inert until Phase 1) | ≤ 1.85 |
 | `notify`, `notify-debouncer-full` | 8.2.x, 0.7.x | File watching (inert until Phase 1) | ≤ 1.85 |
-| `reqwest` | 0.13.x | AI HTTP client with SSE (inert until Phase 1) | ≤ 1.85 |
+| `reqwest` | 0.13.x | AI HTTP client with SSE (US6 implemented) | ≤ 1.85 |
 | `uniffi` | 0.31.x | FFI binding generator (emend-ffi only) | ≤ 1.85 |
 | `criterion` | 0.7.x | Benchmarking (0.8+ needs 1.86, intentionally excluded) | ≤ 1.85 |
+| `serde`, `serde_json` | 1.x, 1.x | Serialization (core + ffi) | ≤ 1.85 |
+| `futures-util` | 0.3.x | Streaming adapters (emend-ffi, AI SSE) | ≤ 1.85 |
 
 **All versions verified at checkout**; MSRV pinning enforced by `cargo +1.85 check --all` in CI. No version bumps from memory — verified with `cargo update`.
 
@@ -408,9 +420,8 @@ The following are pinned but **not used in code** until Phase 1 features land:
 - `syntect` (Phase 1 T079)
 - `nucleo` (Phase 1 T074–T076)
 - `notify`, `notify-debouncer-full` (Phase 1 T065–T067)
-- `reqwest` (Phase 1 T112)
 
-This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed).
+This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed). **US6 imports**: `reqwest`, `serde_json`, `futures-util` (SSE client, serialization, streaming).
 
 ---
 
@@ -419,10 +430,10 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | Event | Logged Data | Retention | Status |
 |-------|-------------|-----------|--------|
 | **File operations** | Path, operation (read/write/delete), success/error | In-app debug logs (opt-in) | ✅ Implemented (fs.rs, error handling) |
-| **AI requests** | Endpoint, model, request/response size, latency, error (never key) | In-app debug logs (opt-in) | Phase 1 T112 |
+| **AI requests** | Endpoint, model, request/response size, latency, error (**never key**, redacted via `ApiKey` newtype + error detail redaction) | In-app debug logs (opt-in) | ✅ US6 (implemented) |
 | **Security sandbox** | Bookmark grant/revoke events (via OS log) | System logs | Native (Security framework) |
 
-**Notes**: All logs are development/diagnostic; no telemetry is sent off-device. Logs are cleared on app exit unless explicitly persisted to a debug file.
+**Notes**: All logs are development/diagnostic; no telemetry is sent off-device. Logs are cleared on app exit unless explicitly persisted to a debug file. AI errors are redacted: `AiHttp` carries only status + canonical reason (never URL or header); transport errors mapped to generic descriptions.
 
 ---
 
@@ -449,22 +460,25 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | **Preview HTML rendering** | GFM, wikilinks, highlight syntax render correctly; comrak escapes raw HTML | `crates/emend-core/tests/preview_render.rs` | ✅ US4 T084 (implemented) |
 | **Preview CSP + isolation** | WKWebView enforces CSP, nonPersistent store, navigation delegate blocks remote loads | Manual signed-app test + `app/Emend/EmendTests/PreviewExportTests.swift` | ✅ US4 (partial; runtime path requires manual UI verification) |
 | **PDF export offline** | Off-screen export uses same isolation (CSP + nonPersistent + bundled assets) as on-screen preview | `app/Emend/EmendTests/PreviewExportTests.swift` | ✅ US4 (implemented) |
-| **AI privacy (offline)** | No network with AI unconfigured | `crates/emend-core/tests/ai_privacy.rs` | Phase 1 T110 |
-| **AI key redaction** | Logs never contain key substring | Code review + test capture | Phase 1 T112 |
+| **AI privacy (offline)** | No network with AI unconfigured (blank key → AiNotConfigured synchronously, no socket) | `crates/emend-core/tests/ai_privacy.rs` | ✅ US6 T110 (implemented) |
+| **AI key redaction** | API key never appears in logs, error messages, or Debug/Display output; exposed only via explicit `expose()` method | `crates/emend-core/tests/ai_privacy.rs` (redaction assertions) | ✅ US6 T110 (implemented) |
+| **AI max-input guard** | Document exceeding `max_input_bytes` rejected locally with `AiOversizedInput`, no request sent | `crates/emend-core/tests/ai_privacy.rs` + `crates/emend-ffi/tests/ai.rs` | ✅ US6 T110 (implemented) |
+| **AI cancellation** | Cancelling in-flight request yields `AiCancelled` terminal, no tokens or success | `crates/emend-ffi/tests/ai.rs::test_ai::cancel_before_send_resolves_as_cancelled` | ✅ US6 (implemented) |
+| **AI error redaction** | HTTP errors carry status + reason phrase only (never URL, header, or key); transport errors use generic descriptions | `crates/emend-ffi/src/ai.rs::transport_error()` (lines 467–477) | ✅ US6 (code review verified) |
 
 ---
 
 ## Known Limitations & Deferred Work
 
-1. **AI features** (key redaction, privacy tests, timeout handling) are designed and specified but not yet implemented (Phase 1 tasks T110–T113).
-2. **Security-scoped-bookmark validation** is tested with plain (non-security-scoped) bookmarks in the test process (which is unsandboxed). Full sandbox behavior is validated only in the signed, notarized app.
-3. **Live-refresh path** (file watcher events, conflict handling) depends on real OS filesystem events (not exercised by headless tests) — needs manual UI verification in signed app.
-4. **Dependency vulnerability scanning** is not automated in CI; manual `cargo audit` checks recommended pre-release (tracked in TD-006).
-5. **Performance regression testing** for incremental parsing is deferred (tracked in TD-002).
-6. **Folder move re-pathing** for descendants' favorite/pin state is deferred (known limitation captured in CONCERNS.md).
-7. **Preview scroll-sync runtime path** (Section §C3): the pure core logic for data-line anchors is tested; the runtime integration (editor↔preview scroll sync) requires manual UI verification in the signed app.
-8. **Relative image preview** for drag-dropped attachments: relative refs stored correctly; preview display deferred to Phase 1 (local-image preview).
-9. **Wiki-link ambiguity resolution** is deterministic (shortest path wins) but may surprise users; a future UI enhancement could disambiguate.
+1. **Security-scoped-bookmark validation** is tested with plain (non-security-scoped) bookmarks in the test process (which is unsandboxed). Full sandbox behavior is validated only in the signed, notarized app.
+2. **Live-refresh path** (file watcher events, conflict handling) depends on real OS filesystem events (not exercised by headless tests) — needs manual UI verification in signed app.
+3. **Dependency vulnerability scanning** is not automated in CI; manual `cargo audit` checks recommended pre-release (tracked in TD-006).
+4. **Performance regression testing** for incremental parsing is deferred (tracked in TD-002).
+5. **Folder move re-pathing** for descendants' favorite/pin state is deferred (known limitation captured in CONCERNS.md).
+6. **Preview scroll-sync runtime path** (Section §C3): the pure core logic for data-line anchors is tested; the runtime integration (editor↔preview scroll sync) requires manual UI verification in the signed app.
+7. **Relative image preview** for drag-dropped attachments: relative refs stored correctly; preview display deferred to Phase 1 (local-image preview).
+8. **Wiki-link ambiguity resolution** is deterministic (shortest path wins) but may surprise users; a future UI enhancement could disambiguate.
+9. **Keychain integration for API key custody** is specified (research §B5) but wiring to the FFI boundary is deferred to Phase 1 task T112.
 
 ---
 

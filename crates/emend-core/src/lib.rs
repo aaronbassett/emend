@@ -78,6 +78,16 @@ pub mod search;
 /// callback later (T059).
 pub mod watcher;
 
+/// The BYOM AI client — the **pure half** (US6 · FR-032/035/036/036a, NFR-006;
+/// research §B5). Owns the lenient SSE event parser ([`ai::SseParser`]), the
+/// max-input guard ([`ai::check_input_size`], FR-036a), the redacting
+/// [`ApiKey`](ai::ApiKey) newtype (NFR-006), and the pure request *builders*
+/// (headers/body as data). It deliberately holds **no network**: `emend-core`
+/// stays tokio-free AND reqwest-free (Constitution V), so the `reqwest`/`tokio`
+/// streaming orchestration lives in `emend-ffi`, feeding raw bytes through
+/// [`ai::SseParser`] and pushing deltas to the foreign `AiSink`.
+pub mod ai;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;

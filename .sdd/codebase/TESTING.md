@@ -2,7 +2,7 @@
 
 > **Purpose**: Document test frameworks, patterns, organization, and coverage requirements.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US5 Phase 7)
+> **Last Updated**: 2026-06-17 (US6 Phase 8)
 
 ## Overview
 
@@ -62,6 +62,9 @@ Tests are **co-located with source code** in two forms:
      - `crates/emend-core/tests/concurrency.rs` — Workspace concurrent access (US2)
      - `crates/emend-core/tests/links.rs` — Wiki-link deterministic resolution (T095, US5)
      - `crates/emend-core/tests/embeds.rs` — Embed expansion + cycle/depth guards (T096, US5)
+     - `crates/emend-core/tests/derived_stats.rs` — Doc stats, task N-of-M, outline (T108, US6)
+     - `crates/emend-core/tests/ai_sse.rs` — SSE parser edge cases (T109, US6)
+     - `crates/emend-core/tests/ai_privacy.rs` — Secret hygiene + max-input guard (T110, US6)
      - `crates/emend-ffi/tests/panic_containment.rs` — Panic capture across FFI (T015)
 
 #### Test Files
@@ -79,6 +82,9 @@ Tests are **co-located with source code** in two forms:
 | `crates/emend-core/tests/concurrency.rs` | Workspace concurrent access, edit conflicts, multi-thread safety | Concurrent workspace ops (US2) |
 | `crates/emend-core/tests/links.rs` | Deterministic resolution for duplicate basenames, rename leaves old links unresolved, extraction + suggestions | Wiki-link resolution (T095, FR-019/FR-019a, US5) |
 | `crates/emend-core/tests/embeds.rs` | Simple embeds inline, unresolved degrade gracefully, cycles terminate, depth bounded at MAX_EMBED_DEPTH | Embed expansion (T096, FR-021/FR-021a, US5) |
+| `crates/emend-core/tests/derived_stats.rs` | Word count, character count, reading time, task N-of-M completion, outline with line numbers | Doc stats + outline (T108, FR-029/030/031a, US6) |
+| `crates/emend-core/tests/ai_sse.rs` | SSE chunks reassemble across boundaries, [DONE] terminates, comments/blanks ignored, CRLF/LF tolerated, closed connection clean | SSE parser (T109, FR-032/036, US6) |
+| `crates/emend-core/tests/ai_privacy.rs` | Oversized input rejected locally before send, API key Debug/Display redaction | Secret hygiene + max-input (T110, FR-035/036a, NFR-006, SC-008, US6) |
 | `crates/emend-ffi/tests/panic_containment.rs` | Panics routed through `contain_panic` surface as `EmendError::Internal` | FFI boundary safety (NFR-003, research §B7) |
 
 #### Lint Exceptions in Tests
@@ -107,7 +113,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
 | `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
-#### Test Files (Comprehensive, US5)
+#### Test Files (Comprehensive, US6)
 
 | Path | Purpose | Test Type |
 |------|---------|-----------|
@@ -124,6 +130,8 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `app/Emend/EmendTests/PreviewExportTests.swift` | PDF export: render long doc → paginate off-screen → verify multi-page PDF (T091, US4 · FR-026/SC-010) | Integration |
 | `app/Emend/EmendTests/LinkHelpersTests.swift` | Pure transforms: wiki-link range detection, task checkbox toggle, image drop markdown (T103, US5, headless) | Unit |
 | `app/Emend/EmendTests/LinksFlowTests.swift` | End-to-end links: resolve + suggest wiki-links, embed inlines, store attachments (T104, US5) | Integration |
+| `app/Emend/EmendTests/KeychainStoreTests.swift` | Keychain round-trip: save/read/upsert/delete AI API key (T119, US6; skips if env denies Keychain access) | Unit integration |
+| `app/Emend/EmendTests/InfoSidebarTests.swift` | Info sidebar stats/outline: word count, char count, task N-of-M, heading tree with line numbers (T119, US6) | Integration |
 
 #### Test Pattern (XCTest)
 
@@ -149,7 +157,7 @@ Tests are **headless** (no GUI launch) and run in the test bundle (`@testable` i
 
 #### @MainActor Annotation for Headless Tests
 
-Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`) must themselves be annotated `@MainActor`:
+Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `InfoModel`) must themselves be annotated `@MainActor`:
 
 ```swift
 @MainActor
@@ -182,6 +190,28 @@ final class QuickOpenTests: XCTestCase {
 ```
 
 **Rationale**: These models own `@Published` properties and must update on the main thread. XCTest automatically runs each test on the main thread if the test class is marked `@MainActor`.
+
+#### Keychain Availability Gating (US6)
+
+The `KeychainStoreTests` uses `XCTSkip` when the environment denies Keychain access (e.g., unsigned CI binaries):
+
+```swift
+@MainActor
+final class KeychainStoreTests: XCTestCase {
+    func testRoundTripSaveReadUpsertDelete() throws {
+        do {
+            try KeychainStore.save("sk-secret-123", account: account)
+        } catch let KeychainStore.KeychainError.unexpectedStatus(status) {
+            throw XCTSkip("Keychain unavailable in this environment (OSStatus \(status))")
+        }
+
+        XCTAssertEqual(KeychainStore.read(account: account), "sk-secret-123")
+        // ... rest of test
+    }
+}
+```
+
+**Rationale** (per guardrail US2 — "no GUI-automation under CI's unsigned environment"): The test process isn't sandboxed, so it can access Keychain where available, but CI's unsigned binary may be denied. Rather than failing, the test skips, allowing the wrapper logic to be verified wherever possible.
 
 #### Headless Integration Testing
 
@@ -394,6 +424,42 @@ final class LinksFlowTests: XCTestCase {
 ```
 
 This drives the real `WorkspaceHandle` + `OpenDocHandle` + core link/embed/attachment services end-to-end, proving resolution determinism and embed inlining correctness without a GUI.
+
+**Example: InfoSidebarTests (T119, US6) — Info Pane Stats/Outline**
+```swift
+@MainActor
+final class InfoSidebarTests: XCTestCase {
+    func testStatsAndOutlinePopulateFromDocument() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("emend-info-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let note = dir.appendingPathComponent("Doc.md")
+        try "# Title\n\nHello world test.\n\n## Section\n\n- [ ] a\n- [x] b\n"
+            .write(to: note, atomically: true, encoding: .utf8)
+
+        let handle = try openDocument(path: note.path)
+        defer { try? handle.close() }
+
+        let model = InfoModel()
+        model.setActiveDocument(handle)
+
+        // Compute is async (off-main); poll briefly for it to land.
+        for _ in 0 ..< 100 where model.stats == nil || model.outline.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        let stats = try XCTUnwrap(model.stats)
+        XCTAssertGreaterThan(stats.words, 0)
+        XCTAssertEqual(stats.tasksTotal, 2)
+        XCTAssertEqual(stats.tasksDone, 1)
+        XCTAssertEqual(model.outline.map(\.title), ["Title", "Section"])
+        XCTAssertEqual(model.outline.first?.level, 1)
+    }
+}
+```
+
+This drives the real `OpenDocHandle` + `InfoModel` end-to-end, exercising the stats/outline computation (off-main, async) and verifying the results land in the model.
 
 ## Test Patterns
 
@@ -651,6 +717,162 @@ fn forced_panic_surfaces_as_internal_error_and_process_survives() {
 
 The `with_silent_panic_hook` helper swaps the panic hook during the test to avoid stderr noise. Synchronization via `OnceLock<Mutex<()>>` ensures tests don't stomp on the global hook.
 
+### Rust: Doc Stats & Outline Testing (T108, US6)
+
+The `derived_stats.rs` integration test verifies pure computation of word/char counts, reading time, task N-of-M, and heading outline:
+
+```rust
+//! T108 — derived document **stats**, **task N-of-M**, and **outline** (US6 ·
+//! FR-029/030/031a; FFI contract §4 `outline`/`stats`).
+
+#[test]
+fn counts_words_and_chars_for_plain_prose() {
+    let src = "The quick brown fox\njumps over the lazy dog.\n";
+    let s = stats(src);
+    // Nine words across the two lines.
+    assert_eq!(s.words, 9, "word count over prose: {s:?}");
+    // Character count is the document's char count (not bytes, not UTF-16).
+    assert_eq!(s.chars, src.chars().count() as u32, "char count: {s:?}");
+}
+
+#[test]
+fn word_count_ignores_markdown_punctuation_runs() {
+    // Heading hashes, emphasis markers, and list bullets are not words.
+    let src = "# Title\n\n- **bold** item\n- plain item\n";
+    let s = stats(src);
+    // Words: Title, bold, item, plain, item = 5. The `#`, `-`, `**` markers
+    // must not inflate the count.
+    assert_eq!(
+        s.words, 5,
+        "markdown punctuation must not count as words: {s:?}"
+    );
+}
+
+#[test]
+fn reading_time_uses_200_wpm_rounding_up() {
+    // 200 words → exactly 1 minute.
+    let exactly_200 = (0..200)
+        .map(|i| format!("w{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(stats(&exactly_200).reading_minutes, 1, "200 words = 1 min");
+
+    // 201 words → rounds UP to 2 minutes (a partial minute still shows as a
+    // minute so a reader is never told "0 min" for non-empty content).
+    let just_over = (0..201)
+        .map(|i| format!("w{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(stats(&just_over).reading_minutes, 2, "201 words = 2 min");
+}
+```
+
+**Key patterns**:
+- Stats computation is pure over the document source string (no FFI, no async)
+- Outline carries heading level and source line number for editor scroll-to-heading
+- Both are tested in the core with plain `cargo test`; the live push (≤300 ms, FR-031a) is wired FFI-side
+
+### Rust: SSE Parser Testing (T109, US6)
+
+The `ai_sse.rs` integration test exercises the **pure, tokio-free** SSE parser:
+
+```rust
+//! T109 — the **pure** SSE event parser for the BYOM AI client (US6 · FR-032/036;
+//! research §B5).
+//!
+//! This exercises [`emend_core::ai::SseParser`], the tokio-free / reqwest-free
+//! line-buffering SSE parser that the `emend-ffi` streaming orchestration feeds
+//! raw response byte chunks into. The parser owns ALL the lenient framing the
+//! research note calls out, so it can be tested with plain `cargo test`:
+//!
+//! * a `data:` payload **split across two byte chunks** must reassemble into one
+//!   ordered delta (FFI contract "Global rules": tokens are complete strings);
+//! * `data: [DONE]` terminates the stream;
+//! * comment/heartbeat (`:`-prefixed) and blank lines are ignored;
+//! * CRLF and LF line endings are both tolerated;
+//! * a server that just closes (no `[DONE]`) is a clean end (any buffered
+//!   complete line is flushed).
+
+#[test]
+fn parses_single_complete_data_line() {
+    let mut p = SseParser::new();
+    let events = feed(&mut p, delta_line("Hello").as_bytes());
+    assert_eq!(tokens(&events), vec!["Hello"], "one delta → one token");
+}
+
+#[test]
+fn reassembles_payload_split_across_chunks() {
+    let mut p = SseParser::new();
+    let chunk1 = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel".as_bytes();
+    let chunk2 = "lo\"}}]}]\n".as_bytes();
+    let mut all = Vec::new();
+    all.extend(feed(&mut p, chunk1));
+    all.extend(feed(&mut p, chunk2));
+    assert_eq!(tokens(&all), vec!["Hello"], "payload split mid-UTF-8 reassembles cleanly");
+}
+
+#[test]
+fn done_marker_terminates_stream() {
+    let mut p = SseParser::new();
+    let events = feed(&mut p, b"data: [DONE]\n");
+    assert!(events.contains(&SseEvent::Done), "[DONE] emits Done event");
+}
+```
+
+**Key patterns**:
+- Parser handles chunks that split payloads mid-UTF-8-codepoint
+- CRLF and LF are both tolerated
+- Comments (`:` prefix) and blank lines are skipped
+- Pure sync implementation is testable without tokio/reqwest
+
+### Rust: Privacy & Secret Hygiene Testing (T110, US6)
+
+The `ai_privacy.rs` integration test enforces two structural guarantees:
+
+```rust
+//! T110 — AI **privacy / secret-hygiene** invariants enforced in the pure core
+//! (US6 · FR-035/036a, NFR-006, SC-008).
+//!
+//! Two structural guarantees that live in `emend-core`:
+//!
+//! 1. **Max input size is rejected BEFORE any send** (FR-036a).
+//! 2. **The API key never leaks via `Debug`/`Display`** (NFR-006).
+
+#[test]
+fn oversized_input_is_rejected_locally() {
+    // One byte over the limit must be refused with AiOversizedInput, carrying the
+    // actual size and the limit so the UI can message it (FR-036a).
+    let limit: u64 = 1024;
+    let oversized = "x".repeat(usize::try_from(limit).unwrap() + 1);
+    let err = check_input_size(&oversized, limit)
+        .expect_err("input over the limit must be rejected before any send");
+    match err {
+        EmendError::AiOversizedInput { bytes, limit: l } => {
+            assert_eq!(bytes, limit + 1, "reports the actual byte size");
+            assert_eq!(l, limit, "reports the configured limit");
+        }
+        other => panic!("expected AiOversizedInput, got {other:?}"),
+    }
+}
+
+#[test]
+fn api_key_debug_and_display_redact() {
+    let key = ApiKey::new("sk-super-secret-xyz".to_string());
+    let debug_str = format!("{:?}", key);
+    let display_str = format!("{}", key);
+    
+    assert_eq!(debug_str, "ApiKey(***)");
+    assert_eq!(display_str, "***");
+    assert!(!debug_str.contains("secret"));
+    assert!(!display_str.contains("secret"));
+}
+```
+
+**Key guarantees**:
+- Input size check happens **before** any network call (network gating is structural — emend-core has no reqwest)
+- `ApiKey::expose()` is the only way to read the secret; `Debug`/`Display` always redact
+- These are testable in isolation with plain `cargo test`
+
 ### Swift: Pure Transform Testing (Headless, Isolated)
 
 Edit transforms (including US5 link helpers) return pure `Edit` structures (range + replacement + selection) without side effects. Tests apply transforms to plain strings and assert results:
@@ -715,7 +937,8 @@ The Rust core avoids mocking libraries (`mockall`, `proptest`) in favor of **pur
 - File I/O is tested with real temp files via `tempfile` crate
 - Search driver is tested with in-memory `Index` fixtures (no Rust core FFI, no tokio)
 - Link/embed resolution is tested with in-memory `Index` fixtures (T095/T096, US5)
-- AI/HTTP logic is tested with request/response fixtures (deferred to Phase 2+)
+- AI/SSE is tested with hardcoded string fixtures (pure parser, no reqwest)
+- Doc stats/outline is tested with hardcoded markdown strings (pure computation)
 
 ### Swift: Minimal Mocking
 
@@ -724,11 +947,12 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 ### Test Data
 
 **Fixtures in Rust tests**:
-- Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests, `"[[Beta]]"` for link tests)
+- Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests, `"[[Beta]]"` for link tests, `"# Title\n\n..."` for stats tests)
 - Temp files created by `tempfile` crate (atomic cleanup via `defer`)
 - Pre-seeded directory trees (`seededDirectory(files:folders:)`) for workspace tests
 - In-memory `Index` with `n` pre-inserted notes (search tests; no disk I/O)
 - In-memory note store (`HashMap<String, String>`) for embed tests (T096)
+- OpenAI-style SSE chunks with `data:` lines for parser tests (T109)
 
 **Fixtures in Swift tests**:
 - Simple test doubles (e.g., fake bookmarks, `makeTempDirectory()`) or hardcoded test data
@@ -739,6 +963,8 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 - Temp workspace with Beta/Alpha notes for link resolution tests (T104, US5)
 - Long markdown fixture + temp PDF file for export tests (US4)
 - Temp note for attachment storage tests (T104, US5)
+- Unique Keychain accounts (throwaway per test) for key storage tests (T119, US6)
+- Temp markdown document with headings + tasks for info sidebar tests (T119, US6)
 
 ## Benchmarking
 
@@ -848,12 +1074,17 @@ Full-feature tests exercising public APIs and boundaries:
 | Panic containment | `crates/emend-ffi/tests/panic_containment.rs` | Panics in async tasks surface as `EmendError::Internal` | Yes (NFR-003) |
 | Wiki-link resolution | `crates/emend-core/tests/links.rs` | Deterministic tie-break for duplicate basenames, rename breaks links, extraction + suggestions (T095, US5) | Yes (FR-019/FR-019a) |
 | Embed expansion | `crates/emend-core/tests/embeds.rs` | Cycles terminate, depth bounded at MAX_EMBED_DEPTH, unresolved degrade gracefully (T096, US5) | Yes (FR-021/FR-021a) |
+| Doc stats | `crates/emend-core/tests/derived_stats.rs` | Word/char counts, reading time, task N-of-M, outline extraction (T108, US6) | Yes (FR-029/FR-030/FR-031a) |
+| SSE parser | `crates/emend-core/tests/ai_sse.rs` | Chunks reassemble, [DONE] terminates, CRLF tolerated, closed connection clean (T109, US6) | Yes (FR-032/FR-036) |
+| AI privacy | `crates/emend-core/tests/ai_privacy.rs` | Oversized input rejected locally, API key redaction (T110, US6) | Yes (FR-035/FR-036a, NFR-006, SC-008) |
 | Bookmark resolution | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmarks resolve to files | Yes (FR-004) |
 | Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
 | Workspace flow | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | Add folder → tree → open tab → move/rename (T067, US2) | Yes (workspace UX) |
 | Quick Open flow | `app/Emend/EmendTests/QuickOpenTests.swift` | Seed index → query streams results → Return opens file (T078, US3) | Yes (Quick Open UX, FR-017/FR-018) |
 | PDF export | `app/Emend/EmendTests/PreviewExportTests.swift` | Render long doc → off-screen paginate → verify multi-page PDF (T091, US4) | Yes (FR-026/SC-010) |
 | Links flow | `app/Emend/EmendTests/LinksFlowTests.swift` | Resolve + suggest wiki-links, embed inlines content, store attachments (T104, US5) | Yes (FR-019/FR-021/FR-013a) |
+| Keychain storage | `app/Emend/EmendTests/KeychainStoreTests.swift` | Round-trip save/read/upsert/delete for API key (T119, US6; skips if Keychain unavailable) | Yes (SC-008, NFR-006) |
+| Info sidebar | `app/Emend/EmendTests/InfoSidebarTests.swift` | Stats and outline populate from document (T119, US6) | Yes (FR-029/FR-030/FR-031a) |
 
 ## CI Integration
 
@@ -929,16 +1160,19 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 - ✅ Cancellable search driver tested synchronously without tokio (T072, US3)
 - ✅ Wiki-link deterministic resolution verified for duplicate basenames (T095, US5)
 - ✅ Embed cycles and depth bounds proven (T096, US5)
+- ✅ Doc stats computation verified (word/char count, reading time, task N-of-M, outline) (T108, US6)
+- ✅ SSE parser edge cases tested (chunks, CRLF, [DONE], closed connection) (T109, US6)
+- ✅ AI privacy guarantees enforced (max-input rejection, API key redaction) (T110, US6)
 
 ### Pragmatic UI Testing
 
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
 - ✅ Pure transform tests (headless, isolated unit tests for editor behavior including links/tasks)
-- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export, links end-to-end)
+- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export, links end-to-end, Keychain storage, info sidebar)
 - ⏳ Full-app behavior tests deferred until features land (Phase 2+)
 
-**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, on-screen preview rendering, and native `[[` autocomplete UI remain manual-verification (Constitution VII).
+**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, on-screen preview rendering, native `[[` autocomplete UI, and AI summary streaming remain manual-verification (Constitution VII).
 
 ### Benchmark Philosophy
 

@@ -2,17 +2,17 @@
 
 > **Purpose**: Document system design, patterns, component relationships, and data flow.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (incremental: US5 links, embeds, tasks, attachments)
+> **Last Updated**: 2026-06-18 (incremental: US6 info sidebar + BYOM AI summary)
 
 ## Architecture Overview
 
 Emend is a **hybrid Rust+Swift native macOS Markdown editor** with a cleanly separated boundary:
 
-- **Rust core** (`crates/emend-core`) houses ALL business logic: file I/O, document parsing, preview rendering (comrak + syntect), file watching, indexing, search, link/task/embed resolution, attachments, and AI client integration. The core is **toolchain-free** — it has no FFI dependency and is fully testable with `cargo test` in isolation.
-- **UniFFI shim** (`crates/emend-ffi`) provides a thin boundary layer that exports the core's capabilities to Swift and manages async infrastructure (tokio runtime, cancellation tokens).
-- **Swift/SwiftUI app** (`app/Emend`) wraps the core in a native macOS UI with a three-pane layout: sidebar (workspace/favorites), tabbed editor (with per-document state, US5 link/task UI), live preview pane (US4, with inline embeds US5), and a ⌘P Quick Open palette (US3).
+- **Rust core** (`crates/emend-core`) houses ALL business logic: file I/O, document parsing, preview rendering (comrak + syntect), file watching, indexing, search, link/task/embed resolution, attachments, BYOM AI client (pure SSE parser + request building + secret redaction), and per-document stats/outline for the info sidebar. The core is **toolchain-free** — it has no FFI dependency and is fully testable with `cargo test` in isolation.
+- **UniFFI shim** (`crates/emend-ffi`) provides a thin boundary layer that exports the core's capabilities to Swift and manages async infrastructure (tokio runtime, cancellation tokens). The FFI is the **only place reqwest lives** — the core stays tokio/reqwest-free.
+- **Swift/SwiftUI app** (`app/Emend`) wraps the core in a native macOS UI with a four-pane layout: sidebar (workspace/favorites), tabbed editor (with per-document state, US5 link/task UI), live preview pane (US4, with inline embeds US5), a ⌘P Quick Open palette (US3), and an info sidebar (US6, with stats/outline/AI summary).
 
-The boundary is **synchronous on the hot path** (per-keystroke edits) and **asynchronous only for AI and search** (with cancellable Rust-owned handles). Preview rendering is debounced off the keystroke path and runs off-main-thread. This design allows the core to stay independent and testable while the UI safely dispatches background work.
+The boundary is **synchronous on the hot path** (per-keystroke edits) and **asynchronous only for AI and search** (with cancellable Rust-owned handles). Preview rendering is debounced off the keystroke path and runs off-main-thread. AI summary streams token-by-token to a foreign sink. This design allows the core to stay independent and testable while the UI safely dispatches background work.
 
 ## Architecture Pattern
 
@@ -25,13 +25,14 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 | **UTF-16 boundary contract** | All text ranges crossing the FFI boundary are UTF-16 code units, mapping 1:1 to `NSRange` |
 | **Swift owns text buffer** | Canonical text storage lives in NSTextStorage; Rust maintains a shadow ropey rope for structural queries |
 | **Core owns preview HTML + theme CSS + embeds** | Core generates markdown→HTML via comrak, syntect code-highlight CSS, and resolves embeds against the workspace index; Swift embeds these offline into a bundled WKWebView template |
-| **Clear model/view separation (Swift UI)** | `@MainActor` state models (`WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`) own Rust handles and drive views; views are pure presentations of model state |
+| **Clear model/view separation (Swift UI)** | `@MainActor` state models (`WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, `InfoModel`) own Rust handles and drive views; views are pure presentations of model state |
+| **AI client is pure + FFI** (US6) | **Decision logic (SSE parser, request builder, redacting key) lives in core (tokio/reqwest-free); transport (HTTP, streaming) lives in FFI only** |
 
 ## Core Components
 
 ### 1. Rust Core (`crates/emend-core`)
 
-**Purpose**: The engine — file I/O, document state, parsing, preview rendering, search, watching, link/task/embed/attachment resolution, AI streaming.
+**Purpose**: The engine — file I/O, document state, parsing, preview rendering, search, watching, link/task/embed/attachment resolution, pure AI client (SSE parser + request builder + secret redaction), and per-document stats/outline.
 
 **Location**: `crates/emend-core/src/`
 
@@ -49,26 +50,33 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
   - **`parse/preview.rs`** (US4 · T084) — **Authoritative comrak preview engine**: CommonMark + GFM + native `[[wikilink]]` + `==highlight==` extensions, with `data-line` scroll-sync anchors and syntect-coloured code blocks. Pure transform (no I/O, no async, no network). `render_preview_html_with_embeds` resolves embeds (US5) via a caller-supplied resolver.
   - **`parse/code_highlight.rs`** (US4 · T084) — syntect-based HTML code colouring for preview fenced blocks; vendored binary syntax/theme dump loaded once per session.
   - **`parse/embed.rs`** (US5 · T097) — Embed resolution logic: given a resolver callback (workspace index), inlines embedded notes' content into the HTML tree; handles missing/recursive embeds gracefully.
-- **`derived.rs`** (US5 · T097) — Per-document link/task scanning and resolution (FFI contract §5, FR-014..022). Pure `std` + `index`; no `uniffi` or `tokio`.
+- **`derived.rs`** (US5 · T097 / US6 · T111) — Per-document link/task scanning, resolution, and stats (FFI contract §5/§4, FR-014..022/FR-029..031). Pure `std` + `index`; no `uniffi` or `tokio`.
   - **`extract_links`** — Scan document source for `[[wiki links]]` and `![[embeds]]`, returning UTF-16-ranged `LinkRef`s for editor click/navigation/styling.
   - **`resolve_wikilink`** — Apply FR-019a's deterministic tie-break to pick one target from the index's candidate set (same dir → shallowest → lexicographic).
   - **`wikilink_suggestions`** — Autocomplete candidates for `[[` (fuzzy ranking via index).
   - **`toggle_task`** — Flip the `[ ]`/`[x]` of a task on a given line (returns new document text, unit-testable via `tests/links.rs`).
-- **`ai.rs`** — Placeholder module (to be added by `/sdd:implement`).
+  - **`stats()`** (US6 · T111) — **Word/char/reading-time/task counts over document source (FR-029/030)**; recomputed cheaply on each edit.
+  - **`outline()`** (US6 · T111) — **ATX heading scan with 1-based line numbers for click→scroll in info sidebar (FR-031/031a)**; pure, O(n) scan.
+- **`ai.rs`** (US6 · T112) — **Pure, tokio-free SSE parser + request builder + secret redaction** (FR-032/035/036/036a, NFR-006, research §B5). Deliberately split from FFI (core stays tokio/reqwest-free):
+  - **`SseParser`** — Buffers raw response bytes, emits complete UTF-8 tokens, tolerates CRLF/LF, handles `data: [DONE]`, skips malformed payloads (lenient framing for BYOM endpoints).
+  - **`ApiKey`** — Redacting newtype whose `Debug` and `Display` render `***` (never the secret); only readable via explicit `expose()`.
+  - **`check_input_size`** — Rejects oversized documents locally, before any network send (FR-036a).
+  - **`build_request_body` / `build_auth_header`** — Pure request builders (headers/body as data, no network).
+  - **`DEFAULT_SUMMARY_SYSTEM_PROMPT`** — Conventional system instruction, testable + consistent.
 
-**Dependencies**: `thiserror`, `ropey`, `tempfile`, `tree-sitter`, `tree-sitter-md`, `comrak`, `syntect`, `nucleo`, `nucleo-matcher`, `notify`, `notify-debouncer-full`, `reqwest`, `serde`, `tokio` (only in FFI shim), `tokio-util` (only in FFI shim).
+**Dependencies**: `thiserror`, `ropey`, `tempfile`, `tree-sitter`, `tree-sitter-md`, `comrak`, `syntect`, `nucleo`, `nucleo-matcher`, `notify`, `notify-debouncer-full`, `serde` (only for AI SSE deserialization, not for serialization).
 
 **Dependents**: `crates/emend-ffi`, tests, benchmarks.
 
 **Constraints (Constitution V)**:
 - **NO FFI dependency** — core never imports `uniffi`. This keeps the core standalone and testable.
 - **NO panics** — clippy lints deny `unwrap_used`, `expect_used`, `panic`.
-- **No async primitives** — tokio only enters in the FFI shim (async infrastructure lives outside the core).
+- **No async primitives, no reqwest** — tokio and reqwest only enter in the FFI shim (async infrastructure + transport live outside the core).
 - **Two markdown engines, not one** — tree-sitter (editor) and comrak (preview) are never unified; their performance and correctness profiles differ (Constitution).
 
 ### 2. FFI Shim (`crates/emend-ffi`)
 
-**Purpose**: Thin projection of the core to Swift. Manages async infrastructure, panic containment, and error mapping.
+**Purpose**: Thin projection of the core to Swift. Manages async infrastructure, panic containment, error mapping, and **the only place reqwest lives**. Bridges the tokio runtime, cancellation, and foreign-trait sinks.
 
 **Location**: `crates/emend-ffi/src/`
 
@@ -77,7 +85,9 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 - **`lib.rs`** — FFI entry points (e.g., `read_file_at`, `core_abi_version`, `preview_theme_css`). Each `#[uniffi::export]` function wraps a core function, handling errors. UniFFI's scaffolding automatically wraps calls in `catch_unwind`, so panics cannot unwind into Swift.
 - **`error.rs`** — `#[derive(uniffi::Error)]` projection of `EmendError`. Keeps the same `Display` wording so Swift sees the same error message. Exhaustive `From` impls ensure new core error variants force compilation errors here.
 - **`panic.rs`** — Custom panic hook (if needed for debugging; not yet implemented).
-- **`document.rs`** — FFI projection of document operations: `open_document`, `close_document`, `push_edit`, `highlight_spans`, `render_preview_html`, `flush`, and `extract_links` (US5 · T097). Wraps the core's `Document` in an `OpenDocHandle` (`Arc<Mutex<Document>>`).
+- **`document.rs`** — FFI projection of document operations: `open_document`, `close_document`, `push_edit`, `highlight_spans`, `render_preview_html`, `flush`, `extract_links` (US5 · T097), **`stats`/`outline`** (US6 · T111). Wraps the core's `Document` in an `OpenDocHandle` (`Arc<Mutex<Document>>`).
+  - **`stats()`** (US6 · T111) — **Call core's derived stats, return `DocStats` value type for info sidebar.**
+  - **`outline()`** (US6 · T111) — **Call core's derived outline scan, return `Vec<OutlineItem>` for info sidebar tree.**
   - **`render_preview_html()`** (US4 · T084) — Calls the core's comrak preview engine, returning HTML suitable for injection into the WKWebView template.
   - **`render_preview_html_resolving(workspace)`** (US5 · T097) — Resolves embeds against the workspace's index before rendering (FFI contract §6). Drops locks before rendering/IO to avoid deadlock.
   - **`extract_links()`** (US5 · T097) — Scan the document for `[[wiki links]]` and `![[embeds]]`, returning UTF-16-ranged `LinkRef`s for editor UI.
@@ -86,13 +96,18 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 - **`workspace.rs`** — FFI projection of workspace + index: `WorkspaceHandle` wrapping both `Workspace` + `SharedIndex` (Index behind `Arc<Mutex<>>`) co-located under one `Mutex<Inner>` (to maintain incremental index updates in lock-step, FR-017a). Exports `Location`, `FsNode`, `NodeKind` value types and methods like `create_note`, `rename`, `move_node`, `query`, `resolve_name`, `quick_open_query` (T074), `reindex_all` (T078), `resolve_wikilink` (US5 · T097), `resolve_embed_source` (US5 · T097), and `wikilink_suggestions` (US5 · T097).
 - **`search.rs`** (US3 · T074) — FFI projection of streaming Quick Open (§5 of contract). Drives the pure, tokio-free core search driver (`emend_core::search::quick_open`) on the boundary's shared tokio runtime and forwards ranked batches to foreign `SearchSink`. Holds `pub struct SearchHandle` (UniFFI Object, `Arc<Self>`), which bridges cancellation: a `tokio_util::CancellationToken` (parity with `CancellationHandle`) and an `emend_core::search::Cancel` flag. A single `quick_open_query` cancels any previous `SearchHandle` in `WorkspaceHandle.current_search` (supersede, NFR-002), then spawns the new worker. The core driver is fast (<100 ms p95, SC-004); lock the index briefly, not the whole workspace.
 - **`watcher.rs`** — FFI projection of the live watcher: `WatchHandle` wrapping `FsWatcher`, with `ChangeEvent` and `ConflictState`/`ConflictChoice` enums. Bridges via `ObserverBridge` to the Swift `DocObserver` foreign trait.
-- **`handles.rs`** — Rust-owned infrastructure: the tokio runtime (lives here, not core), `CancellationToken` for async tasks, `SearchHit` value type, `LinkRef` and `LinkKind` value projections (US5 · T097), and foreign-trait `DocObserver`/`SearchSink`/`AiSink` callbacks for streaming results.
+- **`ai.rs`** (US6 · T112/T113) — **FFI streaming AI client (the ONLY reqwest + tokio user in the Rust boundary)**. Wraps core's pure SSE parser / request builders:
+  - **`summarize_document(handle, config, api_key, sink)`** (US6 · T112) — **Start a streaming AI summary; pre-validates (blank key → no network, oversized doc → no network); spawns on tokio; streams tokens to foreign `AiSink`; returns `AiHandle` for cancellation.**
+  - **`test_ai_config(cfg, api_key)`** (US6 · FR-037) — **Validates AI config with a minimal probe request; sync at boundary (blocks on tokio), transient key (never persisted).**
+  - **`AiHandle.cancel()`** (US6) — **Idempotent cancel via `CancellationToken`; on_error(AiCancelled) terminal, no further tokens.**
+  - **Per-chunk inactivity timeout (research §B5)**: `tokio::time::timeout` on each `stream.next()` — NOT a whole-request deadline (which would fire mid-stream on slow models).
+- **`handles.rs`** — Rust-owned infrastructure: the tokio runtime (lives here, not core), `CancellationToken` for async tasks, `SearchHit` value type, `LinkRef` and `LinkKind` value projections (US5 · T097), **`DocStats`, `OutlineItem`** (US6), and foreign-trait `DocObserver`/`SearchSink`/`AiSink` callbacks for streaming results.
 
-**Dependencies**: `emend-core`, `uniffi`, `thiserror`, `tokio`, `tokio-util`, `tempfile`.
+**Dependencies**: `emend-core`, `uniffi`, `thiserror`, `tokio`, `tokio-util`, `tempfile`, `reqwest` (ONLY in this crate), `futures-util`.
 
 **Dependents**: Swift package (`swift/EmendCore`).
 
-**Constraint**: Keep FFI free of business logic. It is ONLY a projection and scaffolding layer.
+**Constraint**: Keep FFI free of business logic. It is ONLY a projection and scaffolding layer (except for streaming orchestration, which is unavoidable).
 
 ### 3. Swift Package (`swift/EmendCore`)
 
@@ -111,7 +126,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 ### 4. macOS App — Model & Orchestration Layer
 
-**Purpose**: Swift `@MainActor` state models that own the Rust handles and coordinate between workspace/tabs/editor/conflicts/search/preview/links.
+**Purpose**: Swift `@MainActor` state models that own the Rust handles and coordinate between workspace/tabs/editor/conflicts/search/preview/links/info/AI.
 
 **Location**: `app/Emend/Emend/`
 
@@ -129,6 +144,12 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`ScrollSync`** (US4 · `Preview/ScrollSync.swift`) — `@MainActor ObservableObject` managing bidirectional editor ↔ preview scroll sync (FR-024, research §C3). Both sides keyed on 1-based source line numbers: comrak annotates blocks with `data-line` (via core's scroll-sync anchors); bridge.js builds an anchor table. Editor→preview maps the top visible character's line and calls `__emendScrollToLine`; preview→editor receives the top line from the page. Per-side mute window (160 ms) guards the feedback loop to avoid echoing.
 
+- **`InfoModel`** (US6 · `Info/InfoModel.swift`) — **`@MainActor ObservableObject` powering the info sidebar (FR-029..031). Holds the active document's `DocStats` (word/char/reading-time/tasks) and `OutlineItem`s (headings). Stats are recomputed on each edit via `document.stats()`; outline is scanned on-demand. Publishes them for display + click→scroll integration.**
+
+- **`AIConfigStore`** (US6 · `AI/AIConfig.swift`) — **Swift-side BYOM configuration holder: base URL, model, timeout, max input. Persisted to UserDefaults. No key is stored (it lives in Keychain only, read on each request).**
+
+- **`SummaryModel`** (US6 · `AI/SummaryView.swift`) — **`@MainActor ObservableObject` for one streaming AI summary. Holds accumulated `fullText`, per-token updates via `AiSink` bridge, cancel handle, terminal state (done/error). Attached to a specific tab/document.**
+
 ### 5. macOS App — View Layer
 
 **Purpose**: SwiftUI views and editor mechanics.
@@ -137,7 +158,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 **Major components**:
 
-- **`Shell/MainWindow.swift`** — Single-window three-pane layout with a preview pane (US4): sidebar (workspace outline) | editor pane (tabbed) | preview pane (toggled via "Toggle Preview" toolbar button). Wires up `WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, and `ScrollSync`. Includes Export PDF toolbar action (US4). Hidden ⌘P button registers the Quick Open shortcut window-wide.
+- **`Shell/MainWindow.swift`** — Four-pane layout (US6): sidebar (workspace outline) | editor pane (tabbed) | preview pane (toggled via "Toggle Preview" toolbar button) | info sidebar (toggled via "Toggle Info" button). Wires up `WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, `ScrollSync`, and `InfoModel`. Includes Export PDF toolbar action (US4). Hidden ⌘P button registers the Quick Open shortcut window-wide. Settings menu launches AI config view.
 
 - **`Sidebar/WorkspaceOutlineView.swift`** — `NSViewRepresentable` wrapping `NSOutlineView` over the workspace's file tree. Lazy children loading, targeted reloadItem on external FS changes. Context menu + drag-drop.
 
@@ -149,7 +170,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`Editor/MarkdownTextView.swift`** — `NSTextView` subclass that hooks list/formatting keys (Return, Tab, ⌘B/I/K/⇧T) to pure transforms. Integrates task-checkbox clicking (US5) and image drag-drop (US5).
 
-- **`Editor/EditorCoordinator.swift`** — `NSTextStorageDelegate` that extracts UTF-16 deltas, calls `pushEdit()` synchronously, then signals `PreviewModel.scheduleRefresh()` to debounce the preview render. US5: owns workspace handle for wiki-link resolution, click navigation, and link-autocomplete.
+- **`Editor/EditorCoordinator.swift`** — `NSTextStorageDelegate` that extracts UTF-16 deltas, calls `pushEdit()` synchronously, then signals `PreviewModel.scheduleRefresh()` to debounce the preview render. US5: owns workspace handle for wiki-link resolution, click navigation, and link-autocomplete. US6: signals `InfoModel.refresh()` to recompute stats/outline.
 
 - **`Editor/SyntaxAttributing.swift`** — Pure function mapping core `StyleSpan`s to AppKit display attributes (bold/italic/headings/code/quote inline, markers dimmed).
 
@@ -165,6 +186,14 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`Links/WikiLinkAutocomplete.swift`** (US5 · T097) — Pure helpers for wiki-link autocomplete: `partialRange(in:caret:)` detects an open `[[…` and returns the range to replace with completions, `enclosingLink(in:at:)` finds the `[[target]]` enclosing an offset (for click-to-navigate), `allLinks(in:)` collects all link spans in the buffer (for styling unresolved links).
 
+- **`Info/InfoSidebarView.swift`** (US6 · FR-029..031) — **Toggleable right sidebar showing document stats (word/char/reading time/tasks) and an outline tree (clickable headings → scroll to line). Wired to `InfoModel`.**
+
+- **`AI/AISettingsView.swift`** (US6) — **Modal/sheet for configuring BYOM endpoint: base URL, model, timeout. Includes a test-config button (calls `test_ai_config`). No key field; key is from Keychain.**
+
+- **`AI/SummaryView.swift`** (US6) — **Streaming AI summary UI: shows full text as it arrives token-by-token. Cancel button, error display. Wired to `SummaryModel` via `AiSink` bridge (foreign trait).**
+
+- **`Platform/KeychainStore.swift`** (US6 · research §C5, NFR-006) — **Tiny Keychain wrapper for the BYOM API key. Save/read/delete/hasKey. Device-local, no iCloud. Read on each request, never persisted or logged Rust-side.**
+
 - **`Preview/PreviewWebView.swift`** (US4) — `NSViewRepresentable` wrapping an offline `WKWebView` that renders the core's comrak HTML with bundled, offline Mermaid + KaTeX and syntect-classed code. Privacy enforced in three layers: template CSP, nonPersistent data store, navigation delegate blocks remote origins. Receives scroll-to-line commands from `ScrollSync`.
 
 - **`Preview/ScrollSync.swift`** (US4) — Bidirectional scroll sync hub (described above under models).
@@ -173,9 +202,80 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`QuickOpen/QuickOpenView.swift`** — The ⌘P overlay palette (US3). Renders the filtered `SearchHit` list with arrows/Return/Escape handlers, wired to `QuickOpenModel`.
 
-**Dependencies**: `EmendCore` SwiftPM package, AppKit (`NSTextView`, `NSOutlineView`, `WKWebView`, `NSPrintOperation`), SwiftUI, WebKit.
+**Dependencies**: `EmendCore` SwiftPM package, AppKit (`NSTextView`, `NSOutlineView`, `WKWebView`, `NSPrintOperation`), SwiftUI, WebKit, Security (Keychain).
 
 ## Data Flow
+
+### AI Summary (US6 · FR-032/036/036a)
+
+```
+User clicks "Request AI Summary" (or equivalent)
+    ↓
+Swift reads config from UserDefaults (base URL, model, timeout, max input)
+    ↓
+Swift reads API key from Keychain (or nil if not set)
+    ↓
+Creates SummaryModel + calls emend_core::summarize_document(handle, config, key, sink)
+    ↓
+FFI validates pre-network (blank key → AiNotConfigured; oversized doc → AiOversizedInput)
+    ↓
+Spawns tokio task; returns AiHandle for cancellation (NFR-002)
+    ↓
+**FFI** opens HTTP stream to OpenAI-compatible endpoint (reqwest, per-chunk timeout, no whole-request timeout)
+    ↓
+For each SSE chunk, calls emend_core::ai::SseParser to decode complete UTF-8 tokens
+    ↓
+Each token pushed to foreign AiSink.on_token() → SummaryModel accumulates text
+    ↓
+On [DONE] or stream close, calls AiSink.on_done(full) with the accumulated text
+    ↓
+On any error/cancellation, calls AiSink.on_error(err) (exactly one terminal)
+    ↓
+Swift displays accumulated text streaming in SummaryView
+    ↓
+User clicks Cancel → handle.cancel() → CancellationToken fires → AiCancelled terminal
+```
+
+**Why split (core pure, FFI reqwest)**:
+- Core has no tokio/reqwest dependency (Constitution V), fully testable with `cargo test`.
+- FFI handles only: HTTP client, tokio runtime, streaming orchestration, cancellation signaling.
+- Core owns: SSE parsing (lenient, testable), request building (pure data), secret redaction (never leaked).
+
+**Why per-chunk timeout**:
+- A whole-request timeout fires mid-stream on slow models (research §B5).
+- Per-chunk inactivity timeout detects genuinely stalled connections, allows streaming.
+
+**Why Keychain, transient key**:
+- Swift owns the secret's custody (device-local, no iCloud, no sync).
+- Key is read immediately before each request and handed to Rust as a transient `String`.
+- Never persisted or logged Rust-side; only set on Authorization header inside spawned task.
+
+### Info Sidebar Stats & Outline (US6 · FR-029..031)
+
+```
+Editor signals EditorCoordinator.onDocEdit
+    ↓
+EditorCoordinator signals InfoModel.refresh()
+    ↓
+InfoModel calls document.stats() and document.outline() off-main (Task.detached)
+    ↓
+Core scans document source:
+  * Word count (whitespace-delimited, containing letter or digit; no bare punctuation)
+  * Char count (Unicode scalar values, i.e. `char`s)
+  * Reading time (ceil(words / 200) minutes)
+  * Task counts ([x]/[X] done, total)
+  * Heading outline (ATX level 1..=6, 1-based line numbers, trimmed text)
+    ↓
+Swift updates @Published properties: words, chars, readingMinutes, tasksDone, tasksTotal, outlineItems
+    ↓
+InfoSidebarView renders stats grid + outline tree
+    ↓
+User clicks outline item → calls ScrollSync.scrollToLine(1basedLine) → editor jumps to that line
+```
+
+**Why off-main**: Stats/outline are cheap to recompute (O(n) scans), but avoid main-thread blocking on large docs.
+
+**Why pure core functions**: No dependencies, unit-testable, no platform code.
 
 ### Hot Path: Per-Keystroke Edit
 
@@ -198,7 +298,7 @@ EditorCoordinator schedules re-attribution via Task @MainActor
     ↓
 reattribute() calls `highlightSpans(viewport)` and applies SyntaxAttributing
     ↓
-EditorCoordinator signals PreviewModel.scheduleRefresh()
+EditorCoordinator signals PreviewModel.scheduleRefresh() + InfoModel.refresh()
     ↓
 AutosaveController.noteEdit() rearms debounce
 ```
@@ -468,28 +568,6 @@ NSTextStorageDelegate fires, EditorCoordinator extracts delta, calls push_edit()
 
 Commands are **pure transforms** — they live in isolation without the editor's context. This enables **unit testing without a window** (Constitution VII).
 
-### AI Path: Long-Running
-
-```
-User selects "Request AI" from menu
-    ↓
-Swift calls `ai_request(config, prompt, stream_sink)` — **async, returns immediately**
-    ↓
-Rust spawns tokio task, returns CancellationHandle
-    ↓
-tokio task opens HTTP stream to OpenAI-compatible endpoint
-    ↓
-For each SSE event, calls foreign-trait `stream_sink.on_chunk(text)`
-    ↓
-Swift receives chunks via AsyncStream adapter, updates UI
-    ↓
-If user cancels, Swift calls `handle.cancel()`
-    ↓
-Rust `CancellationToken` stops the tokio task
-```
-
-**Why async + cancellable**: AI requests are I/O bound and may take seconds. Blocking the Rust thread would block the whole app. Cancellation prevents resource waste.
-
 ### Sidebar Navigation & File Tree
 
 ```
@@ -518,32 +596,34 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 
 | Layer | Responsibility | Can Access | Cannot Access |
 |-------|----------------|------------|---------------|
-| **Swift/SwiftUI app** | UI rendering, event handling, model state | `EmendCore` (boundary), AppKit, WebKit | Directly access files, Rust data structures |
-| **Swift models** (@MainActor: WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync) | State ownership, Rust handle lifecycle, pub/sub via @Published | `EmendCore`, AppKit, app views | Other models (one-way data flow via callbacks) |
+| **Swift/SwiftUI app** | UI rendering, event handling, model state | `EmendCore` (boundary), AppKit, WebKit, Security | Directly access files, Rust data structures |
+| **Swift models** (@MainActor: WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync, InfoModel) | State ownership, Rust handle lifecycle, pub/sub via @Published | `EmendCore`, AppKit, app views, Keychain | Other models (one-way data flow via callbacks) |
 | **Swift views** | Rendering, event capture, formatted display | App models (read-only via @State/@Environment), AppKit, WebKit | Rust handles directly, file I/O |
 | **Swift `EmendCore` wrapper** | Type adaptation, async stream wrapping | Generated UniFFI bindings | App state, UI models |
 | **UniFFI boundary** | Foreign-trait scaffolding, error projection, panic containment | `emend-core`, async runtime | Anything beyond scaffolding |
-| **Rust core (`emend-core`)** | All business logic: files, documents, parsing, preview, search, links/tasks/embeds/attachments, AI, workspace, watching | Only standard library + workspace deps | FFI, async runtime, platform code |
+| **Rust core (`emend-core`)** | All business logic: files, documents, parsing, preview, search, links/tasks/embeds/attachments, AI (pure), stats/outline, workspace, watching | Only standard library + workspace deps | FFI, async runtime, platform code |
+| **FFI shim (`emend-ffi`)** | Transport, streaming, cancellation orchestration, reqwest client | Core logic, tokio runtime | Platform/OS code (that's Swift's job) |
 
 **Dependency rules**:
 - Higher layers depend on lower layers. Never vice versa.
 - Core has **no knowledge** of FFI or Swift.
-- FFI is a **thin projection only** — no business logic.
+- FFI is a **thin projection only** — no business logic (except unavoidable streaming orchestration).
 - Swift models own Rust handles via `@MainActor` locks; views are read-only presentations.
+- **Keychain is Swift-only** — the key never crosses into Rust persistently; it is read transiently and passed as a `String` on each request.
 
 ## Dependency Rules
 
-1. **Core → nothing but std + deps**. No FFI, no platform code.
-2. **FFI → core + uniffi + tokio**. Business logic lives in (1), scaffolding here.
+1. **Core → nothing but std + deps (no tokio, no reqwest)**. No FFI, no platform code.
+2. **FFI → core + uniffi + tokio + reqwest**. Business logic lives in (1), scaffolding + transport here.
 3. **Swift models → EmendCore wrapper only**. Never call generated FFI bindings directly; always go through the `EmendCore` module re-export.
 4. **Swift views → models (one-way read-only) + AppKit/WebKit**. Never Rust handles directly.
-5. **App → Swift models + views + AppKit**. Never raw FFI.
+5. **App → Swift models + views + AppKit + Security**. Never raw FFI.
 
 ## Key Interfaces & Contracts
 
-### FFI Contract: Document (with US4 preview + US5 links/tasks/embeds/attachments)
+### FFI Contract: Document (with US4 preview + US5 links/tasks/embeds/attachments + US6 stats/outline)
 
-**Location**: `specs/001-markdown-editor/contracts/ffi-interface.md` §3/§6/§5
+**Location**: `specs/001-markdown-editor/contracts/ffi-interface.md` §3/§6/§5/§4
 
 | Export | Signature | Purpose |
 |--------|-----------|---------|
@@ -551,12 +631,29 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 | `close_document(handle: OpenDocHandle) -> Result<(), FfiError>` | Release a document | Window close |
 | `push_edit(handle, range: U16Range, replacement: String) -> Result<(), FfiError>` | Apply keystroke delta | Per-keystroke sync path |
 | `highlight_spans(handle, viewport: U16Range) -> Result<Vec<StyleSpan>, FfiError>` | Incremental highlight (tree-sitter, advisory) | Syntax coloring |
+| **`handle.stats() -> Result<DocStats, FfiError>`** (US6 · T111) | **Word/char/reading-time/task counts** | **Info sidebar stats** |
+| **`handle.outline() -> Result<Vec<OutlineItem>, FfiError>`** (US6 · T111) | **Headings with 1-based line numbers** | **Info sidebar outline tree** |
 | **`handle.render_preview_html() -> Result<String, FfiError>`** (US4 · T084) | **Authoritative comrak HTML + scroll-sync anchors + syntect code coloring** | **Live preview pane + PDF export** |
 | **`handle.render_preview_html_resolving(workspace) -> Result<String, FfiError>`** (US5 · T097) | **Same as above, but resolves embeds inline** | **Live preview with embedded notes** |
 | **`handle.extract_links() -> Result<Vec<LinkRef>, FfiError>`** (US5 · T097) | **Scan document for `[[wiki links]]` and `![[embeds]]`** | **Editor link styling, autocomplete, click navigation** |
 | **`handle.toggle_task(offset: u32) -> Result<String, FfiError>`** (US5 · T097) | **Flip checkbox on the line containing offset** | **Task checkbox clicking** |
 | **`handle.store_attachment(data: Vec<u8>, ext: String) -> Result<String, FfiError>`** (US5 · T097) | **Store image/file beside note, return note-relative ref** | **Drag-drop image insertion** |
 | `flush(handle) -> Result<(), FfiError>` | Write to disk | Autosave |
+
+### FFI Contract: AI (US6)
+
+**Location**: `specs/001-markdown-editor/contracts/ffi-interface.md` §7 (US6)
+
+| Export | Signature | Purpose |
+|--------|-----------|---------|
+| **`summarize_document(handle, config, api_key, sink) -> AiHandle`** (US6 · T112) | **Stream summary token-by-token to foreign AiSink; validates pre-network (blank key, oversized doc); returns handle for cancel** | **BYOM AI summary in info sidebar** |
+| **`test_ai_config(config, api_key) -> Result<(), FfiError>`** (US6 · FR-037) | **Probe endpoint with minimal non-streaming request; validates auth + reachability** | **Settings UI config test button** |
+| **`AiHandle.cancel()`** (US6) | **Idempotent; trips CancellationToken; on_error(AiCancelled) terminal** | **User cancel button** |
+
+**Foreign trait `AiSink`** (US6):
+- `on_token(text: String)` — Each complete UTF-8 delta (buffered by core parser, never partial).
+- `on_done(full: String)` — Success terminal: all text received.
+- `on_error(err: FfiError)` — Failure/cancellation terminal: exactly one, no further tokens.
 
 ### FFI Contract: Preview Assets
 
@@ -612,9 +709,11 @@ Variants carry context for UI rendering:
 - `NameCollision { path }` — Already exists
 - `NoteTooLarge { path, bytes, limit }` — Exceeds size cap
 - `InvalidConfig { detail }` — Config error
-- `AiNotConfigured` — AI is not set up
+- `AiNotConfigured` — AI is not set up (blank key)
+- `AiOversizedInput { bytes, limit }` — Document exceeds max input (FR-036a)
 - `AiTimeout` — AI request took too long
 - `AiCancelled` — User cancelled
+- `AiHttp { status, detail }` — HTTP error (status + redacted detail, never key, NFR-006)
 - (more by later phases)
 
 All variants use `String` fields only (UniFFI-compatible primitives).
@@ -625,11 +724,19 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 
 **StyleSpan**: `{ range: U16Range, class: StyleClass }` — a syntax highlighting span (tree-sitter advisory highlight). `StyleClass` is an enum: `heading(Int)`, `strong`, `emphasis`, `inlineCode`, `codeBlock`, `blockQuote`, `listMarker`, `link`, `syntaxMarker`, `highlight`.
 
-**OpenDocHandle**: Opaque Rust handle representing an open `Document`. Returned by `open_document()`, passed to `push_edit()`, `highlightSpans()`, `renderPreviewHtml()`, `renderPreviewHtmlResolving()` (US5), `extractLinks()` (US5), `toggleTask()` (US5), `storeAttachment()` (US5), `flush()`, and `close_document()`.
+**OpenDocHandle**: Opaque Rust handle representing an open `Document`. Returned by `open_document()`, passed to `push_edit()`, `highlightSpans()`, `stats()` (US6), `outline()` (US6), `renderPreviewHtml()`, `renderPreviewHtmlResolving()` (US5), `extractLinks()` (US5), `toggleTask()` (US5), `storeAttachment()` (US5), `flush()`, and `close_document()`.
 
 **SearchHit**: Value struct returned by `quick_open_query` sinks. Contains `path: String` (filesystem path), `name: String` (basename), `score: UInt32` (ranking score, higher is better).
 
 **LinkRef** (US5 · T097): Value struct returned by `extractLinks()` and `wikilink_suggestions()`. Contains `kind: LinkKind` (Link or Embed), `raw_target: String` (the target as typed), `range: U16Range` (the full `[[…]]` or `![[…]]` span in UTF-16 for editor styling/click-testing).
+
+**DocStats** (US6 · T111): Value struct returned by `document.stats()`. Contains `words`, `chars`, `reading_minutes`, `tasks_done`, `tasks_total` (all U32). Recomputed on each edit, cheap O(n) scan.
+
+**OutlineItem** (US6 · T111): Value struct returned by `document.outline()`. Contains `level: u8` (ATX 1..=6), `title: String` (trimmed text), `line: u32` (1-based source line for click→scroll).
+
+**AiRequestConfig** (US6 · T112): Record struct for BYOM config. Contains `base_url`, `model`, `request_timeout_ms`, `max_input_bytes`. Passed by value; never stored Rust-side.
+
+**AiHandle** (US6 · T112): Opaque handle for in-flight AI summary. Holds a `CancellationToken`; only exported method is `cancel()`.
 
 ## State Management
 
@@ -646,11 +753,15 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **Search index** | Rust `Workspace.index` (behind `Arc<Mutex<>>`) | Fuzzy ranked entries maintained O(1)-ish on file ops | Shared: file ops lock+update, search queries lock briefly |
 | **Quick Open results** | Swift `QuickOpenModel` (@Published results) | Streamed batches from `SearchSink`, guarded by monotonic `generation` | Superseded queries' batches are discarded by generation check |
 | **File tree (sidebar)** | Swift `NSOutlineView` + `WorkspaceModel.roots` | Lazy children; `revision` bumps for top-level reloads, `fsRefreshTick` for targeted reloads | Reflects workspace + external FS changes |
+| **Info sidebar stats/outline** (US6) | Swift `InfoModel` (@Published words, chars, readingMinutes, tasksDone, tasksTotal, outlineItems) | Recomputed on each edit via `document.stats()`/`outline()` off-main; cheap O(n) scans | Feeds display + click→scroll integration |
 | **Scroll sync anchor table** | JS (bridge.js) built on page load | One-time construction from `data-line` attributes; both editor and preview reference it | Keyed on 1-based source line numbers |
 | **Cancellation tokens** | Rust `handles` module (tokio-util) | Owned by Rust, cancelled by Swift | AI and search long-running tasks |
 | **Conflict flags** | Swift `ConflictController` (@Published conflicts) | Set of conflicted tab IDs | Tracks docs that changed on disk + need user resolution |
 | **Link/embed scans** (US5) | Rust `derived::extract_links()` called on-demand | Not cached; re-scanned per render cycle or when needed for UI | Lightweight: O(n) scan of document source text |
 | **Attachment storage** (US5) | Rust `fs` module beside the note (collision-safe names) | Persisted alongside the note file | Relative refs allow notes to be moved |
+| **AI config** (US6) | Swift `UserDefaults` (via `AIConfigStore`) | Base URL, model, timeout, max input | No key stored (only in Keychain) |
+| **AI API key** (US6) | macOS Keychain (via `KeychainStore`) | Device-local, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` | Read transiently on each request, never Rust-persisted |
+| **In-flight AI summary** (US6) | Swift `SummaryModel` (@Published fullText, done, error) | Holds handle, accumulated tokens, terminal state | Per-tab/document; stream via `AiSink` bridge |
 
 ## Cross-Cutting Concerns
 
@@ -662,13 +773,15 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **Atomic durability** | Temp file + fsync + rename + fsync dir | `crates/emend-core/src/fs.rs` |
 | **Async cancellation** | `tokio::sync::CancellationToken` + foreign-trait sinks | `crates/emend-ffi/src/handles.rs` |
 | **Search cancellation (core layer)** | Arc-backed atomic bool flag (tokio-free) | `crates/emend-core/src/search.rs` |
-| **Privacy** | No network unless AI configured + invoked; Keychain for API key; transient to Rust, redacted in HTTP client; WKWebView CSP + offline template | `crates/emend-core`, Swift app bindings, `PreviewWebView` |
+| **Privacy** | No network unless AI configured + invoked; Keychain for API key; transient key to Rust, redacted in HTTP client; WKWebView CSP + offline template; per-chunk timeout (not whole-request) | `crates/emend-core/src/ai.rs`, `crates/emend-ffi/src/ai.rs`, Swift Keychain, `PreviewWebView` |
+| **Secret hygiene** (US6) | `ApiKey` redacting newtype (Debug/Display → `***`); key read on demand, never persisted/logged Rust-side; per-chunk inactivity timeout for streaming | `crates/emend-core/src/ai.rs` (redaction), `crates/emend-ffi/src/ai.rs` (streaming), `KeychainStore.swift` (custody) |
 | **Incremental syntax highlight (editor)** | tree-sitter (editor, advisory) vs. comrak (preview, authoritative) | `crates/emend-core/src/parse/highlight.rs` vs. `parse/preview.rs` |
 | **Two-engine split (Constitution)** | tree-sitter and comrak deliberately never unified; different perf/correctness profiles | `crates/emend-core/src/parse.rs` module docs |
 | **Preview authoritativeness** | comrak renders with CommonMark + GFM + extensions; editor highlight is advisory only | `crates/emend-core/src/parse/preview.rs` design doc |
 | **Per-keystroke editing** | Swift owns buffer; Rust maintains shadow; deltas via `push_edit()` | `EditorCoordinator`, `EmendCore` |
 | **Debounced autosave** | `DispatchQueue` serial queue, 1.5 s idle + 5 s hard cap | `AutosaveController` |
 | **Debounced preview render** | Task-based debounce (~150 ms idle), coalesces rapid edits | `PreviewModel.scheduleRefresh()` |
+| **Off-main info refresh** (US6) | `Task.detached` for stats/outline scans (cheap, but off-main for large docs) | `InfoModel.refresh()` |
 | **Pure transforms (commands)** | `SmartLists` and `FormattingCommands` are pure functions, unit-testable without window | `app/Emend/Emend/Editor/` |
 | **Self-write suppression** | Identity-keyed (mtime+len) in core + time-window in Swift `ConflictController` | `crates/emend-core/src/watcher`, `ConflictController` |
 | **File watching** | notify + debouncer on OS threads; pure core classifier; foreign-trait bridge to Swift | `crates/emend-core/src/watcher`, `crates/emend-ffi/src/watcher` |
@@ -684,6 +797,7 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **Image drag-drop** | Pure `ImageDrop` helpers filter URLs + generate Markdown; core `storeAttachment` for collision-safe storage | `ImageDrop.swift`, `crates/emend-core/src/fs.rs` |
 | **Embed rendering** | Core's `render_preview_html_with_embeds` resolves targets via workspace callback, re-renders, inlines HTML | `crates/emend-core/src/parse/preview.rs`, `PreviewModel.swift` |
 | **Deterministic link resolution** | Core's `derived::resolve_wikilink` applies FR-019a tie-break: same dir → shallowest → lexicographic | `crates/emend-core/src/derived.rs`, `tests/links.rs` |
+| **AI streaming** (US6) | Core SSE parser (lenient, UTF-8-safe) + FFI per-chunk timeout + foreign-trait callbacks for tokens + terminal | `crates/emend-core/src/ai.rs`, `crates/emend-ffi/src/ai.rs` |
 
 ## Build & Deployment
 
