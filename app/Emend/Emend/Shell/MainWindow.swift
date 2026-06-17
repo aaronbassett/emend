@@ -19,9 +19,11 @@ struct MainWindow: View {
     @StateObject private var info = InfoModel()
     @StateObject private var aiConfig = AIConfigStore()
     @StateObject private var summary = SummaryModel()
+    @StateObject private var typography = TypographyModel()
     @State private var showPreview = false
     @State private var showSummary = false
     @State private var showAISettings = false
+    @State private var showTypography = false
 
     var body: some View {
         NavigationSplitView {
@@ -53,6 +55,10 @@ struct MainWindow: View {
                     .help("Export the current document to a paginated PDF")
                     .disabled(tabs.active == nil)
             }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Typography", systemImage: "textformat.size") { showTypography = true }
+                    .help("Font, size, and spacing")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("Summarize Document", action: startSummary)
@@ -73,6 +79,7 @@ struct MainWindow: View {
         }
         .overlay { quickOpenOverlay }
         .sheet(isPresented: $showAISettings) { AISettingsView(store: aiConfig) }
+        .sheet(isPresented: $showTypography) { TypographySettingsView(model: typography) }
         .sheet(isPresented: $showSummary, onDismiss: summary.cancel) {
             SummaryView(
                 model: summary,
@@ -92,10 +99,12 @@ struct MainWindow: View {
                 info?.refresh()
             }
             preview.workspace = workspace.workspace
+            preview.typography = typography.settings
             preview.isVisible = showPreview
             preview.setActiveDocument(tabs.active?.handle)
             info.setActiveDocument(tabs.active?.handle)
         }
+        .onChange(of: typography.settings) { _, new in preview.typography = new }
         .onChange(of: tabs.activeID) { _, _ in
             preview.setActiveDocument(tabs.active?.handle)
             info.setActiveDocument(tabs.active?.handle)
@@ -196,7 +205,8 @@ struct MainWindow: View {
                         isActive: tab.id == tabs.activeID,
                         workspace: workspace.workspace,
                         notePath: tab.url.path(percentEncoded: false),
-                        onOpenLink: { url in tabs.open(url: url) }
+                        onOpenLink: { url in tabs.open(url: url) },
+                        typography: typography.settings
                     )
                     .id("\(tab.id)-\(tab.reloadToken)")
                     .opacity(tab.id == tabs.activeID ? 1 : 0)
@@ -258,7 +268,7 @@ struct MainWindow: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let handle = tab.handle
-        let css = preview.themeCSS
+        let css = preview.css // theme + live typography, so the PDF matches the preview
         Task {
             do {
                 let html = try await Task.detached { try handle.renderPreviewHtml() }.value

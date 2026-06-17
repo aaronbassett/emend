@@ -26,12 +26,17 @@ struct MarkdownEditorView: NSViewRepresentable {
     var workspace: WorkspaceHandle?
     var notePath = ""
     var onOpenLink: ((URL) -> Void)?
+    /// Typography (US7): font/size/spacing applied to the editor.
+    var typography: TypographySettings = TypographyModel.defaultSettings
 
     func makeCoordinator() -> EditorCoordinator {
         EditorCoordinator(handle: handle, autosave: autosave, isReadOnly: isReadOnly)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
+        // Set typography first — `baseFont`/`baseAttributes` derive from it.
+        context.coordinator.typography = typography
+
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
@@ -64,6 +69,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         context.coordinator.workspace = workspace
         context.coordinator.notePath = notePath
         context.coordinator.onOpenLink = onOpenLink
+        if typography != context.coordinator.typography {
+            context.coordinator.applyTypography(typography)
+        }
         guard let textView = scrollView.documentView as? NSTextView else { return }
         // Register only the active tab's editor as the scroll-sync source/target,
         // and explicitly detach when it goes inactive so a tab switch can't leave

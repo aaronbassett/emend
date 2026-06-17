@@ -88,6 +88,17 @@ pub mod watcher;
 /// [`ai::SseParser`] and pushing deltas to the foreign `AiSink`.
 pub mod ai;
 
+/// Global typography settings (US7 · FR-038/FR-039; FFI contract §8): the
+/// in-memory [`settings::TypographyStore`] behind `get_typography`/`set_typography`,
+/// holding the editor + preview [`settings::TypographySettings`] (font family,
+/// size, line height, paragraph spacing — **no** theme field, v1 follows the
+/// system). Every value entering the store is clamped into sane bounds so a bad
+/// value from the boundary can't produce a broken layout. Like the workspace's
+/// favorites/pins, the core holds this **in memory only** — persistence is
+/// Swift-side (UserDefaults), replayed on launch (US2 guardrail). Pure `std`
+/// (`Mutex` only); **no FFI, no async** (Constitution V).
+pub mod settings;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;
