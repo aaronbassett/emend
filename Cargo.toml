@@ -64,8 +64,23 @@ tree-sitter-md = { version = "0.5", features = ["parser"] }
 comrak = "0.52"
 # code highlighting
 syntect = "5.3"
-# fuzzy search / quick open
+# fuzzy search / quick open.
+#
+# `nucleo` (0.5) is the FULL engine: a worker threadpool + lock-free `Injector`
+# for the later streaming, supersedable Quick Open *driver* (T073). The
+# synchronous, in-memory workspace *index* (T058, this slice) needs only the
+# matching primitive, so it pulls in the lighter sibling `nucleo-matcher`
+# instead — no threadpool, no async, keeping emend-core free of `tokio`
+# (Constitution V). They share one matching core: `nucleo` itself depends on
+# `nucleo-matcher ^0.3.1`, so pinning 0.3.1 here keeps the two unified.
+#
+# MSRV (verified 2026-06-17, not from memory): neither `nucleo` nor
+# `nucleo-matcher` declares a `rust-version` in its published manifest, and both
+# are edition-2021 crates with no edition-2024/`let`-chains/etc. usage — they
+# compile cleanly under the workspace's pinned rust-version = "1.85" (CI proves
+# this with `cargo +1.85 check --all`). 0.3.1 is the latest non-yanked release.
 nucleo = "0.5"
+nucleo-matcher = "0.3.1"
 # file watching (stay on 8.x; 9.0 is RC)
 notify = "8.2"
 notify-debouncer-full = "0.7"

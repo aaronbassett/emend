@@ -33,6 +33,21 @@ pub mod error;
 pub mod handles;
 pub mod panic;
 
+/// Live file-watcher + conflict-model FFI projection (T059, US2): `start_watching`
+/// returning a `WatchHandle` (drop/`stop` tears the watch down), the watcher↔
+/// `DocObserver` bridge that forwards `ChangeEvent`s, `record_self_write`
+/// (self-write suppression, FR-006a), and the projected `ConflictState`/
+/// `ConflictChoice` enums + `apply_conflict_choice`. See
+/// `contracts/ffi-interface.md` §1/§3.
+pub mod watcher;
+
+/// Workspace, file-operations, and search-index FFI projection (T059, US2): a
+/// `WorkspaceHandle` wrapping `emend_core`'s `Workspace` + `Index` (locations,
+/// favorites/pins/icons/child-order, collision-safe create/rename/move/delete,
+/// fuzzy `query` + wiki-link `resolve_name`), plus the projected `Location`/
+/// `FsNode`/`NodeKind` records. See `contracts/ffi-interface.md` §1/§2/§5.
+pub mod workspace;
+
 uniffi::setup_scaffolding!();
 
 /// Build/version probe across the FFI boundary.

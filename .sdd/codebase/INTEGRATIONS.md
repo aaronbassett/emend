@@ -10,21 +10,39 @@
 
 | Service | Type | Purpose | Configuration |
 |---------|------|---------|----------------|
-| macOS File System | Local Filesystem | Primary note storage (plain `.md` files on disk) | User selects folder via security-scoped bookmarks (research §A4) |
+| macOS File System | Local Filesystem | Primary note storage (plain `.md` files organized in user-selected folders) | User selects folder(s) via security-scoped bookmarks (research §A4); multiple locations supported (Phase 4 US2) |
 
 **Connection Patterns:**
 
 - **Reading**: `emend_core::fs::read_tolerant` (UTF-8 BOM stripping, CRLF preservation, lossy UTF-8 decode)
 - **Writing**: `emend_core::fs::write_atomic` (temp file + fsync + atomic rename + fsync dir for durability)
-- **Watching**: `notify` + `notify-debouncer-full` (file system events with debounce + self-write suppression, not yet wired)
+- **Watching**: `notify` + `notify-debouncer-full` (FS events debounced 100ms, self-write suppression via FileIdCache; wired Phase 4 US2)
+- **Indexing**: `workspace.rs` (metadata: locations, folders, file tree) + `index.rs` (incremental in-memory search haystack)
+- **Conflict Detection**: conflict model when files modified externally (wired Phase 4 US2)
 - **No migration**: Plain Markdown; app-managed state lives in `NSUserDefaults` and Keychain
+
+### Workspace & Location Management (Phase 4 US2)
+
+| Component | Type | Purpose | Implementation |
+|-----------|------|---------|-----------------|
+| `workspace.rs` | In-memory metadata | Workspace state: set of [`Location`]s, per-path favorites, pins, custom folder icons, manual child order | Pure Rust, no FFI/tokio, O(1) file operations via collision-safe naming (`free_name` scheme) |
+| `index.rs` | Search haystack | Incremental in-memory index backed by `nucleo-matcher`: fuzzy matching for Quick Open + wiki-link resolution | Synchronous, arena-based `Vec<Option<Entry>>` + path/name maps; O(1) event dispatch; handles tens-of-thousands of files (FR-018) |
+| `watcher.rs` | FS event stream | Live file-watcher: detects creates, deletes, renames, moves on disk; surfaces via `WatchHandle` | Thread-based (not tokio) debouncer; conflict state machine; optional user prompt on external changes |
+
+**Conflict Handling (Phase 4 US2):**
+
+When a file is externally modified while open in Emend, the watcher detects it (after debounce) and transitions to `ConflictState`. The UI prompts the user: **keep mine** / **reload** / **merge** (detailed merge logic TBD Phase 1). Resolution updates the document and clears the conflict flag.
+
+**Location Identity (NFR-007):**
+
+Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sensitivity delegated to the host filesystem. Symlink cycles bounded by recursion depth + visited-path set.
 
 ### App Preferences & Configuration
 
 | Service | Type | Purpose | Configuration |
 |---------|------|---------|----------------|
 | macOS Keychain | Secure Storage | AI API key (transient to Rust, never logged/persisted) | macOS Security framework (`SecKeychain` C APIs via Swift FFI) |
-| `NSUserDefaults` | Local Preferences | Editor state, location tree favorites, folder icons, typography settings, AI config metadata | Standard macOS app preferences (per-user, non-synced) |
+| `NSUserDefaults` | Local Preferences | Editor state, location tree favorites, folder icons, typography settings, AI config metadata, tab state | Standard macOS app preferences (per-user, non-synced) |
 
 ---
 
@@ -74,13 +92,39 @@
 
 ---
 
-### File Watcher (macOS Native)
+### File Watcher (macOS Native, Phase 4 US2)
 
 | Service | Purpose | Configuration | Failure Mode |
 |---------|---------|----------------|--------------|
-| macOS File System Events (via `notify` + `notify-debouncer-full` crates) | Detect external note edits; reload + alert user | Debounced to 100ms; self-write suppression (FR-006a) | Silent miss if event queue overflows; user can manually refresh |
+| macOS File System Events (via `notify` + `notify-debouncer-full` crates) | Detect external note edits and FS changes (create/delete/rename/move); reload + alert user | Debounced to 100ms; self-write suppression via FileIdCache (FR-006a); conflict state machine | Silent miss if event queue overflows; user can manually refresh (FR-006c). On conflict: user chooses keep/reload/merge |
 
-**Implementation Status**: Planned phase 0–1 (FR-006a); not yet wired
+**Implementation Status**: Phase 4 US2 (wired); replaces manual refresh
+
+**Code Location:**
+
+- `crates/emend-core/src/watcher.rs` — FS event loop + conflict detection
+- `crates/emend-ffi/src/watcher.rs` — FFI handle + callback scaffolding
+- `app/Emend/Emend/Editor/ConflictController.swift` — UI prompt (keep mine / reload / merge)
+
+---
+
+### Workspace Search & Quick Open (Phase 4 US2)
+
+| Service | Purpose | Implementation | Status |
+|---------|---------|-----------------|--------|
+| Workspace search index (`nucleo-matcher`) | Fast fuzzy matching for Quick Open + wiki-link resolution (search 10K+ notes instantly) | In-memory arena-based `Index`; synchronous `query()` rankse by basename ≫ path; O(1) event dispatch on create/rename/delete | **WIRED** Phase 4 US2; incremental updates to `index.rs` |
+
+**Ranking:**
+
+- Fuzzy subsequence match on **basename** (primary, boosted) and **location-relative path** (secondary)
+- Score = better of the two; shorter relative path breaks ties
+- `nucleo-matcher::Matcher` (no worker pool; synchronous like the index)
+
+**Code Location:**
+
+- `crates/emend-core/src/index.rs` — `Index` struct + `query()` + incremental updates
+- `crates/emend-ffi/src/index.rs` — FFI `IndexHandle` + `search_index_query()` export
+- `app/Emend/Emend/Tabs/TabModel.swift` + `app/Emend/Emend/Sidebar/WorkspaceModel.swift` — UI consumers (Quick Open, tree rendering)
 
 ---
 
@@ -156,8 +200,9 @@ No external CDN loads.
 |---------|---------|-----|--------|
 | Security framework (Keychain) | Secure API key storage | `SecKeychain` C APIs via Swift FFI | **WIRED** — core to AI key management |
 | NSTextView / TextKit 2 | Native editor surface with split-paragraph storage | AppKit / SwiftUI integration + `MarkdownEditorView` NSViewRepresentable | **WIRED** — phase 0 skeleton, Phase 3 US1 MVP (editor transforms) |
-| NSOutlineView | Folder/file tree sidebar | AppKit | **WIRED** — phase 0 skeleton |
+| NSOutlineView | Folder/file tree sidebar with expansion/collapse | AppKit | **WIRED** — Phase 4 US2 (`WorkspaceOutlineView.swift`) |
 | Pasteboard | Copy/paste support | `NSPasteboard` API | Planned phase 1–2 |
+| Security-scoped bookmarks | Persistent folder access permission | AppKit / Swift Security Framework | **WIRED** — Phase 0, research §A4; resolves on launch to a usable filesystem path |
 
 ---
 
@@ -181,7 +226,10 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | Integration | Failure | App Behavior |
 |-------------|---------|--------------|
 | File system unavailable | Note folder inaccessible | Graceful error prompt; user can select a different folder |
-| External file modified | File on disk changes while edited in Emend | Debounced watcher detects; prompt user (keep mine / reload / merge — TBD in phase 1) |
+| External file modified | File on disk changes while edited in Emend | Watcher debouncer (100ms) detects; conflict state machine prompts user (keep mine / reload / merge — Phase 4 US2) |
+| File watcher overflow | FS event queue saturates (many rapid changes) | Watcher silently misses events; user can manually refresh (FR-006c) |
+| Symlink cycle | User adds folder with symlink loops | Bounded by `max_depth` + visited-path canonicalization set (NFR-007) |
+| Collision on create/rename/move | Target basename already exists | Collision-safe naming appends space + lowest free integer (`note 2.md` scheme, FR-004a) |
 | AI not configured | User invokes AI feature with no API key | Return `EmendError::AiNotConfigured`; UI shows setup prompt |
 | AI endpoint unreachable | Network error or 5xx response | `EmendError::AiHttp` with redacted status; user can retry or abort |
 | AI SSE malformed | Broken event stream | `EmendError::AiStreamMalformed`; cancel the request gracefully |
@@ -198,9 +246,9 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 - Testing infrastructure → `TESTING.md`
 - Security policies → `SECURITY.md`
 - Dependency versions and selection → `STACK.md`
-- File system operations / Keychain access patterns → See `crates/emend-core/src/fs.rs`, `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`
+- File system operations / Keychain access patterns → See `crates/emend-core/src/fs.rs`, `crates/emend-core/src/workspace.rs`, `crates/emend-core/src/watcher.rs`, `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`
 - Editor-UI transforms (smart lists, formatting) → `CONVENTIONS.md`
 
 ---
 
-*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, or preview rendering.*
+*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, or preview rendering.*

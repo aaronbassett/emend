@@ -342,29 +342,43 @@ pub trait SearchSink: Send + Sync {
     fn on_done(&self);
 }
 
-/// Foreign-trait observer fired when a document's *derived* insight (outline,
-/// stats, links) changes after edits (contract §4, FR-031a).
+/// Foreign-trait observer the Rust side pushes change notifications to: both a
+/// document's *derived* insight (outline/stats/links, contract §4, FR-031a) and
+/// live *filesystem* changes under a watched root (contract §1, FR-006 — the
+/// watcher reuses this same trait per the T059 brief).
 ///
-/// **Swift implements this; Rust calls it.** Fired ≤300 ms after edits so the
-/// UI updates live without polling.
+/// **Swift implements this; Rust calls it.** Derived-insight pushes fire
+/// ≤300 ms after edits; filesystem pushes fire once per classified, non-
+/// suppressed external change (after self-write suppression and move
+/// correlation, FR-006a/006b).
 ///
-/// `Send + Sync` is required and written explicitly.
+/// `Send + Sync` is required and written explicitly (UniFFI enforces it for all
+/// interfaces but does not add the bound). Callbacks are **non-reentrant**: the
+/// foreign side must not call back into the core from inside one of these
+/// methods (queue the work instead — see [`AiSink`] / module docs).
 ///
 /// ## Payload deferred to T039
 ///
-/// The contract's signature is `on_derived_changed(&self, h: OpenDocHandle)`,
-/// but `OpenDocHandle` does not exist until the document-session task (T039)
-/// introduces it. To avoid churning a placeholder type, this scaffolding ships
-/// the **payload-less** form. T039 adds the `OpenDocHandle` parameter once that
-/// type lands; until then a single-document caller needs no discriminator.
+/// The contract's derived signature is `on_derived_changed(&self, h:
+/// OpenDocHandle)`. To avoid coupling the watcher path (T059) to the document
+/// session, [`on_derived_changed`](Self::on_derived_changed) ships the
+/// **payload-less** form for now; a single-document caller needs no
+/// discriminator. The watcher path uses the dedicated
+/// [`on_fs_change`](Self::on_fs_change) method, which carries its full
+/// [`ChangeEvent`](crate::watcher::ChangeEvent).
 #[uniffi::export(with_foreign)]
 pub trait DocObserver: Send + Sync {
     /// Derived insight for the (currently implicit) document changed; the UI
     /// should re-pull `outline`/`stats`/`links`.
-    ///
-    /// T039 will add the `h: OpenDocHandle` argument to identify *which*
-    /// document changed.
     fn on_derived_changed(&self);
+
+    /// A classified external filesystem change under a watched root reached the
+    /// observer (FR-006). Delivered post-suppression (the app's own atomic
+    /// autosaves never echo here, FR-006a) and post-correlation (a move is one
+    /// [`ChangeEvent::Renamed`](crate::watcher::ChangeEvent::Renamed), never
+    /// `Removed`+`Created`, FR-006b). The UI should refresh the tree / index and
+    /// re-evaluate any open-document conflict state (FR-006c).
+    fn on_fs_change(&self, change: crate::watcher::ChangeEvent);
 }
 
 #[cfg(test)]

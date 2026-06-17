@@ -170,7 +170,30 @@ guard let value = optionalValue,
 
 ### Nesting Rules
 
-SwiftLint's `nesting` rule (severity: warning) allows types nested **at most 1 level deep**. Nested types beyond that trigger a warning.
+SwiftLint's `nesting` rule (severity: warning) allows types nested **at most 1 level deep**. When UIKit models or types exceed this, split them into separate files:
+
+**Example**: `WorkspaceModel.swift` (primary) + `WorkspaceNode.swift` (nested `Kind` enum stays internal; tree nodes live in their own file to keep file_length under 400 lines).
+
+### File and Type Length Limits
+
+SwiftLint enforces:
+- `file_length`: Error at 400 lines — split large files (e.g., models + private helpers → separate extensions)
+- `type_body_length`: Warning at 250 lines — move private helper methods to same-file extensions
+
+**Pattern**: When a file exceeds length, extract helper methods to a same-file `extension` block:
+
+```swift
+// WorkspaceModel.swift (primary responsibilities)
+@MainActor
+final class WorkspaceModel: ObservableObject {
+    // Main model responsibilities
+}
+
+// WorkspaceModel+Helpers.swift or WorkspaceModel+Private.swift
+extension WorkspaceModel {
+    // Private helper methods, keeping the primary file lean
+}
+```
 
 ### Naming Conventions
 
@@ -181,6 +204,8 @@ SwiftLint's `nesting` rule (severity: warning) allows types nested **at most 1 l
 | SwiftUI views | PascalCase | `MainWindow.swift`, `EmendApp.swift` |
 | SwiftUI view components | PascalCase | `EditorPane.swift` |
 | Utility extensions | PascalCase + descriptive | `SecurityScopedBookmarks.swift` |
+| Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift` |
+| Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `WorkspaceOutlineView+Coordinator.swift` |
 | Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift` |
 
 #### Code Element Naming (Swift)
@@ -209,6 +234,93 @@ public static func make(
     // ...
 }
 ```
+
+## SwiftUI ↔ AppKit Bridging Patterns (US2, Phase 4)
+
+### @MainActor ObservableObject Models
+
+All observable state models that participate in SwiftUI or touch AppKit are marked `@MainActor` for Swift 6 strict concurrency compliance:
+
+```swift
+@MainActor
+final class WorkspaceModel: ObservableObject {
+    @Published private(set) var roots: [WorkspaceNode] = []
+    @Published private(set) var fsRefreshTick = 0
+    let workspace: WorkspaceHandle
+}
+
+@MainActor
+final class TabModel: ObservableObject {
+    @Published private(set) var tabs: [Tab] = []
+    @Published var activeID: Tab.ID?
+}
+```
+
+**Rationale**: Models own Rust handles and emit `@Published` changes, which must occur on the main thread for SwiftUI binding updates.
+
+### NSViewRepresentable + @MainActor Coordinator
+
+When wrapping AppKit views (e.g., `NSOutlineView`, `NSTextView`), create a coordinator that conforms to AppKit protocols. The coordinator's protocol conformances (`NSOutlineViewDataSource`, `NSOutlineViewDelegate`, `NSMenuDelegate`) are SDK-declared as `@MainActor`, so the coordinator is safe as-is:
+
+```swift
+struct WorkspaceOutlineView: NSViewRepresentable {
+    @ObservedObject var model: WorkspaceModel
+    
+    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+        // All SDK protocols are @MainActor, so Coordinator is safe
+        func outlineView(_: NSOutlineView, numberOfChildrenOfItem: Any?) -> Int {
+            // Safe to call model methods here (both are @MainActor)
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(model: model)
+    }
+}
+```
+
+**Important**: Not all AppKit delegate protocols are `@MainActor`-marked. For example, `NSTextStorageDelegate` is not. Do NOT directly conform in a `@MainActor` context; instead, create a non-isolated intermediate:
+
+```swift
+// ✗ Do not do this (NSTextStorageDelegate has nonisolated methods)
+@MainActor
+final class TextStorageObserver: NSTextStorageDelegate { }
+
+// ✓ Correct: create a bridge
+final class TextStorageObserver: NSTextStorageDelegate {
+    private let onChangeMain: @MainActor @Sendable (NSTextStorage) -> Void
+    
+    nonisolated func textStorageDidProcessEditing(_ notification: Notification) {
+        Task { @MainActor in onChangeMain(...) }
+    }
+}
+```
+
+### Cross-Thread Callbacks: Sendable Closures
+
+When Rust watcher events arrive on a background thread (e.g., `notify` FSEvents thread), bridge to the main actor via a `@Sendable` closure in a final-class holder:
+
+```swift
+// FsObserver bridges background-thread Rust callbacks to main actor
+final class FsObserver: DocObserver, Sendable {
+    private let onChange: @Sendable (ChangeEvent) -> Void
+    
+    init(onChange: @escaping @Sendable (ChangeEvent) -> Void) {
+        self.onChange = onChange
+    }
+    
+    func onFsChange(change: ChangeEvent) {
+        onChange(change)  // Closure executes on watcher thread
+    }
+}
+
+// WorkspaceModel uses it:
+private lazy var fsObserver = FsObserver { [weak self] change in
+    Task { @MainActor in self?.handleFsChange(change) }
+}
+```
+
+**Rationale**: The `@Sendable` closure can safely cross threads. The `Task { @MainActor }` hop ensures model mutations stay on the main thread where SwiftUI expects them.
 
 ## Common Patterns
 
@@ -371,6 +483,9 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`swift/EmendCore/Sources/EmendCore/Streaming.swift`**: AsyncStream adapters over foreign-trait callbacks
 - **`swift/EmendCore/Sources/EmendCoreFFI/`** (generated): UniFFI bindings (excluded from lint)
 - **`app/Emend/Emend/`**: SwiftUI app (views, state, utilities, pure transforms)
+  - **`Sidebar/`**: Workspace tree model, `NSOutlineView` coordination, drag-drop logic
+  - **`Tabs/`**: Tab management, open-document state
+  - **`Editor/`**: Editor view, syntax highlighting, text storage delegates
 - **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
 
 ### Editor Transform Organization
