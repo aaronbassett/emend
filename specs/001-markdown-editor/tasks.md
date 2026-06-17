@@ -86,10 +86,10 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 ### App shell + sandbox handshake (highest risk — prototype first)
 
-- [ ] T027 Implement `app/Emend/Emend/EmendApp.swift` (single window) + `app/Emend/Emend/Shell/MainWindow.swift` (sidebar | editor | info three-pane skeleton)
-- [ ] T028 Implement `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`: NSOpenPanel → bookmark create/persist/resolve (stale handling); prototype the scope↔Rust file-IO handshake end-to-end (research §A4)
-- [ ] T029 [P] [test] `app/Emend/EmendTests/BookmarkResolutionTests.swift`: bookmark round-trip resolve + stale re-create
-- [ ] T030 [GIT] Commit: app shell + security-scoped bookmark handshake
+- [x] T027 Implement `app/Emend/Emend/EmendApp.swift` (single window) + `app/Emend/Emend/Shell/MainWindow.swift` (sidebar | editor | info three-pane skeleton)
+- [x] T028 Implement `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`: NSOpenPanel → bookmark create/persist/resolve (stale handling); prototype the scope↔Rust file-IO handshake end-to-end (research §A4)
+- [x] T029 [P] [test] `app/Emend/EmendTests/BookmarkResolutionTests.swift`: bookmark round-trip resolve + stale re-create
+- [x] T030 [GIT] Commit: app shell + security-scoped bookmark handshake
 
 ### Phase close
 
