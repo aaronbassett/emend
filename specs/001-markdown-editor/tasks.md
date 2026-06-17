@@ -109,9 +109,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 **Independent Test**: Open a single file, type headings/bold/italic/lists, confirm markers dim while formatting renders inline, confirm smart-list renumber, quit/reopen → on-disk Markdown is clean and correct.
 
 - [x] T035 [US1] Create `specs/001-markdown-editor/retro/P3.md`; [GIT] commit
-- [ ] T036 [P] [US1] [test] `crates/emend-core/tests/parse_incremental.rs`: tree-sitter `changed_ranges` is edit-local; fence-toggle invalidates the tail (use devs:rust-dev agent)
-- [ ] T037 [P] [US1] [test] `crates/emend-bench/benches/highlight.rs`: re-highlight one edited line in a 1MB doc < 5ms (tracked budget, SC-003) (use devs:rust-dev agent)
-- [ ] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
+- [x] T036 [P] [US1] [test] `crates/emend-core/tests/parse_incremental.rs`: tree-sitter `changed_ranges` is edit-local; fence-toggle invalidates the tail (use devs:rust-dev agent)
+- [x] T037 [P] [US1] [test] `crates/emend-bench/benches/highlight.rs`: re-highlight one edited line in a 1MB doc < 5ms (tracked budget, SC-003) (use devs:rust-dev agent)
+- [x] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
 - [ ] T039 [US1] Export `open_document`/`push_edit`/`highlight_spans` in `crates/emend-ffi/src/lib.rs` per the FFI contract (use devs:rust-dev agent)
 - [ ] T040 [GIT] Commit: incremental editor highlighting + FFI exports
 - [ ] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)

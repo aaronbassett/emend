@@ -27,6 +27,15 @@ tempfile.workspace = true
 # `unicode_lines`/`cr_lines` are intentionally disabled (only LF + CRLF are line
 # breaks, matching NSTextView/TextKit); `simd` is kept for hot-path throughput.
 ropey.workspace = true
+# Incremental editor-highlight engine (research §B1) — the per-keystroke hot
+# path, advisory-only and DISTINCT from the comrak preview engine (do not unify
+# them, Constitution). `tree-sitter` is the parsing runtime; `tree-sitter-md` is
+# the split markdown grammar whose `MarkdownParser`/`MarkdownTree` wrapper drives
+# the block + inline trees and is gated behind its `parser` feature (enabled in
+# the workspace catalog). Both share one semver-compatible tree-sitter runtime
+# (see root Cargo.toml). Pure Rust + a C grammar; no FFI/uniffi dependency.
+tree-sitter.workspace = true
+tree-sitter-md.workspace = true
 
 [lints]
 workspace = true

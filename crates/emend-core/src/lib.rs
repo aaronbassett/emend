@@ -25,6 +25,12 @@ pub mod fs;
 /// highlight/outline layers build on.
 pub mod document;
 
+/// Markdown parsing. Holds the **two deliberately separate engines** (research
+/// §B1, Constitution): the incremental tree-sitter editor-highlight engine
+/// ([`parse::highlight`]) on the per-keystroke hot path, and (later) the comrak
+/// preview engine — kept apart on purpose, never unified.
+pub mod parse;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;
