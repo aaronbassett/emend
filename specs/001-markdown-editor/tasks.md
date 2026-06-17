@@ -201,7 +201,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T089 [US4] Implement `app/Emend/Emend/Preview/PDFExport.swift` via `NSPrintOperation` on an offscreen WKWebView (paginated, `@media print`) (research §C4) — uses async `runModal(for:…)` (synchronous `run()` deadlocks the main run loop with WebKit IPC)
 - [x] T090 [GIT] Commit: preview WebView, scroll sync, PDF export
 - [x] T091 [US4] [test] `app/Emend/EmendTests/PreviewExportTests.swift`: render sample doc, export, assert multi-page PDF (app-hosted/headless, not XCUITest — same rationale as other flows; the `EmendUITests` target doesn't exist by design)
-- [ ] T092 [US4] Run `/sdd:map incremental`; review `retro/P6.md` → CLAUDE.md; [GIT] commit
+- [x] T092 [US4] Run `/sdd:map incremental`; review `retro/P6.md` → CLAUDE.md; [GIT] commit
 - [ ] T093 [GIT] Push; PR "US4: preview + PDF"; verify CI green; report PR ready status
 
 **Checkpoint**: Preview + PDF export work.

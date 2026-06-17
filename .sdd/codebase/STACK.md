@@ -8,8 +8,8 @@
 
 | Language | Version | Purpose |
 |----------|---------|---------|
-| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, AI client |
-| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview |
+| Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, preview rendering, AI client |
+| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export |
 | C (via UniFFI) | ABI shim | FFI boundary between Rust and Swift |
 
 ## Frameworks
@@ -17,7 +17,7 @@
 | Framework | Version | Purpose |
 |-----------|---------|---------|
 | SwiftUI | 6.0 | Declarative UI framework for the macOS application |
-| AppKit | macOS 14+ | Native APIs for `NSTextView` (TextKit 2), `NSOutlineView`, `WKWebView`, Keychain |
+| AppKit | macOS 14+ | Native APIs for `NSTextView` (TextKit 2), `NSOutlineView`, `WKWebView`, `NSPrintOperation`, Keychain |
 | UniFFI | 0.31 | FFI binding generator (proc-macro mode): Rust → C ABI → Swift bindings |
 
 ## Critical Dependencies
@@ -31,6 +31,8 @@ These packages are actively wired into the runtime:
 | `ropey` | 1.6.1 | Shadow rope for UTF-16/line indexing in the per-keystroke editor hot path | **WIRED** — backing the `Document` model and `Highlighter` rope |
 | `tree-sitter` | 0.26 | Incremental parser runtime for editor-highlight engine (block + inline grammars) | **WIRED** — Phase 3 US1 (Editor MVP), `parse/highlight.rs` |
 | `tree-sitter-md` | 0.5 | Split Markdown grammar (block + inline); wrapped by `MarkdownParser`/`MarkdownTree` | **WIRED** — Phase 3 US1, `parse/highlight.rs` |
+| `comrak` | 0.52 | CommonMark + GFM preview engine (authoritative, whole-document); distinct from tree-sitter editor highlighter ("two engines on purpose") | **WIRED** — Phase 6 US4 (Preview + PDF export), `parse/preview.rs`; rendered via `render_preview_html()` FFI export with comrak's `render.sourcepos` + `data-line` scroll-sync anchors (research §C3) |
+| `syntect` | 5.3 | Code-block syntax highlighting (20+ languages) for preview fenced blocks; loads vendored binary `SyntaxSet`/`ThemeSet` dump (`assets/syntaxes-themes.packdump`) | **WIRED** — Phase 6 US4, `parse/code_highlight.rs`; drives `ClassedHTMLGenerator` via `EmendSyntectAdapter` plugged into comrak; theme CSS exported via `preview_theme_css()` FFI |
 | `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename | **WIRED** — used in `fs::write_atomic` |
 | `thiserror` | 2.x | Error type Display/Error derive for `EmendError` enum | **WIRED** — core error handling |
 | `nucleo-matcher` | 0.3.1 | Synchronous fuzzy-matching primitive for workspace search index (lighter than full `nucleo`) | **WIRED** — Phase 4 US2, `index.rs` — in-memory haystack for Quick Open + wiki-link resolution |
@@ -58,7 +60,7 @@ No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (gener
 
 ### Swift (`app/Emend`)
 
-Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`, workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), folder-icon picker, and tab model are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, and tab model are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
 
 ### Catalogued but Inert (Not Yet Wired)
 
@@ -66,8 +68,6 @@ These are pinned in the workspace `[workspace.dependencies]` but not yet importe
 
 | Package | Version | Purpose | Why Inert | Planned For |
 |---------|---------|---------|-----------|------------|
-| `comrak` | 0.52 | CommonMark + GFM parsing for preview HTML (authoritative, whole-document engine; distinct from tree-sitter editor highlight) | Not imported | Phase 1 (US3 — preview) |
-| `syntect` | 5.3 | Code block syntax highlighting (20+ languages) | Not imported | Phase 1 (US7) |
 | `nucleo` | 0.5 | Fuzzy search / Quick Open ranking (full worker-pool engine; current index uses lighter `nucleo-matcher` only) | Not imported | Phase 2 (US2 — streaming Quick Open driver T073) |
 | `reqwest` | 0.13 (json, stream) | HTTP client with SSE streaming for AI | Not imported | Phase 1 (FR-023 — AI client) |
 | `serde` / `serde_json` | 1.x | Serialization for AI request/response JSON | Not imported | Phase 1 (FR-023) |
@@ -108,8 +108,12 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 - **Text buffer**: Swift owns the canonical `NSTextStorage`; Rust shadows it with a `ropey::Rope` for off-main-thread queries and incremental tree-sitter highlighting.
 - **Coordinates**: FFI boundary uses **UTF-16 code units** (not UTF-8 offsets) to map 1:1 onto `NSRange` and avoid per-keystroke transcoding (research §A2).
 - **Async wiring**: Rust tokio runtime lives in `emend-ffi`; `emend-core` stays purely synchronous for testability (Constitution V, research §B8).
-- **Highlight engine**: `tree-sitter-md` (split block + inline grammar) runs incrementally on the per-keystroke hot path (≤50 ms budget, SC-003); is advisory-only (does not affect preview rendering, which uses comrak separately).
+- **Two highlight/preview engines** (Constitution guardrail): `tree-sitter-md` (editor, incremental, advisory) ≠ `comrak` (preview, authoritative, whole-document). Never unified.
+  - Editor highlight: `tree-sitter-md` (split block + inline grammar) runs incrementally on the per-keystroke hot path (≤50 ms budget, SC-003); is advisory-only (does not affect preview rendering).
+  - Preview render: `comrak` (CommonMark + GFM + wikilinks + `==highlight==`) runs off-main on demand; outputs authoritative preview HTML with `render.sourcepos` source-line anchors; fenced code blocks colored by `syntect` via `ClassedHTMLGenerator`.
+- **Preview theme CSS**: Syntect's theme dump is vendored (`assets/syntaxes-themes.packdump`); the matching CSS is exported by `preview_theme_css()` FFI and injected by Swift into the WebView template (research §B6).
 - **Workspace and file watching**: `emend-core` provides synchronous workspace metadata (`workspace.rs`) and incremental search index (`index.rs`); file watcher (`notify` + `notify-debouncer-full`) runs on a dedicated `std::thread`, not tokio (Constitution V).
+- **PDF export**: `WKWebView` renders comrak HTML off-screen; `NSPrintOperation` paginates it to PDF with `@media print` rules from `theme.css` (research §C4).
 
 ## What Does NOT Belong Here
 

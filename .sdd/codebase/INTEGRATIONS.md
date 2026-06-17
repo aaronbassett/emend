@@ -112,7 +112,7 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 
 | Service | Purpose | Implementation | Status |
 |---------|---------|-----------------|--------|
-| Workspace search index (`nucleo-matcher`) | Fast fuzzy matching for Quick Open + wiki-link resolution (search 10K+ notes instantly) | In-memory arena-based `Index`; synchronous `query()` rankse by basename ≫ path; O(1) event dispatch on create/rename/delete | **WIRED** Phase 4 US2; incremental updates to `index.rs` |
+| Workspace search index (`nucleo-matcher`) | Fast fuzzy matching for Quick Open + wiki-link resolution (search 10K+ notes instantly) | In-memory arena-based `Index`; synchronous `query()` ranks by basename ≫ path; O(1) event dispatch on create/rename/delete | **WIRED** Phase 4 US2; incremental updates to `index.rs` |
 
 **Ranking:**
 
@@ -128,6 +128,56 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 
 ---
 
+## Markdown Processing & Preview Rendering (Phase 6 US4)
+
+### Preview Engine (Authoritative)
+
+| Component | Purpose | Technology | Status |
+|-----------|---------|-----------|--------|
+| Preview HTML rendering | Whole-document CommonMark + GFM (tables, tasklist, strikethrough, autolinks) + native extensions (wikilinks, `==highlight==`→`<mark>`) with scroll-sync anchors | `comrak` 0.52 with `render.sourcepos` → `data-line` attributes (research §B1, §C3) | **WIRED** — Phase 6 US4; `crates/emend-core/src/parse/preview.rs`; FFI export `OpenDocHandle::render_preview_html()` |
+
+**Key Properties:**
+
+- **Authoritative & complete**: Renders whole document; **not incremental**; distinctly separate from the editor's incremental tree-sitter highlighter (Constitution guardrail).
+- **Deterministic**: Pure `&str -> String` transform; no IO, no network, no async (verified by `tests/preview_offline.rs`).
+- **Scroll-sync anchors**: Each block emits `data-line="<line>"` for editor ↔ preview synchronization (research §C3).
+- **No remote loads**: Embedded URLs are emitted literally; never dereferenced (verified by CSP on Swift side).
+- **Code highlighting**: Fenced code blocks colored by syntect (see below).
+
+**Code Location:**
+
+- Core engine: `crates/emend-core/src/parse/preview.rs` — `render_preview_html()`
+- FFI: `crates/emend-ffi/src/document.rs` — method `OpenDocHandle::render_preview_html()` 
+- Swift: `app/Emend/Emend/Preview/PreviewWebView.swift` — loads HTML into `WKWebView`
+
+### Code Block Syntax Highlighting (Preview)
+
+| Component | Purpose | Technology | Status |
+|-----------|---------|-----------|--------|
+| Fenced code block coloring | Highlight code in `` ```lang `` blocks with 20+ languages (Rust, Python, JavaScript, etc.) | `syntect` 5.3 with `ClassedHTMLGenerator` + theme CSS; loads vendored binary `SyntaxSet`/`ThemeSet` dump (`assets/syntaxes-themes.packdump`) | **WIRED** — Phase 6 US4; `crates/emend-core/src/parse/code_highlight.rs`; plugged into comrak via `SyntaxHighlighterAdapter` |
+
+**Key Properties:**
+
+- **Pure Rust**: `fancy-regex` backend (no C `onig` dependency).
+- **Vendored dump**: One-time serialization of default `SyntaxSet` + `ThemeSet` committed as `assets/syntaxes-themes.packdump`; loaded via `OnceLock` at first use (not parsed per document).
+- **Theme CSS**: Exported as `preview_theme_css()` FFI; injected by Swift into preview template.
+- **No remote syntax/theme loads**: Syntax definitions and themes are built-in to the dump.
+
+**Regeneration:**
+
+- Run `cargo run --example gen_syntect_dump` to refresh the vendored dump when updating `syntect` version or desired language support.
+- Output written to `crates/emend-core/assets/syntaxes-themes.packdump`; commit and re-run `just xcframework`.
+
+**Code Location:**
+
+- Core engine: `crates/emend-core/src/parse/code_highlight.rs` — `EmendSyntectAdapter`, `theme_css()`
+- Example: `crates/emend-core/examples/gen_syntect_dump.rs` — regenerate the vendored dump
+- Assets: `crates/emend-core/assets/syntaxes-themes.packdump` (binary dump), `assets/preview-theme.css` (exported CSS)
+- FFI: `crates/emend-ffi/src/document.rs` — `preview_theme_css()` free function
+- Swift: injected into `app/Emend/Emend/Resources/preview/template.html` via theme CSS
+
+---
+
 ## Syntax Highlighting
 
 ### Editor Highlighting (Internal)
@@ -139,56 +189,85 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 **Performance:**
 - Incremental per-keystroke reparses (≤50 ms typing budget, SC-003)
 - Does NOT block the main thread; UTF-16 coordinate bridging via `ropey::Rope` mirror
-- Advisory styling only; preview rendering uses separate `comrak` engine (not yet wired)
+- Advisory styling only; preview rendering uses separate `comrak` engine (not unified)
 
 **Code Location:**
 - Highlighter struct: `crates/emend-core/src/parse/highlight.rs`
-- FFI export: `crates/emend-ffi/` (style span collection via handle)
+- FFI export: `crates/emend-ffi/src/document.rs` — `OpenDocHandle::highlight_spans()`
 - Swift integration: `app/Emend/Emend/Editor/SyntaxAttributing.swift` (applies spans to `NSTextView`)
 
 ---
 
-## Preview Rendering
+## Preview Rendering & Display (Phase 6 US4)
 
 ### Web View
 
-| Service | Purpose | Configuration |
-|---------|---------|----------------|
-| `WKWebView` (macOS AppKit) | Render preview HTML + Mermaid diagrams + KaTeX math | nonPersistent, navigation delegate (blocks remote loads), CSP header |
+| Service | Purpose | Configuration | Security |
+|---------|---------|----------------|----------|
+| `WKWebView` (macOS AppKit) | Render comrak preview HTML + bundled Mermaid diagrams + KaTeX math | `nonPersistent` session, navigation delegate (blocks remote loads), CSP header, `loadFileURL` for bundled assets | No remote scripts/images/stylesheets; all resources bundled in app |
 
-**Security:**
+**Properties:**
 
-- Bundled Mermaid.js (no remote CDN)
-- Bundled KaTeX (no remote CDN)
-- Content Security Policy (CSP) blocks inline `<script>` and remote loads
-- User data (note HTML) rendered, but no AI-generated content exposed
+- **Rendering**: Displays `render_preview_html()` output with embedded `<script data-mermaid>` and `<math>` tags from comrak.
+- **Bundled assets**: Mermaid.js 11.15, KaTeX 0.17 + fonts under `app/Emend/Emend/Resources/preview/`; loaded via `loadFileURL`.
+- **Scroll sync**: `bridge.js` handles editor ↔ preview scroll linking via `data-line` anchors (research §C3).
+- **CSP**: Blocks inline `<script>`, external `src=`, and all `fetch()`; enforced by `theme.css` `<meta>` headers.
+- **User data only**: Renders note HTML; no AI-generated content, no ambient telemetry.
 
-**Implementation Status**: Planned phase 1 (US3 — preview) with authoritative `comrak` engine
+**Implementation Status**: Phase 6 US4 (wired preview); scroll-sync in `PreviewModel.swift`
+
+**Code Location:**
+
+- Swift WKWebView: `app/Emend/Emend/Preview/PreviewWebView.swift`
+- Model/sync: `app/Emend/Emend/Preview/PreviewModel.swift` + `app/Emend/Emend/Preview/ScrollSync.swift`
+- Template & assets: `app/Emend/Emend/Resources/preview/` (template.html, theme.css, bridge.js, mermaid.min.js, katex/)
 
 ---
 
-## Diagram & Math Rendering
-
-### Bundled Libraries (Not External APIs)
+### Diagram & Math Rendering (Bundled)
 
 | Library | Format | Bundling | Status |
 |---------|--------|----------|--------|
-| Mermaid.js | Diagrams (flowchart, sequence, etc.) | Bundled as `.js` file in the app; loaded into `WKWebView` | Planned phase 1–2 (FR-041 — diagram support) |
-| KaTeX | LaTeX-style math (inline `$…$` and block `$$…$$`) | Bundled as `.js` + CSS in the app; injected into preview HTML | Planned phase 1–2 (FR-042 — math rendering) |
+| Mermaid.js 11.15 | Diagrams (flowchart, sequence, state, class, etc.) | Bundled as `mermaid.min.js` in app; loaded into `WKWebView` via `loadFileURL`; no CDN | **WIRED** — Phase 6 US4 (embedded in preview; direct CDN not used) |
+| KaTeX 0.17 | LaTeX-style math (inline `$…$` and block `$$…$$`) | Bundled as JS + CSS + fonts in `app/Emend/Emend/Resources/preview/katex/`; injected into preview template | **WIRED** — Phase 6 US4 (embedded in preview; direct CDN not used) |
 
-No external CDN loads.
+**No external CDN loads** — all assets are shipped with the app and loaded from the local filesystem via `loadFileURL` (offline-capable, verifiable by `tests/preview_offline.rs`).
+
+**Code Location:**
+
+- Assets: `app/Emend/Emend/Resources/preview/mermaid.min.js`, `app/Emend/Emend/Resources/preview/katex/`
+- Injected by: `app/Emend/Emend/Resources/preview/template.html`
+- Versions: tracked in `app/Emend/Emend/Resources/preview/VERSIONS.md`
 
 ---
 
 ## File Export
 
-### PDF Export
+### PDF Export (Phase 6 US4)
 
-| Service | Purpose | Configuration |
-|---------|---------|----------------|
-| `WKWebView` printing API | Render preview to PDF | Native macOS print dialog; user selects path |
+| Service | Purpose | Implementation | Status |
+|---------|---------|----------------|--------|
+| `WKWebView` off-screen render + `NSPrintOperation` | Export the live preview to a paginated PDF file | Dedicated off-screen `WKWebView`; load comrak HTML; run Mermaid JS; paginate with `NSPrintOperation` using `@media print` CSS rules from `theme.css` (research §C4) | **WIRED** — Phase 6 US4; `app/Emend/Emend/Preview/PDFExport.swift` |
 
-**Implementation Status**: Planned phase 2 (FR-032 — PDF export)
+**Key Properties:**
+
+- **Multi-page**: Uses `NSPrintOperation` (not `WKWebView.createPDF`, which ignores pagination).
+- **High fidelity**: Identical rendering to on-screen preview; Mermaid diagrams and KaTeX render before PDF generation.
+- **Print CSS**: `theme.css` defines `@media print` rules for page breaks, margins, and font sizing.
+- **Off-screen**: Render happens in a hidden window far off-screen so WebKit doesn't throttle layout (Apple forums 700418/705138).
+- **User-selected path**: Save dialog lets user choose output location.
+
+**Failure Modes:**
+
+- Template missing (bundle error): `PDFExport.Failure.templateMissing`
+- Render failed (HTML parsing / JS error): `PDFExport.Failure.renderFailed(detail)`
+- Print failed (I/O or user cancel): `PDFExport.Failure.printFailed`
+
+**Code Location:**
+
+- Export logic: `app/Emend/Emend/Preview/PDFExport.swift` — `PDFExport.export(html:css:to:)`
+- Called by: `app/Emend/Emend/Preview/PreviewModel.swift` — `exportPDF()` action
+- Print CSS: `app/Emend/Emend/Resources/preview/theme.css` — `@media print` rules
 
 ---
 
@@ -201,6 +280,8 @@ No external CDN loads.
 | Security framework (Keychain) | Secure API key storage | `SecKeychain` C APIs via Swift FFI | **WIRED** — core to AI key management |
 | NSTextView / TextKit 2 | Native editor surface with split-paragraph storage | AppKit / SwiftUI integration + `MarkdownEditorView` NSViewRepresentable | **WIRED** — phase 0 skeleton, Phase 3 US1 MVP (editor transforms) |
 | NSOutlineView | Folder/file tree sidebar with expansion/collapse | AppKit | **WIRED** — Phase 4 US2 (`WorkspaceOutlineView.swift`) |
+| WKWebView | Preview rendering + scroll-sync + PDF export | WebKit framework | **WIRED** — Phase 6 US4 (`PreviewWebView.swift`, `PDFExport.swift`) |
+| NSPrintOperation | Paginated PDF export | AppKit | **WIRED** — Phase 6 US4 (`PDFExport.swift`) |
 | Pasteboard | Copy/paste support | `NSPasteboard` API | Planned phase 1–2 |
 | Security-scoped bookmarks | Persistent folder access permission | AppKit / Swift Security Framework | **WIRED** — Phase 0, research §A4; resolves on launch to a usable filesystem path |
 
@@ -235,7 +316,11 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | AI SSE malformed | Broken event stream | `EmendError::AiStreamMalformed`; cancel the request gracefully |
 | AI timeout | Request exceeds timeout | `EmendError::AiTimeout`; user can retry |
 | User cancels AI request | Cancel token triggered mid-stream | `EmendError::AiCancelled`; clean shutdown of the stream task |
-| Preview WebView crashes | Internal WebView failure | Error logged; fall back to plain-text preview or re-render |
+| Preview render fails | Unexpected comrak error | Fall back to plain-text display or re-render |
+| PDF export: template missing | App bundle error | `PDFExport.Failure.templateMissing`; user sees error dialog |
+| PDF export: render failed | WebView fails to load HTML or JS error | `PDFExport.Failure.renderFailed(detail)`; user sees error with details |
+| PDF export: print failed | I/O error or user cancel | `PDFExport.Failure.printFailed`; gracefully dismiss |
+| Preview WebView crashes | Internal WebKit failure | Error logged; fall back to plain-text preview or re-render |
 | Syntax highlighting lagging | Tree-sitter reparse exceeds 50ms budget | Fall back to previous highlight spans; no visual stutter (advisory-only styling) |
 
 ---
@@ -248,7 +333,8 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 - Dependency versions and selection → `STACK.md`
 - File system operations / Keychain access patterns → See `crates/emend-core/src/fs.rs`, `crates/emend-core/src/workspace.rs`, `crates/emend-core/src/watcher.rs`, `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift`
 - Editor-UI transforms (smart lists, formatting) → `CONVENTIONS.md`
+- Markdown engines (two-engine architecture) → `CONVENTIONS.md` (patterns) & `ARCHITECTURE.md` (design)
 
 ---
 
-*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, or preview rendering.*
+*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, or PDF export.*

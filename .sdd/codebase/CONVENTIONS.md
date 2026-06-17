@@ -152,6 +152,8 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 - `closure_spacing` — Enforce consistent closure syntax
 - `force_cast` — Disallow `as!` casts
 - `force_try` — Disallow `try!`
+- `function_body_length` — Warning at 50 lines; extract per-step helpers (US4 · `PDFExport`)
+- `nesting` — Allow types nested at most 1 level deep
 
 **Excluded paths**:
 - `swift/EmendCore/Sources/EmendCoreFFI/` — Generated UniFFI bindings (not our code)
@@ -189,6 +191,7 @@ SwiftLint's `nesting` rule (severity: warning) allows types nested **at most 1 l
 SwiftLint enforces:
 - `file_length`: Error at 400 lines — split large files (e.g., models + private helpers → separate extensions)
 - `type_body_length`: Warning at 250 lines — move private helper methods to same-file extensions
+- `function_body_length`: Warning at 50 lines — extract per-step helpers (US4: `PDFExport` exports via `loadTemplate` / `renderContent` / `paginate` steps)
 
 **Pattern**: When a file exceeds length, extract helper methods to a same-file `extension` block:
 
@@ -217,7 +220,8 @@ extension WorkspaceModel {
 | Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift` |
 | Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `WorkspaceOutlineView+Coordinator.swift` |
 | Sink bridges (FFI callbacks) | PascalCase + `Sink` suffix | `QuickOpenSink.swift`, `FsObserver.swift` |
-| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift` |
+| Export/utility enums | PascalCase | `PDFExport.swift` |
+| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `PreviewExportTests.swift` |
 
 #### Code Element Naming (Swift)
 
@@ -374,6 +378,96 @@ let sink = QuickOpenSink(
 
 This avoids `@MainActor` annotation on the sink itself (which would require the calls *from* Rust to be on the main thread — they're not), while still ensuring SwiftUI mutations happen on main.
 
+### Selector-Based NotificationCenter Observers (US4)
+
+When observing AppKit notifications in a `@MainActor` context, use **selector-based observers** (via `#selector`) to avoid `@Sendable` closure conflicts. The `@MainActor` coordinator's `@objc` methods receive notifications directly on the main thread:
+
+```swift
+@MainActor
+final class EditorCoordinator: NSObject, NSTextStorageDelegate {
+    // ...
+    
+    /// Observe the scroll view's clip bounds so editor scrolls drive the preview (US4).
+    /// The clip view posts on the main thread during scroll.
+    func observeScrolling(in scrollView: NSScrollView) {
+        let clip = scrollView.contentView
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(viewportDidScroll),
+            name: NSView.boundsDidChangeNotification,
+            object: clip
+        )
+    }
+    
+    /// Clip bounds moved (a scroll): forward the editor's top line to the preview.
+    /// Posted on the main thread during scrolling.
+    @objc private func viewportDidScroll() {
+        guard let textView else { return }
+        scrollSync?.editorScrolled(from: textView)
+    }
+}
+```
+
+**Cleanup in deinit**:
+```swift
+deinit {
+    NotificationCenter.default.removeObserver(self)
+}
+```
+
+**Rationale**: Selector-based observers automatically post on the main thread for main-thread-posting notifications (e.g., `NSView.boundsDidChangeNotification`), avoiding the need for `Task { @MainActor in … }` wrappers that complicate `@Sendable` closure constraints.
+
+## PDF Export Patterns (US4)
+
+### Async PrintOperation Pattern
+
+PDF export uses `NSPrintOperation.runModal(for:…)` (async variant) instead of synchronous `run()` to avoid deadlocking the main run loop. The async variant allows WebKit's print IPC to complete:
+
+```swift
+/// DO NOT use synchronous run(): it blocks the main thread while WebKit's
+/// print path needs the main run loop for IPC. Use runModal(for:…) instead.
+@MainActor
+private func paginate(_ webView: WKWebView, with printInfo: NSPrintInfo) async throws {
+    guard let window else { throw PDFExport.Failure.printFailed }
+    let operation = webView.printOperation(with: printInfo)
+    operation.showsPrintPanel = false
+    operation.showsProgressPanel = false
+    
+    let ok = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+        printContinuation = continuation
+        // Watchdog: ensure export never hangs
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, let pending = printContinuation else { return }
+            printContinuation = nil
+            pending.resume(throwing: PDFExport.Failure.printFailed)
+        }
+        operation.runModal(
+            for: window,
+            delegate: self,
+            didRun: #selector(printOperationDidRun(_:success:contextInfo:)),
+            contextInfo: nil
+        )
+    }
+}
+
+/// Called by runModal when the save completes.
+@objc private func printOperationDidRun(
+    _: NSPrintOperation,
+    success: Bool,
+    contextInfo _: UnsafeMutableRawPointer?
+) {
+    printContinuation?.resume(returning: success)
+    printContinuation = nil
+}
+```
+
+**Key points**:
+- `runModal(for:…)` is async-friendly; it runs without blocking the main thread
+- Selector-based `didRun:` callback receives the result and resumes the continuation
+- Watchdog timeout (30s) guards against stalled WebKit processes
+- Both `loadTemplate` and `paginate` steps use `withCheckedThrowingContinuation` to bridge callback-based APIs to async/await
+
 ## Common Patterns
 
 ### Rust: Error Propagation
@@ -518,7 +612,7 @@ Enforced at commit time by `lefthook` hook (see `lefthook.yml` commit-msg sectio
 - `chore` — Maintenance / tooling
 - `revert` — Revert a prior commit
 
-**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`.
+**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`.
 
 **Breaking change** (optional): Suffix `!` before `:` (e.g., `feat(ffi)!: new ABI version`).
 
@@ -529,6 +623,7 @@ fix(fs): tolerate CRLF in file reads
 docs: update UTF-16 boundary documentation
 test(document): add astral-char UTF-16 tests
 feat(search): add cancellable quick-open query (US3)
+feat(preview): add PDF export via NSPrintOperation (US4)
 ci: enforce MSRV 1.85
 ```
 
@@ -545,7 +640,7 @@ Hooks run **in parallel** on `git commit` and validate:
 | rust-fmt | `*.rs` | `cargo fmt --check` | Rejects if unformatted |
 | rust-clippy | `*.rs` | `cargo clippy --all-targets --offline -- -D warnings` | Rejects if warnings exist |
 | swift-format | `*.swift` | `swiftformat {staged_files} --lint` | Gracefully skips if not installed |
-| swift-lint | `*.swift` | `swiftlint lint --quiet --strict` | Gracefully skips if not installed |
+| swift-lint | `*.swift` | `swiftlint lint --quiet --strict` | Rejects if --strict violations exist |
 | commit-msg | (all) | Conventional Commits validation | Rejects non-conforming subjects |
 
 **Pre-commit runs in parallel** for speed. If any check fails, the commit is rejected; staged changes remain staged for fixing.
@@ -564,6 +659,7 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`crates/emend-core/src/watcher.rs`**: Filesystem watching, debounce, rename correlation, self-write suppression
 - **`crates/emend-core/src/index.rs`**: Incremental search index (nucleo-based fuzzy ranking, wiki-link O(1) lookup)
 - **`crates/emend-core/src/search.rs`**: Pure, cancellable quick-open search driver (ranks and streams in batches)
+- **`crates/emend-core/src/preview.rs`**: Live Markdown preview (comrak HTML + syntect code highlighting)
 - **`crates/emend-core/tests/`**: Integration tests (see [Testing](#testing))
 - **`crates/emend-ffi/src/lib.rs`**: UniFFI `#[uniffi::export]` shim + panic containment
 - **`crates/emend-ffi/src/search.rs`**: FFI projection of streaming search (bridges cancellation, spawns worker, panic containment)
@@ -578,6 +674,7 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
   - **`Sidebar/`**: Workspace tree model, `NSOutlineView` coordination, drag-drop logic
   - **`Tabs/`**: Tab management, open-document state
   - **`Editor/`**: Editor view, syntax highlighting, text storage delegates, pure transforms (`SmartLists`, `FormattingCommands`)
+  - **`Preview/`**: Live preview model, off-screen WebView render, PDF export (`PDFExport.swift`, US4)
   - **`QuickOpen/`**: Quick Open palette model + sink bridge (US3)
 - **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
 
@@ -599,6 +696,14 @@ Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 - **`app/Emend/Emend/QuickOpen/QuickOpenSink.swift`**: Sink bridge (holds `@Sendable` closures, hops to `@MainActor`)
 - **`crates/emend-core/tests/search_supersede.rs`**: Supersede/cancel semantics (T072, pure tokio-free determinism)
 - **`crates/emend-bench/benches/quick_open.rs`**: Perf budget 100 ms p95 warm over 10k index (T071, SC-004)
+
+### Preview & Export Organization (US4)
+
+- **`crates/emend-core/src/preview.rs`**: Core `renderPreviewHtml` (comrak + syntect)
+- **`app/Emend/Emend/Preview/PreviewModel.swift`**: Live preview model (debounced off-main rendering)
+- **`app/Emend/Emend/Preview/PreviewWebView.swift`**: On-screen live preview rendering + scroll-sync
+- **`app/Emend/Emend/Preview/PDFExport.swift`**: Off-screen PDF export (`OffscreenPrintHost`, async printOp)
+- **`app/Emend/EmendTests/PreviewExportTests.swift`**: PDF export tests (multi-page pagination verification)
 
 ## Import Ordering
 

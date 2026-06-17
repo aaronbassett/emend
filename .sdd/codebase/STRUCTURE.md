@@ -2,7 +2,7 @@
 
 > **Purpose**: Document directory layout, module boundaries, and where to add new code.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (incremental: US3 Quick Open merged)
+> **Last Updated**: 2026-06-17 (incremental: US4 faithful preview + PDF export merged)
 
 ## Directory Layout
 
@@ -20,8 +20,11 @@ emend/
 │   │   │   ├── index.rs             # Incremental search index (US2)
 │   │   │   ├── search.rs            # Streaming Quick Open driver (US3 · T073)
 │   │   │   ├── watcher.rs           # File watching + conflict model (US2)
-│   │   │   ├── parse.rs             # tree-sitter + comrak parsing
-│   │   │   ├── parse/highlight.rs   # Incremental highlight (tree-sitter)
+│   │   │   ├── parse.rs             # Markdown parsing: two-engine split
+│   │   │   ├── parse/
+│   │   │   │   ├── highlight.rs     # Incremental tree-sitter highlight (editor, advisory)
+│   │   │   │   ├── preview.rs       # **Authoritative comrak HTML + scroll-sync (US4 · T084)**
+│   │   │   │   └── code_highlight.rs # **syntect classed code coloring (US4 · T084)**
 │   │   │   └── ai.rs                # OpenAI-compatible client (placeholder)
 │   │   └── tests/                   # Integration tests (cargo test)
 │   │       └── search_supersede.rs  # Quick Open batching + supersede (US3)
@@ -32,7 +35,7 @@ emend/
 │   │       ├── lib.rs               # #[uniffi::export] entry points
 │   │       ├── error.rs             # FfiError projection of EmendError
 │   │       ├── panic.rs             # Panic containment hook
-│   │       ├── document.rs          # OpenDocHandle + document ops (T039)
+│   │       ├── document.rs          # OpenDocHandle + document ops (T039); render_preview_html (US4 · T084)
 │   │       ├── workspace.rs         # WorkspaceHandle + file ops (T059); holds SharedIndex
 │   │       ├── search.rs            # SearchHandle + quick_open_query (US3 · T074)
 │   │       ├── watcher.rs           # WatchHandle + conflict model (T059)
@@ -63,7 +66,7 @@ emend/
 │       ├── Emend/                   # App sources
 │       │   ├── EmendApp.swift       # @main entry point
 │       │   ├── Shell/
-│       │   │   └── MainWindow.swift # Three-pane layout (US1+); ⌘P Quick Open button (US3)
+│       │   │   └── MainWindow.swift # Three-pane layout (US1+) + preview pane (US4); ⌘P Quick Open button (US3); Export PDF button (US4)
 │       │   ├── Platform/
 │       │   │   ├── SecurityScopedBookmarks.swift
 │       │   │   └── FsObserver.swift # FS event → @MainActor callback bridge
@@ -79,21 +82,35 @@ emend/
 │       │   ├── QuickOpen/                    # Quick Open palette (US3)
 │       │   │   ├── QuickOpenModel.swift      # @MainActor: search state + batching guard
 │       │   │   └── QuickOpenView.swift       # ⌘P overlay palette UI
+│       │   ├── Preview/                      # **Live preview pane (US4)**
+│       │   │   ├── PreviewModel.swift        # **@MainActor: debounced render state + visibility**
+│       │   │   ├── PreviewWebView.swift      # **NSViewRepresentable wrapping WKWebView (offline, bundled Mermaid+KaTeX)**
+│       │   │   ├── ScrollSync.swift          # **Bidirectional editor ↔ preview scroll sync (FR-024, research §C3)**
+│       │   │   └── PDFExport.swift           # **Off-screen PDF render + NSPrintOperation paginate (FR-026, research §C4)**
 │       │   ├── Editor/              # Editor pane (US1)
 │       │   │   ├── MarkdownEditorView.swift     # NSViewRepresentable over TextKit 2
 │       │   │   ├── MarkdownTextView.swift       # NSTextView subclass + list/format keys
-│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate + sync/re-attribute
+│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate + sync/re-attribute; signals PreviewModel.scheduleRefresh()
 │       │   │   ├── SyntaxAttributing.swift      # Pure: spans → attributes
 │       │   │   ├── SmartLists.swift             # Pure: newline/renumber/indent/outdent
 │       │   │   ├── FormattingCommands.swift     # Pure: bold/italic/link/task
-│       │   │   ├── AutosaveController.swift     # Debounced atomic flush
+│       │   │   ├── AutosaveController.swift     # Debounced atomic flush; records self-writes
 │       │   │   └── ConflictController.swift     # Conflict detection + resolution (US2)
 │       │   ├── Screens/             # Pane views (US2/US6+)
 │       │   ├── Models/              # SwiftUI state (US2/US6+)
 │       │   ├── Bindings/            # Rust↔Swift type adapters (US2+)
 │       │   ├── Services/            # UI-facing core wrappers (US2+)
 │       │   └── Resources/
-│       │       ├── preview/         # Vendored Mermaid + KaTeX (bundled, offline)
+│       │       ├── preview/         # **Vendored Mermaid + KaTeX + theme CSS (bundled, offline)**
+│       │       │   ├── template.html # **One offline WKWebView shell (two render entry points: __emendRender live, __emendRenderForPrint async)**
+│       │       │   ├── theme.css    # **Syntect code-highlight CSS + @media print rules (US4)**
+│       │       │   ├── bridge.js    # **JS scroll-sync + Mermaid/KaTeX render orchestration (US4)**
+│       │       │   ├── mermaid.min.js # **Vendored Mermaid (bundled, offline)**
+│       │       │   ├── katex/       # **Vendored KaTeX (bundled, offline)**
+│       │       │   │   ├── katex.min.js
+│       │       │   │   ├── katex.min.css
+│       │       │   │   └── fonts/   # KaTeX fonts
+│       │       │   └── VERSIONS.md  # Vendored library versions + pinning info
 │       │       └── Emend.entitlements
 │       └── EmendTests/              # App unit tests
 │           ├── BookmarkResolutionTests.swift
@@ -108,16 +125,16 @@ emend/
 │   └── 001-markdown-editor/         # Main feature spec
 │       ├── spec.md                  # User stories + requirements
 │       ├── plan.md                  # Implementation phases
-│       ├── research.md              # Architecture rationale (read-first)
+│       ├── research.md              # Architecture rationale (read-first); includes §B1 (two engines), §B6 (syntect), §C3 (scroll sync), §C4 (PDF)
 │       ├── data-model.md            # Document/state schema
 │       ├── contracts/
-│       │   └── ffi-interface.md     # UniFFI export signatures (§5: Quick Open)
+│       │   └── ffi-interface.md     # UniFFI export signatures (§3: document; §6: preview US4)
 │       ├── checklists/              # Phase-by-phase acceptance criteria
 │       └── retro/                   # Phase retrospectives
 │
 ├── .sdd/                            # SDD working directory
 │   ├── memory/
-│   │   └── constitution.md          # Project governance (Principles I–VII)
+│   │   └── constitution.md          # Project governance (Principles I–VII; two-engine split mandated)
 │   └── codebase/                    # Generated codebase docs (this dir)
 │       ├── STACK.md                 # Languages, frameworks, versions
 │       ├── INTEGRATIONS.md          # External services (AI, APIs)
@@ -154,15 +171,17 @@ emend/
 | `index.rs` | Path/name indexing, quick-open ranking | `Index`, `SearchHit`, `Index::query()`, `Index::resolve_name()` |
 | `search.rs` | **Pure streaming search driver (US3 · T073)** | **`Cancel` (Arc-backed flag), `quick_open()` (tokio-free)** |
 | `watcher.rs` | File watching + self-write suppression + conflict model | `FsWatcher`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
-| `parse.rs` | tree-sitter highlight + comrak preview | `Highlighter`, `preview_html()` |
-| `parse/highlight.rs` | Incremental tree-sitter highlighting | `highlight_range()` |
+| `parse.rs` | **Two-engine Markdown parsing** | **Module map: `highlight`, `preview`, `code_highlight`** |
+| `parse/highlight.rs` | **Incremental tree-sitter for editor (advisory)** | **`Highlighter`, `highlight_range()`** |
+| `parse/preview.rs` | **Authoritative comrak HTML + scroll-sync anchors (US4 · T084)** | **`render_preview_html()`, `PreviewOptions`** |
+| `parse/code_highlight.rs` | **syntect classed HTML code colouring (US4 · T084)** | **`theme_css()`, `SyntaxHighlighterAdapter`** |
 | `ai.rs` (placeholder) | OpenAI-compatible SSE streaming client | (to be implemented) |
 
 **Naming conventions**:
-- **Modules**: snake_case (e.g., `document`, `error`, `fs`)
-- **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`)
+- **Modules**: snake_case (e.g., `document`, `error`, `fs`, `parse`)
+- **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`, `PreviewOptions`)
 - **Enums**: PascalCase (e.g., `EmendError`, `ChangeEvent`, `ConflictState`)
-- **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`)
+- **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`, `render_preview_html`)
 - **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`)
 
 ### `crates/emend-core/tests/` — Core Integration Tests
@@ -175,10 +194,10 @@ emend/
 
 | File | Purpose | Key Types/Functions |
 |---|---|---|
-| `lib.rs` | `#[uniffi::export]` entry points; `uniffi::setup_scaffolding!()` | `read_file_at()`, `core_abi_version()` |
+| `lib.rs` | `#[uniffi::export]` entry points; `uniffi::setup_scaffolding!()` | `read_file_at()`, `core_abi_version()`, `preview_theme_css()` (US4) |
 | `error.rs` | `#[derive(uniffi::Error)] FfiError` — mirror of `EmendError` | `FfiError` (exhaustive From impls) |
 | `panic.rs` | Custom panic hook for debugging (if needed) | (reserved) |
-| `document.rs` | Document FFI ops: open, close, push_edit, highlight, flush | `OpenDocHandle`, `open_document()`, `push_edit()`, `highlight_spans()`, `flush()` |
+| `document.rs` | Document FFI ops: open, close, push_edit, highlight, **render_preview_html** (US4), flush | `OpenDocHandle`, `open_document()`, `push_edit()`, `highlight_spans()`, **`render_preview_html()`** (US4) |
 | `workspace.rs` | Workspace + index FFI ops: locations, file ops, search | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()`, `quick_open_query()` (US3 T074), `reindex_all()` (T078) |
 | `search.rs` | **FFI Quick Open async shim (US3 · T074)** | **`SearchHandle` (Arc<Self>, UniFFI Object), `start_query()`, `SharedIndex` type alias** |
 | `watcher.rs` | Watcher FFI ops: start watching, track self-writes, resolve conflicts | `WatchHandle`, `ChangeEvent`, `ConflictState`, `ConflictChoice`, `start_watching()`, `record_self_write()`, `apply_conflict_choice()` |
@@ -207,22 +226,23 @@ emend/
 | Directory | Purpose | Key Components |
 |---|---|---|
 | `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Shell/` | Window and pane structure | `MainWindow: View` (three-pane layout); ⌘P shortcut button (US3) |
+| `Shell/` | Window and pane structure | `MainWindow: View` (three-pane layout + preview pane US4); ⌘P shortcut button (US3); Export PDF button (US4) |
 | `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift` |
 | `Sidebar/` | Workspace outline + navigation | `WorkspaceModel` (@MainActor), `WorkspaceOutlineView` (NSViewRepresentable over NSOutlineView), `WorkspaceNode` (outline item), `OutlineDragDrop`, `FolderIconPicker` |
 | `Tabs/` | Open-document management | `TabModel` (@MainActor), `TabBarView` (tab bar UI) |
 | `QuickOpen/` | **Quick Open palette (US3)** | **`QuickOpenModel` (@MainActor, streaming sink bridge), `QuickOpenView` (⌘P overlay, arrow/Return/Escape handlers)** |
+| **`Preview/`** | **Live preview pane (US4)** | **`PreviewModel` (@MainActor, debounced render), `PreviewWebView` (NSViewRepresentable over offline WKWebView), `ScrollSync` (bidirectional scroll), `PDFExport` (async multi-page)** |
 | `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator`, `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController` |
 | `Screens/` (US2+) | Major feature screens | (to be implemented) |
 | `Models/` (US2+) | SwiftUI `@Observable` state | (to be implemented) |
 | `Bindings/` (US2+) | Rust↔Swift type adapters | (to be implemented) |
 | `Services/` (US2+) | Core API wrappers | (to be implemented) |
-| `Resources/` | Assets, entitlements, vendored deps | `preview/` (Mermaid+KaTeX, bundled) |
+| **`Resources/preview/`** | **Bundled offline preview assets (US4)** | **`template.html` (WKWebView shell), `theme.css` (syntect + print rules), `bridge.js` (scroll-sync + render orchestration), vendored `mermaid.min.js` + `katex/` (fonts + JS)** |
 | `EmendTests/` | Unit tests | `*Tests.swift` files |
 
 **Naming conventions**:
 - **Views**: PascalCase (e.g., `MainWindow`, `EditorPane`, `WorkspaceOutlineView`)
-- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`)
+- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`, `PreviewModel`)
 - **Controllers**: PascalCase + `Controller` suffix (e.g., `ConflictController`, `AutosaveController`)
 - **Observers**: PascalCase + `Observer` suffix (e.g., `FsObserver`)
 
@@ -245,7 +265,7 @@ emend/
 | `TabModel.swift` | @MainActor: open-document registry | `TabModel`, `TabModel.Tab: Identifiable` |
 | `TabBarView.swift` | Tab bar UI showing open files | `TabBarView: View` |
 
-**Data flow**: `TabModel` owns list of `Tab`s, each with `OpenDocHandle` + `AutosaveController` + initial text. `TabBarView` renders tabs. User clicks tab → `activeID` changes → `MainWindow` swaps editor view.
+**Data flow**: `TabModel` owns list of `Tab`s, each with `OpenDocHandle` + `AutosaveController` + initial text. `TabBarView` renders tabs. User clicks tab → `activeID` changes → `MainWindow` swaps editor view + signals `PreviewModel.setActiveDocument()`.
 
 ### `app/Emend/Emend/QuickOpen/` — Quick Open Palette (US3)
 
@@ -256,22 +276,52 @@ emend/
 
 **Data flow**: User presses ⌘P → `present()` shows overlay → keystroke fires `runQuery()` (increments generation, cancels prior `SearchHandle`, starts new query) → `SearchSink` receives batches (generation guard ignores stale) → `QuickOpenView` renders `results` → arrow keys move `selection` → Return opens file via `openSelected()` → Escape or file open calls `dismiss()` (cancels handle, clears results).
 
+### `app/Emend/Emend/Preview/` — Live Preview Pane (US4)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `PreviewModel.swift` | **@MainActor: debounced render state (FR-022/FR-025)** | **`PreviewModel: ObservableObject`, `@Published html`, `@Published version`, `scheduleRefresh()`** |
+| `PreviewWebView.swift` | **NSViewRepresentable wrapping offline WKWebView (privacy SC-008/FR-035)** | **`PreviewWebView: NSViewRepresentable`, `Coordinator: WKNavigationDelegate`, bundled Mermaid+KaTeX, CSP blocking remotes** |
+| `ScrollSync.swift` | **Bidirectional editor ↔ preview scroll sync (FR-024, research §C3)** | **`ScrollSync: ObservableObject`, `attachEditor()`, `attachPreview()`, mute window 160 ms** |
+| `PDFExport.swift` | **Off-screen multi-page PDF render + NSPrintOperation (FR-026, research §C4)** | **`PDFExport` enum, `OffscreenPrintHost: WKNavigationDelegate`, `runModal` for pagination** |
+
+**Data flow (preview render)**: `EditorCoordinator` signals `PreviewModel.scheduleRefresh()` → debounce 150 ms → `Task.detached` calls `document.renderPreviewHtml()` → core's comrak engine → HTML with `data-line` anchors → `@Published html` bumps `version` → `PreviewWebView.updateNSView()` injects via `window.__emendRender` → template.html re-renders → bridge.js builds anchor table and syncs scroll from editor.
+
+**Data flow (scroll sync)**: Editor scrolls (NSTextView delegate observed) → `ScrollSync.editorScrolled()` unmuted → maps top visible line → `evaluateJavaScript("window.__emendScrollToLine(line)")` → bridge.js interpolates anchors → smooth scroll preview → page fires `window.__emendOnScroll` → JS message handler calls `ScrollSync.previewScrolled()` → scrolls editor + mutes 160 ms → editor's scroll fires again but mute rejects it.
+
+**Data flow (PDF export)**: User clicks "Export PDF" → `MainWindow` calls `PDFExport.export(html:css:to:)` async → `OffscreenPrintHost` spins up off-screen window → loads template + grants read access to `preview/` → injects html+css via `__emendRender` → waits for Mermaid layout (async JS) → builds `NSPrintInfo` with `@media print` rules → `NSPrintOperation.runModal` (NOT `run()`, which deadlocks) → multi-page PDF respects pagination rules.
+
 ### `app/Emend/Emend/Editor/` — Live Editor Pane (US1)
 
 | File | Purpose | Key Types |
 |---|---|---|
 | `MarkdownEditorView.swift` | NSViewRepresentable, builds TextKit 2 stack | `MarkdownEditorView: NSViewRepresentable` |
 | `MarkdownTextView.swift` | NSTextView subclass, intercepts list/format keys | `MarkdownTextView: NSTextView` |
-| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
+| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop; signals PreviewModel.scheduleRefresh() | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
 | `SyntaxAttributing.swift` | Pure: spans → attributes | `SyntaxAttributing` (enum with static methods) |
 | `SmartLists.swift` | Pure transforms: newline/renumber/indent/outdent | `SmartLists` (enum with static methods) |
 | `FormattingCommands.swift` | Pure transforms: bold/italic/link/task | `FormattingCommands` (enum with static methods) |
-| `AutosaveController.swift` | Debounced flush on private queue | `AutosaveController: NSObject` |
+| `AutosaveController.swift` | Debounced flush on private queue; records self-writes | `AutosaveController: NSObject` |
 | `ConflictController.swift` | Conflict detection + resolution (US2) | `ConflictController: @MainActor ObservableObject` |
 
-**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → AutosaveController rearms.
+**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → signals `PreviewModel.scheduleRefresh()` to debounce preview render → `AutosaveController` rearms debounce.
 
 **Formatting & list commands** are **pure functions**: no access to editor state. They take `(text: NSString, selection: NSRange)` and return an `Edit`. This makes them unit-testable without a window (Constitution VII).
+
+### `app/Emend/Emend/Resources/preview/` — Bundled Preview Assets (US4)
+
+| File | Purpose | Notes |
+|---|---|---|
+| `template.html` | **Single offline WKWebView shell (two render entry points: `__emendRender` live, `__emendRenderForPrint` async)** | **Loads `theme.css`, `bridge.js`, `mermaid.min.js`, `katex/` (all relative, bundled offline). CSP blocks remotes.** |
+| `theme.css` | **Syntect code-highlight stylesheet + `@media print` pagination rules** | **Core-owned via `emend_core::parse::code_highlight::theme_css()`; injected alongside HTML** |
+| `bridge.js` | **JS scroll-sync hub + Mermaid/KaTeX render orchestration** | **Builds anchor table from `data-line` attributes; handles editor↔preview scroll bridging (mute windows); awaits Mermaid async before print** |
+| `mermaid.min.js` | **Vendored Mermaid diagram library** | **Bundled, offline, no external CDN calls** |
+| `katex/` | **Vendored KaTeX math rendering library + fonts** | **All fonts included (woff2, ttf); no external loads; CSS included in `theme.css`** |
+| `VERSIONS.md` | **Documentation of vendored library versions + pinning policy** | **E.g., Mermaid vX.Y.Z, KaTeX vA.B.C; update record when bumping deps** |
+
+**Privacy model**: Template CSP (`Content-Security-Policy: default-src 'self'; img-src 'self' data:; ...`) blocks all remote origins. WKWebView configured with `.nonPersistent()` data store (no cookies/localStorage). Navigation delegate cancels any navigation that isn't `file:` or `about:`. External links (e.g., `<a href="https://...">`) are allowed in the HTML source but clicking them opens the user's browser, not loading in-page.
+
+**Build-time assets**: Mermaid + KaTeX are pre-minified vendored bundles included in the app bundle. No runtime CDN fetches. Core's `render_preview_html` emits literal `<script src="mermaid.min.js">` and `<link rel="stylesheet" href="katex/katex.min.css">` — these resolve via the template's `allowingReadAccessTo:` grant.
 
 ## Module Boundaries
 
@@ -291,6 +341,8 @@ emend_core::index::Index          // Public
 emend_core::search::quick_open()  // Public (US3 · T073)
 emend_core::search::Cancel        // Public (US3 · T073)
 emend_core::watcher::FsWatcher    // Public
+emend_core::parse::preview::render_preview_html()  // Public (US4 · T084)
+emend_core::parse::code_highlight::theme_css()    // Public (US4 · T084)
 emend_core::U16Range              // Public (boundary type)
 ```
 
@@ -305,8 +357,20 @@ pub fn read_file_at(path: String) -> Result<String, FfiError> {
 }
 
 #[uniffi::export]
+pub fn preview_theme_css() -> String {
+    emend_core::parse::code_highlight::theme_css().to_owned()
+}
+
+#[uniffi::export]
 pub fn new_workspace() -> Arc<WorkspaceHandle> {
     Arc::new(WorkspaceHandle::new())
+}
+
+#[uniffi::export]
+impl OpenDocHandle {
+    pub fn render_preview_html(&self) -> Result<String, FfiError> {
+        // T084: calls core's render_preview_html
+    }
 }
 
 #[uniffi::export]
@@ -335,6 +399,7 @@ import EmendCore
 let version = EmendCore.abiVersion()
 let workspace = EmendCore.newWorkspace()
 let searchHandle = workspace.quickOpenQuery(query: "foo", sink: mySink)
+let html = try openDocHandle.renderPreviewHtml()  // US4 · T084
 ```
 
 ### App Layer
@@ -358,6 +423,16 @@ final class QuickOpenModel: ObservableObject {
     private var handle: SearchHandle?  // In-flight query
     // ...
 }
+
+// app/Emend/Emend/Preview/PreviewModel.swift (US4)
+@MainActor
+final class PreviewModel: ObservableObject {
+    @Published private(set) var html = ""
+    @Published private(set) var version = 0
+    let themeCSS = EmendCore.previewThemeCss()  // US4
+    private var handle: OpenDocHandle?
+    // ...
+}
 ```
 
 **One-way data flow**: Models own Rust handles and publish state → Views read model state (one-way binding via @Published, @State, @Environment).
@@ -369,6 +444,8 @@ final class QuickOpenModel: ObservableObject {
 | **Core business logic** (file I/O, document ops, parsing, search) | `crates/emend-core/src/{module}.rs` | `fs::write_atomic`, `document::Document::push_edit`, `index::Index::query` |
 | **Core error variant** | `crates/emend-core/src/error.rs` (and mirror in `emend-ffi/src/error.rs`) | `#[error("...")] NewVariant { field: Type }` |
 | **Core search logic** | `crates/emend-core/src/search.rs` (pure, tokio-free) | `pub fn quick_open(...)`, extend `pub struct Cancel` |
+| **Core preview logic** (US4) | `crates/emend-core/src/parse/preview.rs` | Preview HTML generation, scroll-sync anchor insertion, extension handling |
+| **Core code-highlight logic** (US4) | `crates/emend-core/src/parse/code_highlight.rs` | Syntect adapter, theme CSS, language detection |
 | **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/{module}.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
 | **FFI value type projection** | `crates/emend-ffi/src/{module}.rs` (with exhaustive From impl) | `#[derive(uniffi::Record)] pub struct MyRecord { ... }` |
 | **FFI async shim** (tokio, cancellation, streaming) | `crates/emend-ffi/src/search.rs` or `handles.rs` | Extend `pub struct SearchHandle`, foreign-trait sinks |
@@ -379,10 +456,12 @@ final class QuickOpenModel: ObservableObject {
 | **App-level controller** | `app/Emend/Emend/Editor/{Feature}Controller.swift` | `@MainActor final class ConflictController: ObservableObject` |
 | **Editor UI view** | `app/Emend/Emend/Editor/{FeatureName}.swift` | `struct EditorPane: View` |
 | **Quick Open UI view** | `app/Emend/Emend/QuickOpen/{FeatureName}.swift` | Views in the Quick Open palette namespace |
+| **Preview UI view** (US4) | `app/Emend/Emend/Preview/{FeatureName}.swift` | Preview pane views, scroll-sync, PDF export coordination |
 | **Pure transform** (formatting, lists, etc.) | `app/Emend/Emend/Editor/SmartLists.swift` or `FormattingCommands.swift` | `static func indent(in:selection:) -> Edit?` |
 | **Outline view** | `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` | `struct WorkspaceOutlineView: NSViewRepresentable` |
 | **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct SearchResultsPane: View` (US2+) |
 | **App service** (wrapper over EmendCore) | `app/Emend/Emend/Services/{Feature}Service.swift` | `class EditorService` (US2+) |
+| **Preview asset** (HTML, CSS, JS, vendored libs) (US4) | `app/Emend/Emend/Resources/preview/{file}` | Template updates, theme refinements, bundled library updates |
 | **App-level test** | `app/Emend/EmendTests/{Feature}Tests.swift` | `final class SmartListsTests` |
 
 ## Import Paths & Visibility
@@ -394,11 +473,15 @@ final class QuickOpenModel: ObservableObject {
 use crate::error::EmendError;
 use crate::workspace::Workspace;
 use crate::search::quick_open;  // US3
+use crate::parse::preview;      // US4 · T084
+use crate::parse::code_highlight; // US4 · T084
 use crate::U16Range;  // Re-exported from lib.rs
 
 // Outside emend-core, import like any Rust crate
 use emend_core::error::EmendError;
 use emend_core::search::{quick_open, Cancel};
+use emend_core::parse::preview::{render_preview_html, PreviewOptions}; // US4
+use emend_core::parse::code_highlight::theme_css; // US4
 ```
 
 ### FFI Imports
@@ -408,11 +491,25 @@ use emend_core::search::{quick_open, Cancel};
 use emend_core::fs;
 use emend_core::error::EmendError;
 use emend_core::search::{quick_open, Cancel};  // US3 · T074
+use emend_core::parse::preview;              // US4 · T084
+use emend_core::parse::code_highlight;       // US4 · T084
 
 // Export via UniFFI
 #[uniffi::export]
 pub fn read_file_at(path: String) -> Result<String, FfiError> {
     fs::read_tolerant(path).map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn preview_theme_css() -> String {  // US4
+    emend_core::parse::code_highlight::theme_css().to_owned()
+}
+
+#[uniffi::export]
+impl OpenDocHandle {
+    pub fn render_preview_html(&self) -> Result<String, FfiError> {  // US4
+        // T084: calls core's render_preview_html
+    }
 }
 
 #[uniffi::export]
@@ -433,6 +530,8 @@ import EmendCore
 // (except inside EmendCore module itself)
 
 let handle: EmendCore.SearchHandle = workspace.quickOpenQuery(query: query, sink: sink)
+let html = try openDocHandle.renderPreviewHtml()  // US4 · T084
+let css = EmendCore.previewThemeCss()              // US4 · T084
 ```
 
 ### App Swift Imports
@@ -445,9 +544,14 @@ import EmendCore
 let workspace: EmendCore.WorkspaceHandle = EmendCore.newWorkspace()
 let searchHandle: EmendCore.SearchHandle = workspace.quickOpenQuery(query: query, sink: sink)
 
+// Preview model (US4)
+let preview: PreviewModel  // @StateObject
+let html = try preview.handle?.renderPreviewHtml()  // US4
+
 // Views read model state
 @State var model: WorkspaceModel
 @State var quickOpen: QuickOpenModel
+@ObservedObject var preview: PreviewModel  // US4
 ```
 
 ## Generated Files
@@ -468,10 +572,11 @@ Files that are auto-generated and should NOT be manually edited:
 | `crates/emend-ffi/src/lib.rs` | FFI entry points | Swift via UniFFI |
 | `swift/EmendCore/Sources/EmendCore/EmendCore.swift` | Public Swift API | App |
 | `app/Emend/Emend/EmendApp.swift` | App entry point | macOS launcher |
-| `app/Emend/Emend/Shell/MainWindow.swift` | Main window + three panes | App |
+| `app/Emend/Emend/Shell/MainWindow.swift` | Main window + three panes + preview (US4) | App |
 | `app/Emend/Emend/Sidebar/WorkspaceModel.swift` | Workspace state owner | MainWindow |
 | `app/Emend/Emend/Tabs/TabModel.swift` | Open-document owner | MainWindow |
 | `app/Emend/Emend/QuickOpen/QuickOpenModel.swift` | Quick Open state owner (US3) | MainWindow |
+| `app/Emend/Emend/Preview/PreviewModel.swift` | **Preview render state owner (US4)** | **MainWindow** |
 | `app/Emend/Emend/Editor/MarkdownEditorView.swift` | Live editor pane | MainWindow |
 
 ## Phase Milestones
@@ -483,7 +588,8 @@ Structure changes as phases land:
 | 0 (complete) | Core, FFI, Swift package, app skeleton | `error`, `fs`, `document` | `core_abi_version`, `read_file_at` | EmendApp, MainWindow shell |
 | 1 (complete) | `app/Emend/Editor/`, `Sidebar/`, `Tabs/` | `workspace`, `index`, `watcher`, `parse/highlight` | `open_document`, `push_edit`, `highlight_spans`, `new_workspace`, `start_watching`, file-op methods | MarkdownEditorView, EditorCoordinator, SmartLists, FormattingCommands, AutosaveController, WorkspaceModel, TabModel, WorkspaceOutlineView, ConflictController |
 | 2 (complete · US3) | **`app/Emend/QuickOpen/`** | **`search` (T073: pure driver)** | **`quick_open_query`, `reindex_all`, `SearchHandle` (T074)** | **`QuickOpenModel`, `QuickOpenView`** |
-| 3+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
+| **3 (complete · US4)** | **`app/Emend/Preview/`, `app/Emend/Resources/preview/`** | **`parse/preview` (T084: comrak HTML), `parse/code_highlight` (syntect)** | **`render_preview_html` (T084), `preview_theme_css` (T084)** | **`PreviewModel`, `PreviewWebView`, `ScrollSync`, `PDFExport`; bundled Mermaid + KaTeX** |
+| 4+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
 
 ---
 
@@ -492,20 +598,20 @@ Structure changes as phases land:
 ```
    App (Swift/SwiftUI)
     ↑
-    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel (@MainActor models)
+    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync (@MainActor models)
     │  ↑
     │  └─ EmendCore (package)
     │     ↑
     │     └─ EmendCoreFFI (generated bindings)
     │        ↑
     │        └─ emend_ffi (FFI shim crate)
+    │           ├─ parse::preview (T084, comrak HTML + scroll-sync)
+    │           ├─ parse::code_highlight (T084, syntect CSS)
+    │           ├─ search (T073, tokio-free)
+    │           ├─ index (search index)
+    │           ├─ workspace, watcher, parse, etc.
     │           ↑
-    │           └─ emend_core (core engine)
-    │              ├─ search (T073, tokio-free)
-    │              ├─ index (search index)
-    │              ├─ workspace, watcher, parse, etc.
-    │              ↑
-    │              └─ std + deps (no back-edges)
+    │           └─ std + deps (no back-edges)
     │
     └─ Views (read model state one-way)
 ```
