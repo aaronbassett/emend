@@ -116,11 +116,11 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T040 [GIT] Commit: incremental editor highlighting + FFI exports
 - [x] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)
 - [x] T042 [US1] Implement `app/Emend/Emend/Editor/SyntaxAttributing.swift`: map core spans → display attributes (dim markers, inline bold/italic/heading/quote/list, `==highlight==` background)
-- [ ] T043 [US1] Implement `app/Emend/Emend/Editor/MarkdownEditorView.swift` (NSViewRepresentable over TextKit 2 `NSTextView`); apply attributes via `NSTextContentStorageDelegate` for the viewport range (research §C1)
-- [ ] T044 [GIT] Commit: TextKit 2 editor view with dimmed-syntax rendering
+- [x] T043 [US1] Implement `app/Emend/Emend/Editor/MarkdownEditorView.swift` (NSViewRepresentable over TextKit 2 `NSTextView`); apply attributes via `NSTextContentStorageDelegate` for the viewport range (research §C1)
+- [x] T044 [GIT] Commit: TextKit 2 editor view with dimmed-syntax rendering
 - [ ] T045 [P] [US1] Implement smart lists (auto-renumber/indent/outdent) in `app/Emend/Emend/Editor/SmartLists.swift`
 - [ ] T046 [P] [US1] Implement formatting shortcuts (bold/italic/link/task) in `app/Emend/Emend/Editor/FormattingCommands.swift`
-- [ ] T047 [US1] Wire debounced atomic autosave (core `flush`) + self-write suppression in `app/Emend/Emend/Editor/AutosaveController.swift` (FR-009/FR-006a) (use devs:rust-dev agent for the core `flush` export)
+- [x] T047 [US1] Wire debounced atomic autosave (core `flush`) + self-write suppression in `app/Emend/Emend/Editor/AutosaveController.swift` (FR-009/FR-006a) (use devs:rust-dev agent for the core `flush` export)
 - [ ] T048 [GIT] Commit: smart lists, shortcuts, autosave
 - [ ] T049 [US1] [test] `app/Emend/EmendUITests/EditorFlowTests.swift`: type into a doc, confirm text persists round-trip
 - [ ] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
