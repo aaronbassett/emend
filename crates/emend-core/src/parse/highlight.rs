@@ -519,15 +519,31 @@ fn parse_rope(
 fn classify(node: &Node) -> Option<StyleClass> {
     let kind = node.kind();
     match kind {
+        // --- headings (FR-012) ----------------------------------------------
+        // The BLOCK node spans the whole heading — `#` marker(s) *and* body —
+        // so styling it enlarges/bolds the heading *text*, not just the marker.
+        // The span collector's pre-order DFS pushes this parent span first, then
+        // descends and pushes the child `atx_hN_marker` / `setext_hN_underline`
+        // `SyntaxMarker` span over it, so the marker's font (from this Heading)
+        // and its dim colour (from SyntaxMarker) compose correctly (FR-010).
+        // Level comes from the marker/underline child (grammar
+        // `node-types.json`, tree-sitter-md 0.5.3): an `atx_heading` always has
+        // exactly one `atx_hN_marker` child; a `setext_heading` one underline.
+        "atx_heading" | "setext_heading" => Some(StyleClass::Heading {
+            level: heading_level(node),
+        }),
+
         // --- dimmable syntax-marker punctuation (FR-010) ---------------------
-        "atx_h1_marker" => Some(StyleClass::Heading { level: Some(1) }),
-        "atx_h2_marker" => Some(StyleClass::Heading { level: Some(2) }),
-        "atx_h3_marker" => Some(StyleClass::Heading { level: Some(3) }),
-        "atx_h4_marker" => Some(StyleClass::Heading { level: Some(4) }),
-        "atx_h5_marker" => Some(StyleClass::Heading { level: Some(5) }),
-        "atx_h6_marker" => Some(StyleClass::Heading { level: Some(6) }),
-        "setext_h1_underline" => Some(StyleClass::Heading { level: Some(1) }),
-        "setext_h2_underline" => Some(StyleClass::Heading { level: Some(2) }),
+        // The `#`s / setext underline are pure punctuation: dim them. (They are
+        // children of the heading block node above, which carries the level.)
+        "atx_h1_marker"
+        | "atx_h2_marker"
+        | "atx_h3_marker"
+        | "atx_h4_marker"
+        | "atx_h5_marker"
+        | "atx_h6_marker"
+        | "setext_h1_underline"
+        | "setext_h2_underline" => Some(StyleClass::SyntaxMarker),
 
         "emphasis_delimiter"
         | "code_span_delimiter"
@@ -573,6 +589,39 @@ fn classify(node: &Node) -> Option<StyleClass> {
     }
 }
 
+/// Derive a heading's level (1..=6) from an `atx_heading` / `setext_heading`
+/// block node by inspecting its marker child, or `None` if no recognised marker
+/// is present.
+///
+/// In `tree-sitter-md 0.5.3` an `atx_heading` always has exactly one
+/// `atx_hN_marker` child and a `setext_heading` exactly one
+/// `setext_hN_underline` child (grammar `node-types.json`), so the first
+/// matching child fixes the level. Walking the children rather than indexing a
+/// field keeps this total and panic-free (NFR-003): an unexpected shape simply
+/// yields `None`, which `StyleClass::Heading { level }` already models.
+fn heading_level(node: &Node) -> Option<u8> {
+    // `child_count` + `child(i)` avoids the `children(&mut cursor)` iterator,
+    // whose borrow of a local `TreeCursor` cannot outlive this scope cleanly.
+    // Each `atx_heading`/`setext_heading` has only a handful of children, so the
+    // linear scan is trivially cheap. `child(i)` returns `None` for an
+    // out-of-range index, keeping this total and panic-free (NFR-003).
+    // `Node::child` indexes by `u32`; `child_count()` is a `usize` but is always
+    // far below `u32::MAX` for a real tree, so the cast cannot lose information.
+    let count = u32::try_from(node.child_count()).unwrap_or(u32::MAX);
+    (0..count).find_map(|i| {
+        let kind = node.child(i)?.kind();
+        match kind {
+            "atx_h1_marker" | "setext_h1_underline" => Some(1),
+            "atx_h2_marker" | "setext_h2_underline" => Some(2),
+            "atx_h3_marker" => Some(3),
+            "atx_h4_marker" => Some(4),
+            "atx_h5_marker" => Some(5),
+            "atx_h6_marker" => Some(6),
+            _ => None,
+        }
+    })
+}
+
 /// Map an index that does not fit its target integer type to a reportable error
 /// (rather than a truncating `as`). Unreachable within `MAX_NOTE_BYTES`.
 fn too_large<E: std::fmt::Display>(err: E) -> EmendError {
@@ -601,14 +650,85 @@ mod tests {
         spans.iter().map(|s| s.class).collect()
     }
 
+    /// True if some span of `class` covers UTF-16 `offset` (half-open
+    /// `[start, end)`, or a zero-width span that starts exactly at `offset`).
+    fn class_covers(spans: &[super::StyleSpan], offset: u32, class: StyleClass) -> bool {
+        spans.iter().any(|s| {
+            s.class == class
+                && s.range.start <= offset
+                && (offset < s.range.end() || s.range.start == offset)
+        })
+    }
+
     #[test]
-    fn heading_marker_carries_level() {
+    fn atx_heading_styles_body_and_dims_marker() {
+        // "### Title\n": `###` at UTF-16 offsets 0..3, space at 3, "Title" at 4..9.
         let text = "### Title\n";
+        let title_offset = u16_len("### "); // == 4, start of "Title"
+        let marker_offset = 0; // the first `#`
+
         let hl = Highlighter::new(text);
         let spans = hl.highlight_spans(U16Range::new(0, u16_len(text))).unwrap();
+
+        // (a) the heading BODY ("Title") must be covered by a Heading span so it
+        //     actually renders enlarged/bold (FR-012) — the bug this guards.
         assert!(
-            classes(&spans).contains(&StyleClass::Heading { level: Some(3) }),
-            "spans should include a level-3 heading marker: {spans:?}"
+            class_covers(&spans, title_offset, StyleClass::Heading { level: Some(3) }),
+            "heading content offset {title_offset} should be a level-3 Heading: {spans:?}"
+        );
+        // (b) the `#` marker must be a dimmable SyntaxMarker, NOT a Heading
+        //     (FR-010 quiet editor) — the opposite of the previous behaviour.
+        assert!(
+            class_covers(&spans, marker_offset, StyleClass::SyntaxMarker),
+            "marker offset {marker_offset} should be a SyntaxMarker: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn atx_heading_level_one() {
+        // Cover a second ATX level so level derivation is exercised across kinds.
+        let text = "# Heading\n";
+        let body_offset = u16_len("# "); // == 2, start of "Heading"
+        let hl = Highlighter::new(text);
+        let spans = hl.highlight_spans(U16Range::new(0, u16_len(text))).unwrap();
+
+        assert!(
+            class_covers(&spans, body_offset, StyleClass::Heading { level: Some(1) }),
+            "level-1 heading body should be a Heading {{ level: 1 }}: {spans:?}"
+        );
+        assert!(
+            class_covers(&spans, 0, StyleClass::SyntaxMarker),
+            "the single `#` should be a SyntaxMarker: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn setext_heading_styles_body_and_dims_underline() {
+        // Setext: the title line is the body; the `===` / `---` line is the
+        // underline marker. tree-sitter-md emits `setext_heading` +
+        // `setext_h1_underline` (verified against the grammar node-types.json).
+        let text = "Title\n===\n";
+        let hl = Highlighter::new(text);
+        let spans = hl.highlight_spans(U16Range::new(0, u16_len(text))).unwrap();
+
+        // The grammar should emit a setext heading; if it does, assert the body
+        // is styled and the underline dimmed. Guarded so the test documents the
+        // grammar's behaviour rather than silently passing if it ever changes.
+        assert!(
+            classes(&spans).contains(&StyleClass::Heading { level: Some(1) }),
+            "setext title should classify as a level-1 Heading: {spans:?}"
+        );
+        // (a) the title "Title" (offset 0) is covered by the Heading span.
+        assert!(
+            class_covers(&spans, 0, StyleClass::Heading { level: Some(1) }),
+            "setext title offset 0 should be a level-1 Heading: {spans:?}"
+        );
+        // (b) the `===` underline (starts at UTF-16 offset of "Title\n" == 6)
+        //     is a dimmable SyntaxMarker, not a Heading.
+        let underline_offset = u16_len("Title\n"); // == 6
+        assert!(
+            class_covers(&spans, underline_offset, StyleClass::SyntaxMarker),
+            "setext underline offset {underline_offset} should be a SyntaxMarker: {spans:?}"
         );
     }
 
@@ -722,6 +842,52 @@ mod tests {
         assert!(
             spans.is_empty(),
             "empty doc should have no spans: {spans:?}"
+        );
+    }
+
+    /// FINDING 6 — `Document::push_edit` and `Highlighter::apply_edit` must
+    /// accept/reject deltas in lock-step. The FFI shim applies an edit to the
+    /// `Document` first, then the `Highlighter`; if one ever accepted a delta the
+    /// other rejected, the two mirrors would silently diverge. They share
+    /// identical up-front validation today, so this asserts the invariant holds
+    /// for the same invalid deltas, guarding against future drift.
+    #[test]
+    fn document_and_highlighter_reject_the_same_invalid_deltas() {
+        use crate::document::Document;
+
+        // Identical seed text for both mirrors. "😀" is one char but TWO UTF-16
+        // code units (a surrogate pair at offsets 0..2), so offset 1 splits it.
+        let text = "😀abc\n";
+
+        // Case 1: out-of-bounds range (offset 100 is well past EOF).
+        let oob = U16Range::new(100, 0);
+        let doc_oob = {
+            let mut doc = Document::from_text(text);
+            doc.push_edit(oob, "x")
+        };
+        let hl_oob = {
+            let mut hl = Highlighter::new(text);
+            hl.apply_edit(oob, "x")
+        };
+        assert!(
+            doc_oob.is_err() && hl_oob.is_err(),
+            "both must reject an out-of-bounds delta: doc={doc_oob:?} hl={hl_oob:?}"
+        );
+
+        // Case 2: a range whose start splits the leading astral char's surrogate
+        // pair (UTF-16 offset 1 lands mid-"😀").
+        let mid_surrogate = U16Range::new(1, 0);
+        let doc_mid = {
+            let mut doc = Document::from_text(text);
+            doc.push_edit(mid_surrogate, "x")
+        };
+        let hl_mid = {
+            let mut hl = Highlighter::new(text);
+            hl.apply_edit(mid_surrogate, "x")
+        };
+        assert!(
+            doc_mid.is_err() && hl_mid.is_err(),
+            "both must reject a surrogate-splitting delta: doc={doc_mid:?} hl={hl_mid:?}"
         );
     }
 }

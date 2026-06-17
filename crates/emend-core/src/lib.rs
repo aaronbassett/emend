@@ -49,9 +49,19 @@ impl U16Range {
         Self { start, len }
     }
 
+    /// The exclusive end offset (`start + len`), saturating at [`u32::MAX`]
+    /// rather than overflowing.
+    ///
+    /// Inputs arrive from the FFI as `UInt32`, so a hostile/buggy caller could
+    /// supply `start + len > u32::MAX`. A plain `+` would panic in debug and
+    /// wrap in release *before* the caller's bounds check runs; saturating
+    /// instead yields `u32::MAX`, which then cleanly fails every downstream
+    /// "offset within document length" check (a document can never be that
+    /// long), turning an overflow into a normal out-of-bounds rejection.
+    /// `saturating_add` is `const` on `u32`, so this stays a `const fn`.
     #[must_use]
     pub const fn end(self) -> u32 {
-        self.start + self.len
+        self.start.saturating_add(self.len)
     }
 }
 
@@ -63,5 +73,14 @@ mod tests {
     fn u16range_end_is_start_plus_len() {
         let r = U16Range::new(3, 4);
         assert_eq!(r.end(), 7);
+    }
+
+    #[test]
+    fn u16range_end_saturates_on_overflow() {
+        // start + len would overflow u32; `end()` must saturate (not panic in
+        // debug / wrap in release) so the overflowed end cleanly fails the
+        // downstream bounds checks instead.
+        let r = U16Range::new(u32::MAX, 5);
+        assert_eq!(r.end(), u32::MAX);
     }
 }
