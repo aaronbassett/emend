@@ -57,6 +57,9 @@ Tests are **co-located with source code** in two forms:
      - `crates/emend-core/tests/workspace_ops.rs` — Collision-safe file operations (T054, US2)
      - `crates/emend-core/tests/watcher.rs` — Filesystem watching + conflict resolution (T057, US2)
      - `crates/emend-core/tests/index.rs` — Incremental search index (T073, US2)
+     - `crates/emend-core/tests/search_supersede.rs` — Cancellable search driver (T072, US3)
+     - `crates/emend-core/tests/path_identity.rs` — Path canonicalization, symlink handling (NFR-007, US2)
+     - `crates/emend-core/tests/concurrency.rs` — Workspace concurrent access (US2)
      - `crates/emend-ffi/tests/panic_containment.rs` — Panic capture across FFI (T015)
 
 #### Test Files
@@ -69,6 +72,7 @@ Tests are **co-located with source code** in two forms:
 | `crates/emend-core/tests/workspace_ops.rs` | Collision-safe create/rename/move, `note 2.md` suffix scheme | Workspace file ops (T054, FR-004/FR-004a/FR-013a, US2) |
 | `crates/emend-core/tests/watcher.rs` | Debounced FSEvents, rename correlation, self-write suppression, conflict truth table | File watcher (T057/T065, FR-006a/FR-006b/FR-006c, US2) |
 | `crates/emend-core/tests/index.rs` | Incremental search index updates, fuzzy ranking, wiki-link lookup | Quick Open + link resolution (T073, FR-017/FR-017a/FR-019a, US2) |
+| `crates/emend-core/tests/search_supersede.rs` | Cancellation flag stops emission at batch boundary, pre-cancelled query emits nothing, un-superseded completes, ranking preserved | Quick Open supersede semantics (T072, FR-017/FR-018/SC-004, NFR-002, US3) |
 | `crates/emend-core/tests/path_identity.rs` | Path canonicalization, symlink handling, bounded traversal | Path safety (NFR-007, US2) |
 | `crates/emend-core/tests/concurrency.rs` | Workspace concurrent access, edit conflicts, multi-thread safety | Concurrent workspace ops (US2) |
 | `crates/emend-ffi/tests/panic_containment.rs` | Panics routed through `contain_panic` surface as `EmendError::Internal` | FFI boundary safety (NFR-003, research §B7) |
@@ -99,7 +103,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
 | `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
-#### Test Files (Comprehensive, US2 Phase 4)
+#### Test Files (Comprehensive, US3)
 
 | Path | Purpose | Test Type |
 |------|---------|-----------|
@@ -112,6 +116,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `app/Emend/EmendTests/SyntaxAttributingTests.swift` | Syntax highlight attribute synthesis from tree-sitter (T047, headless) | Unit |
 | `app/Emend/EmendTests/EditorPersistenceTests.swift` | End-to-end persistence: `EditorCoordinator` + `AutosaveController` + disk round-trip (T049, headless integration) | Integration |
 | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | End-to-end workspace: add folder → list tree → open tab → move/rename (T067, US2 Phase 4) | Integration |
+| `app/Emend/EmendTests/QuickOpenTests.swift` | End-to-end Quick Open: seed index → query streams results → Return opens file (T078, US3) | Integration |
 
 #### Test Pattern (XCTest)
 
@@ -137,15 +142,34 @@ Tests are **headless** (no GUI launch) and run in the test bundle (`@testable` i
 
 #### @MainActor Annotation for Headless Tests
 
-Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`) must themselves be annotated `@MainActor`:
+Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`) must themselves be annotated `@MainActor`:
 
 ```swift
 @MainActor
-final class WorkspaceFlowTests: XCTestCase {
-    func testAddLocationListsFolderTree() throws {
+final class QuickOpenTests: XCTestCase {
+    func testQueryStreamsRankedResultsAndOpensSelection() async throws {
+        let dir = try seededWorkspace()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
         let workspace = newWorkspace()
-        let location = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
-        // Test logic here — all code runs on main thread
+        _ = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
+        let indexed = try workspace.reindexAll(maxDepth: 32)
+        XCTAssertEqual(indexed, 3)
+
+        var opened: URL?
+        let model = QuickOpenModel()
+        model.attach(workspace: workspace) { opened = $0 }
+
+        model.query = "beta"
+        model.runQuery()
+        try await waitForResults(model)
+        
+        guard let index = model.results.firstIndex(where: { $0.name == "beta.md" }) else {
+            return XCTFail("expected a beta.md result")
+        }
+        model.selection = index
+        model.openSelected()
+        XCTAssertEqual(opened?.lastPathComponent, "beta.md")
     }
 }
 ```
@@ -183,39 +207,56 @@ final class EditorPersistenceTests: XCTestCase {
 
 This pattern exercises the full stack (Rust core → file I/O → disk → read-back) without launching the app GUI, making it feasible in CI with `CODE_SIGNING_ALLOWED=NO`.
 
-**Example: WorkspaceFlowTests (T067, US2)**
+**Example: QuickOpenTests (T078, US3)**
 ```swift
 @MainActor
-final class WorkspaceFlowTests: XCTestCase {
-    func testAddLocationListsFolderTree() throws {
-        let dir = try seededDirectory(files: ["alpha.md", "beta.md"], folders: ["sub"])
+final class QuickOpenTests: XCTestCase {
+    func testQueryStreamsRankedResultsAndOpensSelection() async throws {
+        // Arrange: seed a temp workspace with three notes
+        let dir = try seededWorkspace()
         defer { try? FileManager.default.removeItem(at: dir) }
+
         let workspace = newWorkspace()
+        _ = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
+        // Synchronously seed the index so the query has a populated haystack
+        let indexed = try workspace.reindexAll(maxDepth: 32)
+        XCTAssertEqual(indexed, 3, "all three notes seeded")
 
-        let location = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
-        XCTAssertEqual(location.path, dir.path)
+        // Act: attach the real QuickOpenModel, query, and await results
+        var opened: URL?
+        let model = QuickOpenModel()
+        model.attach(workspace: workspace) { opened = $0 }
         
-        let names = try Set(workspace.listChildren(folderPath: dir.path).map(\.name))
-        XCTAssertEqual(names, ["alpha.md", "beta.md", "sub"])
+        model.query = "beta"
+        model.runQuery()
+        try await waitForResults(model)  // Spin runloop until streamed batch lands
+        
+        // Assert: results contain the match, Return opens it, palette dismisses
+        XCTAssertTrue(
+            model.results.contains { $0.name == "beta.md" },
+            "the matching note appears in results (FR-017)"
+        )
+        
+        guard let index = model.results.firstIndex(where: { $0.name == "beta.md" }) else {
+            return XCTFail("expected a beta.md result")
+        }
+        model.selection = index
+        model.openSelected()
+        XCTAssertEqual(opened?.lastPathComponent, "beta.md", "Return opens the selection (AC2)")
+        XCTAssertFalse(model.isPresented, "opening dismisses the palette (AC3)")
     }
-    
-    func testModelListsFolderChildrenAndMovesFile() throws {
-        let dir = try seededDirectory(files: ["doc.md"], folders: ["archive"])
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let model = WorkspaceModel(workspace: newWorkspace(), defaults: isolatedDefaults())
 
-        let folder = WorkspaceNode(url: dir, name: dir.lastPathComponent, kind: .folder)
-        let childNames = Set(model.children(of: folder).map(\.name))
-        XCTAssertEqual(childNames, ["doc.md", "archive"])
-        
-        let archive = WorkspaceNode(...)
-        let moved = model.move(sourcePath: ..., into: archive)
-        XCTAssertTrue(moved)
+    /// Spin the main runloop until streamed results land or timeout.
+    private func waitForResults(_ model: QuickOpenModel, timeout: TimeInterval = 3.0) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while model.results.isEmpty, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 }
 ```
 
-This tests the workspace handle directly + the SwiftUI model glue (`WorkspaceModel`, `TabModel`) without launching the GUI. The real `NSOutlineView` rendering, drag-drop gestures, and conflict runtime remain pragmatic-UI (manual verification per Constitution VII).
+This drives the real `WorkspaceHandle` + `QuickOpenModel` end-to-end, exercising the full streaming path from Rust search worker through the `QuickOpenSink` bridge to SwiftUI state updates.
 
 ## Test Patterns
 
@@ -261,6 +302,57 @@ fn astral_utf16_len_differs_from_char_len() {
 }
 ```
 
+### Rust: Cancellation & Supersede Testing (US3)
+
+The `search_supersede.rs` integration test (T072) verifies that a **pure, tokio-free** search driver respects cancellation **deterministically** — no async runtime, no timing:
+
+```rust
+//! T072 — failing-first tests for the cancellable Quick Open search driver.
+//! Asserts that setting a Cancel flag mid-stream stops emission at the next
+//! batch boundary, and that an un-superseded query runs to completion.
+//! Pure sync driver, no tokio, so behaviour is deterministic.
+
+#[test]
+fn setting_cancel_flag_mid_stream_stops_emission() {
+    let index = seeded(100);  // 100 notes, all match "note"
+    let cancel = Cancel::new();
+
+    // Cancel from inside the emit callback once the first batch lands.
+    let mut batches: Vec<Vec<SearchHit>> = Vec::new();
+    let completed = quick_open(&index, "note", 100, 8, &cancel, |b| {
+        batches.push(b);
+        if batches.len() == 1 {
+            cancel.cancel();  // Simulate supersede mid-stream
+        }
+    });
+
+    assert!(!completed, "a superseded query reports incomplete");
+    assert_eq!(batches.len(), 1, "emission stops at next batch boundary");
+    let emitted: usize = batches.iter().map(Vec::len).sum();
+    assert!(emitted < 100, "did not emit the full set");
+}
+
+#[test]
+fn un_superseded_query_completes_and_streams_all() {
+    let index = seeded(20);
+    let cancel = Cancel::new();
+
+    let mut sink = Sink::new();
+    let completed = quick_open(&index, "note", 50, 8, &cancel, |b| sink.batches.push(b));
+
+    assert!(completed, "an un-superseded query reports completion");
+    assert_eq!(sink.total(), 20, "all 20 hits stream through");
+    assert_eq!(sink.count(), 3, "batches: 8 + 8 + 4");
+}
+```
+
+**Key pattern**: The test drives the pure `quick_open` function **synchronously** with a `Cancel` flag and a plain closure sink. No tokio, no timing-dependent assertions. This proves the core's emission logic is correct in isolation; the FFI layer (which *does* spawn tokio tasks and bridge cancellation tokens) is tested separately for panic containment via `panic_containment.rs`.
+
+**Rationale** (Constitution V — decision logic in core, tested in core):
+- The *decision* to stop emitting (when `cancel` is set) is made in the pure core driver
+- The core driver is tested without tokio or FFI, so its cancellation semantics are deterministic and decoupled from async runtime behavior
+- The FFI layer handles tokio spawning, panic containment, and token-to-flag bridging; it inherits correctness from the core
+
 ### Rust: Collision-Safe File Operations (T054, US2)
 
 Workspace file operations (`create_note`, `rename_node`, `move_node`) are tested for **collision safety** — they never overwrite existing files/folders and use a deterministic auto-suffix scheme:
@@ -295,7 +387,7 @@ fn create_note_collision_auto_suffixes_and_preserves_original() {
 File watcher integration tests verify:
 1. **Debouncing**: Bursts of FSEvents are coalesced into single updates
 2. **Rename correlation**: One rename event (not delete+create) via `FileIdCache`
-3. **Self-write suppression**: Our own atomic saves don't echo back
+3. **Self-write suppression**: Our own atomic saves don't echo back (post-write `(mtime,len)` fed to watcher)
 4. **Conflict truth table**: Open file changes on disk → clean (reload) vs dirty (preserve+mark stale)
 
 ### Rust: Panic Containment Testing
@@ -381,6 +473,7 @@ final class EditorPersistenceTests: XCTestCase {
 The Rust core avoids mocking libraries (`mockall`, `proptest`) in favor of **pure functions and fixtures**:
 - Pure functions (no I/O side effects) are tested directly
 - File I/O is tested with real temp files via `tempfile` crate
+- Search driver is tested with in-memory `Index` fixtures (no Rust core FFI, no tokio)
 - AI/HTTP logic is tested with request/response fixtures (deferred to Phase 2+)
 
 ### Swift: Minimal Mocking
@@ -393,12 +486,14 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 - Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests)
 - Temp files created by `tempfile` crate (atomic cleanup via `defer`)
 - Pre-seeded directory trees (`seededDirectory(files:folders:)`) for workspace tests
+- In-memory `Index` with `n` pre-inserted notes (search tests; no disk I/O)
 
 **Fixtures in Swift tests**:
 - Simple test doubles (e.g., fake bookmarks, `makeTempDirectory()`) or hardcoded test data
 - Real `EmendCore` API calls and real `NSTextView` storage (no mocking)
 - Real file I/O via `FileManager` to verify end-to-end persistence
 - Real Rust workspace handle + SwiftUI model instances for integration tests
+- Temp workspace with pre-seeded notes for Quick Open tests
 
 ## Benchmarking
 
@@ -414,8 +509,7 @@ Criterion benchmarks are located in `crates/emend-bench/` with two key propertie
 | Path | Purpose |
 |------|---------|
 | `crates/emend-bench/benches/smoke.rs` | Smoke benchmark verifying the Criterion pipeline compiles and runs (trivial `U16Range::end()` measurement) |
-| Future: `benches/highlight.rs` | Editor highlight incremental parsing (Phase 3+) |
-| Future: `benches/quick_open.rs` | Fuzzy search ranking (Phase 3+) |
+| `crates/emend-bench/benches/quick_open.rs` | Quick Open fuzzy-search ranking over 10k-entry index; budget ≤100 ms p95 warm (T071, SC-004, US3) |
 
 ### Running Benchmarks
 
@@ -427,8 +521,18 @@ cargo bench
 cargo bench --no-run
 
 # Specific benchmark:
-cargo bench -- u16range_end
+cargo bench -- quick_open_10k
 ```
+
+### Quick Open Benchmark (T071, US3)
+
+Measures a single **warm query** over a 10k-entry index seeded with realistic folder structure (`notes/`, `projects/`, `archive/`). Benchmarks three query shapes because fuzzy-match cost varies:
+
+- **`"note"`** — Common substring matching *every* entry (worst case: full haystack scored, full results streamed)
+- **`"note-7777"`** — Near-exact match (typical user typing "I roughly know what I want")
+- **`"zzqq"`** — No match (pure scoring cost, zero results)
+
+**Budget**: ≤100 ms p95 warm per Constitution SC-004 and NFR-018. This is tracked non-blocking; regressions are visible but do not fail CI.
 
 ## Coverage Requirements
 
@@ -494,10 +598,12 @@ Full-feature tests exercising public APIs and boundaries:
 | Collision safety | `crates/emend-core/tests/workspace_ops.rs` | Create/rename/move never overwrite; `note 2.md` suffix scheme | Yes (FR-004/FR-004a, US2) |
 | Watcher + conflict resolution | `crates/emend-core/tests/watcher.rs` | Debounce, rename correlation, self-write suppression, truth table | Yes (FR-006a/FR-006b/FR-006c, US2) |
 | Search index | `crates/emend-core/tests/index.rs` | Incremental index, fuzzy ranking, wiki-link O(1) lookup | Yes (FR-017/FR-017a/FR-019a, US2) |
+| Search supersede | `crates/emend-core/tests/search_supersede.rs` | Cancel flag stops emission at batch boundary; pre-cancelled emits nothing; completion reported correctly | Yes (FR-017/FR-018, NFR-002, US3) |
 | Panic containment | `crates/emend-ffi/tests/panic_containment.rs` | Panics in async tasks surface as `EmendError::Internal` | Yes (NFR-003) |
 | Bookmark resolution | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmarks resolve to files | Yes (FR-004) |
 | Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
 | Workspace flow | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | Add folder → tree → open tab → move/rename (T067, US2) | Yes (workspace UX) |
+| Quick Open flow | `app/Emend/EmendTests/QuickOpenTests.swift` | Seed index → query streams results → Return opens file (T078, US3) | Yes (Quick Open UX, FR-017/FR-018) |
 
 ## CI Integration
 
@@ -570,13 +676,14 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 - ✅ Collision-safe file operations are guaranteed (T054, US2)
 - ✅ Watcher + conflict resolution deterministically tested (T057/T065, US2)
 - ✅ Incremental search index verified (T073, US2)
+- ✅ Cancellable search driver tested synchronously without tokio (T072, US3)
 
 ### Pragmatic UI Testing
 
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
 - ✅ Pure transform tests (headless, isolated unit tests for editor behavior)
-- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow)
+- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end)
 - ⏳ Full-app behavior tests deferred until features land (Phase 2+)
 
 **Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, and the live-refresh runtime remain manual-verification (Constitution VII).

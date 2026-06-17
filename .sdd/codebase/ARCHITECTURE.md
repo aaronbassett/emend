@@ -2,7 +2,7 @@
 
 > **Purpose**: Document system design, patterns, component relationships, and data flow.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (incremental: US3 Quick Open merged)
 
 ## Architecture Overview
 
@@ -10,7 +10,7 @@ Emend is a **hybrid Rust+Swift native macOS Markdown editor** with a cleanly sep
 
 - **Rust core** (`crates/emend-core`) houses ALL business logic: file I/O, document parsing, file watching, indexing, search, and AI client integration. The core is **toolchain-free** — it has no FFI dependency and is fully testable with `cargo test` in isolation.
 - **UniFFI shim** (`crates/emend-ffi`) provides a thin boundary layer that exports the core's capabilities to Swift and manages async infrastructure (tokio runtime, cancellation tokens).
-- **Swift/SwiftUI app** (`app/Emend`) wraps the core in a native macOS UI with a three-pane layout: sidebar (workspace/favorites), tabbed editor (with per-document state), and info pane.
+- **Swift/SwiftUI app** (`app/Emend`) wraps the core in a native macOS UI with a three-pane layout: sidebar (workspace/favorites), tabbed editor (with per-document state), info pane, and a ⌘P Quick Open palette (US3).
 
 The boundary is **synchronous on the hot path** (per-keystroke edits) and **asynchronous only for AI and search** (with cancellable Rust-owned handles). This design allows the core to stay independent and testable while the UI safely dispatches background work.
 
@@ -24,7 +24,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 | **Synchronous hot path, async background** | Per-keystroke edits cross the boundary synchronously; AI and search use async Rust-owned handles |
 | **UTF-16 boundary contract** | All text ranges crossing the FFI boundary are UTF-16 code units, mapping 1:1 to `NSRange` |
 | **Swift owns text buffer** | Canonical text storage lives in NSTextStorage; Rust maintains a shadow ropey rope for structural queries |
-| **Clear model/view separation (Swift UI)** | `@MainActor` state models (`WorkspaceModel`, `TabModel`, `ConflictController`) own Rust handles and drive views; views are pure presentations of model state |
+| **Clear model/view separation (Swift UI)** | `@MainActor` state models (`WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`) own Rust handles and drive views; views are pure presentations of model state |
 
 ## Core Components
 
@@ -41,9 +41,10 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 - **`document.rs`** — The open-document model: a shadow ropey rope + UTF-16/char/line indices. Backs all per-keystroke edits, structural queries (highlight, outline), and search. Converts at exactly one place on every boundary call, never panicking — all conversions are checked and mapped to `EmendError`.
 - **`workspace.rs`** — File-based workspace model (US2): locations (user-chosen root folders), lazy directory listing, collision-safe file operations, in-memory maps for favorites/pins/icons/child-order. Uses canonicalization + bounded traversal for path identity (NFR-007) and `free_name` for collision-safe naming (FR-004a). Pure `std` + `tempfile`; no async.
 - **`index.rs`** — Incremental in-memory search index (US2): arena-based entries, path/name maps, fuzzy ranking via `nucleo-matcher`. Maintained O(1)-ish on file operations (create/rename/move/delete) via `Index::insert/remove/rename`, never full rescan (FR-017a). Backs Quick Open + wiki-link resolution.
+- **`search.rs`** (US3) — Pure, tokio-free streaming search driver (T073). Owns the **emission policy** for Quick Open: batches ranked results from `Index::query()` and re-checks a `Cancel` flag between batches for fast supersede (NFR-002). Holds `pub struct Cancel` (Arc-backed atomic bool) so multiple clones share the cancellation state. The core decision logic (rank, batch, stop-on-supersede) lives here for unit testability without an async runtime (`tests/search_supersede.rs`). No `uniffi` or `tokio` dependencies.
 - **`watcher.rs`** — Live file watching (US2): thin `notify` + `notify-debouncer-full` wrapper over a pure, deterministically-tested classification core. Includes move correlation (FR-006b), self-write suppression via identity-keyed registry (FR-006a), and conflict truth table (FR-006c). Runs on OS threads, posts to `std::sync::mpsc`; no async runtime.
 - **`parse.rs`** — Markdown parsing: deliberately **two separate engines** (Constitution): incremental tree-sitter (editor highlight, advisory) vs. comrak (preview HTML, authoritative). Held apart on purpose, never unified.
-- **`search.rs`** & **`ai.rs`** — Placeholder modules (to be added by `/sdd:implement`).
+- **`ai.rs`** — Placeholder module (to be added by `/sdd:implement`).
 
 **Dependencies**: `thiserror`, `ropey`, `tempfile`, `tree-sitter`, `tree-sitter-md`, `comrak`, `syntect`, `nucleo`, `nucleo-matcher`, `notify`, `notify-debouncer-full`, `reqwest`, `serde`, `tokio` (only in FFI shim), `tokio-util` (only in FFI shim).
 
@@ -66,7 +67,8 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 - **`error.rs`** — `#[derive(uniffi::Error)]` projection of `EmendError`. Keeps the same `Display` wording so Swift sees the same error message. Exhaustive `From` impls ensure new core error variants force compilation errors here.
 - **`panic.rs`** — Custom panic hook (if needed for debugging; not yet implemented).
 - **`document.rs`** — FFI projection of document operations: `open_document`, `close_document`, `push_edit`, `highlight_spans`, `flush`. Wraps the core's `Document` in an `OpenDocHandle` (`Arc<Mutex<Document>>`).
-- **`workspace.rs`** — FFI projection of workspace + index: `WorkspaceHandle` wrapping both `Workspace` + `Index` co-located under one `Mutex<Inner>` (to maintain incremental index updates in lock-step, FR-017a). Exports `Location`, `FsNode`, `NodeKind` value types and methods like `create_note`, `rename`, `move_node`, `query`, `resolve_name`.
+- **`workspace.rs`** — FFI projection of workspace + index: `WorkspaceHandle` wrapping both `Workspace` + `SharedIndex` (Index behind `Arc<Mutex<>>`) co-located under one `Mutex<Inner>` (to maintain incremental index updates in lock-step, FR-017a). Exports `Location`, `FsNode`, `NodeKind` value types and methods like `create_note`, `rename`, `move_node`, `query`, `resolve_name`, `quick_open_query` (T074), and `reindex_all` (T078).
+- **`search.rs`** (US3 · T074) — FFI projection of streaming Quick Open (§5 of contract). Drives the pure, tokio-free core search driver (`emend_core::search::quick_open`) on the boundary's shared tokio runtime and forwards ranked batches to foreign `SearchSink`. Holds `pub struct SearchHandle` (UniFFI Object, `Arc<Self>`), which bridges cancellation: a `tokio_util::CancellationToken` (parity with `CancellationHandle`) and an `emend_core::search::Cancel` flag. A single `quick_open_query` cancels any previous `SearchHandle` in `WorkspaceHandle.current_search` (supersede, NFR-002), then spawns the new worker. The core driver is fast (<100 ms p95, SC-004); lock the index briefly, not the whole workspace.
 - **`watcher.rs`** — FFI projection of the live watcher: `WatchHandle` wrapping `FsWatcher`, with `ChangeEvent` and `ConflictState`/`ConflictChoice` enums. Bridges via `ObserverBridge` to the Swift `DocObserver` foreign trait.
 - **`handles.rs`** — Rust-owned infrastructure: the tokio runtime (lives here, not core), `CancellationToken` for async tasks, `SearchHit` value type, and foreign-trait `DocObserver`/`SearchSink`/`AiSink` callbacks for streaming results.
 
@@ -93,7 +95,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 ### 4. macOS App — Model & Orchestration Layer
 
-**Purpose**: Swift `@MainActor` state models that own the Rust handles and coordinate between workspace/tabs/editor/conflicts.
+**Purpose**: Swift `@MainActor` state models that own the Rust handles and coordinate between workspace/tabs/editor/conflicts/search.
 
 **Location**: `app/Emend/Emend/`
 
@@ -105,6 +107,8 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`ConflictController`** (`Editor/ConflictController.swift`) — `@MainActor ObservableObject` detecting when an open document changes on disk underneath the editor (FR-006c). Listens to workspace's `onExternalChange` callback and tracks self-writes from autosave. Flags conflicted tabs; users choose reload-or-keep-mine. Maintains both core-side suppression (identity-keyed) and Swift-side time-window guards to avoid false positives.
 
+- **`QuickOpenModel`** (`QuickOpen/QuickOpenModel.swift`) — `@MainActor ObservableObject` driving the ⌘P Quick Open palette (US3, FR-017/FR-018, NFR-002). Bridges the core's streaming, supersedable `quick_open_query` to SwiftUI: each keystroke starts a fresh query that supersedes the prior (the core cancels the previous in-flight `SearchHandle`; a monotonic `generation` additionally guards against a late batch from a superseded query landing after the next one began). Ranked `SearchHit`s stream in via a `SearchSink` bridge; arrow keys move the selection, Return opens the file.
+
 ### 5. macOS App — View Layer
 
 **Purpose**: SwiftUI views and editor mechanics.
@@ -113,7 +117,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 **Major components**:
 
-- **`Shell/MainWindow.swift`** — Three-pane layout: sidebar (workspace outline) | editor pane (tabbed) | info pane. Wires up `WorkspaceModel`, `TabModel`, `ConflictController`.
+- **`Shell/MainWindow.swift`** — Three-pane layout: sidebar (workspace outline) | editor pane (tabbed) | info pane. Wires up `WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`. Hidden ⌘P button registers the Quick Open shortcut window-wide.
 
 - **`Sidebar/WorkspaceOutlineView.swift`** — `NSViewRepresentable` wrapping `NSOutlineView` over the workspace's file tree. Lazy children loading, targeted reloadItem on external FS changes. Context menu + drag-drop.
 
@@ -134,6 +138,8 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 - **`Editor/FormattingCommands.swift`** — Pure transforms: `bold()`, `italic()`, `link()`, `task()` (insert markers around selection).
 
 - **`Editor/AutosaveController.swift`** — Debounced (1.5 s idle + 5 s hard cap) atomic flush on private serial queue. Errors surface via callback.
+
+- **`QuickOpen/QuickOpenView.swift`** — The ⌘P overlay palette (US3). Renders the filtered `SearchHit` list with arrows/Return/Escape handlers, wired to `QuickOpenModel`.
 
 **Dependencies**: `EmendCore` SwiftPM package, AppKit (`NSTextView`, `NSOutlineView`), SwiftUI.
 
@@ -166,6 +172,40 @@ AutosaveController.noteEdit() rearms debounce
 **Why synchronous**: Every keystroke must be reflected in the buffer immediately. Pushing work to background would introduce latency, risking dropped keystrokes or race conditions with later edits.
 
 **Why off-main-thread**: The Rust core's incremental rope operations are fast enough for per-keystroke throughput but may call `tree-sitter` highlighting — keeping the main thread responsive requires the call not to block.
+
+### Quick Open Search (US3, NFR-002: Supersede)
+
+```
+User presses ⌘P
+    ↓
+QuickOpenModel.present() shows the overlay
+    ↓
+User types; each keystroke fires QuickOpenModel.runQuery()
+    ↓
+runQuery() increments generation, cancels any in-flight SearchHandle
+    ↓
+Calls `workspace.quick_open_query(trimmed, sink)` — **async, returns immediately**
+    ↓
+FFI (T074) cancels the previous SearchHandle in workspace.current_search (NFI-002)
+    ↓
+Spawns tokio worker running emend_core::search::quick_open over workspace.index
+    ↓
+Core ranks query via Index::query(), batches results, polls Cancel flag (T073)
+    ↓
+Each batch emitted to SearchSink.on_results(); Swift sink ignores if generation is stale
+    ↓
+On completion (or supersede if the next keystroke already fired), sink fires on_done()
+    ↓
+QuickOpenModel updates @Published results; QuickOpenView renders ranked list
+    ↓
+User presses Return → openSelected() opens the highlighted file in a tab and closes palette
+    ↓
+User presses Escape → dismiss() cancels the in-flight handle via SearchHandle.cancel()
+```
+
+**Why async + cancellable**: Search is I/O bound (file scanning) and ranks thousands of files. Blocking would freeze the app. Cancellation (supersede + explicit close) prevents resource waste.
+
+**Why batching + generation guards**: Batching means a stale superseded worker stops emitting mid-stream within one batch (low latency, <32 results worth). A monotonic `generation` on the Swift side ignores late batches from superseded queries — belt-and-suspenders redundancy.
 
 ### Workspace & File Changes
 
@@ -256,7 +296,7 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 | Layer | Responsibility | Can Access | Cannot Access |
 |-------|----------------|------------|---------------|
 | **Swift/SwiftUI app** | UI rendering, event handling, model state | `EmendCore` (boundary), AppKit | Directly access files, Rust data structures |
-| **Swift models** (@MainActor: WorkspaceModel, TabModel, ConflictController) | State ownership, Rust handle lifecycle, pub/sub via @Published | `EmendCore`, AppKit, app views | Other models (one-way data flow via callbacks) |
+| **Swift models** (@MainActor: WorkspaceModel, TabModel, ConflictController, QuickOpenModel) | State ownership, Rust handle lifecycle, pub/sub via @Published | `EmendCore`, AppKit, app views | Other models (one-way data flow via callbacks) |
 | **Swift views** | Rendering, event capture, formatted display | App models (read-only via @State/@Environment), AppKit | Rust handles directly, file I/O |
 | **Swift `EmendCore` wrapper** | Type adaptation, async stream wrapping | Generated UniFFI bindings | App state, UI models |
 | **UniFFI boundary** | Foreign-trait scaffolding, error projection, panic containment | `emend-core`, async runtime | Anything beyond scaffolding |
@@ -304,8 +344,22 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 | `rename(handle, path: String, new_name: String) -> Result<FsNode, FfiError>` | Rename a file/folder | Sidebar rename |
 | `move_node(handle, path: String, new_parent: String) -> Result<FsNode, FfiError>` | Move a file/folder | Sidebar drag-drop |
 | `delete_node(handle, path: String) -> Result<(), FfiError>` | Delete a file/folder | Sidebar delete |
-| `query(handle, q: String) -> Result<Vec<SearchHit>, FfiError>` | Fuzzy search | Quick Open |
+| `reindex_all(handle, max_depth: u32) -> Result<u32, FfiError>` | Seed index from disk (US3) | Startup or after large imports |
+| `query(handle, q: String) -> Result<Vec<SearchHit>, FfiError>` | Fuzzy search (blocking) | Wiki-link resolution |
 | `resolve_name(handle, name: String) -> Result<Vec<String>, FfiError>` | Wiki-link resolution | Link completion |
+
+### FFI Contract: Streaming Search (US3)
+
+**Location**: `specs/001-markdown-editor/contracts/ffi-interface.md` §5
+
+| Export | Signature | Purpose |
+|--------|-----------|---------|
+| `quick_open_query(handle, query: String, sink: Arc<dyn SearchSink>) -> Arc<SearchHandle>` | Stream ranked results, supersedable (FFI T074) | Quick Open palette (⌘P) |
+| `SearchHandle.cancel()` | Cancel the in-flight query (trip both tokio::CancellationToken + core Cancel flag) | Palette close or supersede |
+| `SearchSink.on_results(batch: Vec<SearchHit>)` (foreign trait) | Receive a batch of ranked results | Update UI result list |
+| `SearchSink.on_done()` (foreign trait) | Terminal callback when query completes | Enable Return to open selection |
+
+The core driver (`emend_core::search::quick_open`, T073) is pure and tokio-free; the FFI async shim (T074) bridges the tokio boundary, cancellation primitives, and the foreign-trait sink.
 
 ### FFI Contract: File Watching & Conflict Handling
 
@@ -344,6 +398,8 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 
 **OpenDocHandle**: Opaque Rust handle representing an open `Document`. Returned by `open_document()`, passed to `push_edit()`, `highlightSpans()`, `flush()`, and `close_document()`.
 
+**SearchHit**: Value struct returned by `quick_open_query` sinks. Contains `path: String` (filesystem path), `name: String` (basename), `score: UInt32` (ranking score, higher is better).
+
 ## State Management
 
 | State Type | Location | Pattern | Notes |
@@ -354,6 +410,8 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **Highlight cache** | Rust `parse` module (tree-sitter) | Incremental, invalidated by `push_edit` | Computed on-demand by highlight queries |
 | **Open-document list** | Swift `TabModel` (@Published tabs) | Registry of handles + text + autosave + UI state | Tracks which Rust `Document` handles are live |
 | **Workspace (locations, favorites, pins, icons)** | Swift `WorkspaceModel` (@Published roots, etc.) | Owns `WorkspaceHandle` (Rust Workspace); app state persisted to UserDefaults | Master registry of user-added locations |
+| **Search index** | Rust `Workspace.index` (behind `Arc<Mutex<>>`) | Fuzzy ranked entries maintained O(1)-ish on file ops | Shared: file ops lock+update, search queries lock briefly |
+| **Quick Open results** | Swift `QuickOpenModel` (@Published results) | Streamed batches from `SearchSink`, guarded by monotonic `generation` | Superseded queries' batches are discarded by generation check |
 | **File tree (sidebar)** | Swift `NSOutlineView` + `WorkspaceModel.roots` | Lazy children; `revision` bumps for top-level reloads, `fsRefreshTick` for targeted reloads | Reflects workspace + external FS changes |
 | **Cancellation tokens** | Rust `handles` module (tokio-util) | Owned by Rust, cancelled by Swift | AI and search long-running tasks |
 | **Conflict flags** | Swift `ConflictController` (@Published conflicts) | Set of conflicted tab IDs | Tracks docs that changed on disk + need user resolution |
@@ -367,6 +425,7 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **UTF-16 boundary safety** | `U16Range` type, checked conversions, surrogate-pair detection | `crates/emend-core/src/document.rs` |
 | **Atomic durability** | Temp file + fsync + rename + fsync dir | `crates/emend-core/src/fs.rs` |
 | **Async cancellation** | `tokio::sync::CancellationToken` + foreign-trait sinks | `crates/emend-ffi/src/handles.rs` |
+| **Search cancellation (core layer)** | Arc-backed atomic bool flag (tokio-free) | `crates/emend-core/src/search.rs` |
 | **Privacy** | No network unless AI configured + invoked; Keychain for API key; transient to Rust, redacted in HTTP client | `crates/emend-core`, Swift app bindings |
 | **Incremental syntax highlight** | tree-sitter (editor, advisory) vs. comrak (preview, authoritative) | `crates/emend-core/src/parse` |
 | **Per-keystroke editing** | Swift owns buffer; Rust maintains shadow; deltas via `push_edit()` | `EditorCoordinator`, `EmendCore` |
@@ -376,6 +435,7 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **File watching** | notify + debouncer on OS threads; pure core classifier; foreign-trait bridge to Swift | `crates/emend-core/src/watcher`, `crates/emend-ffi/src/watcher` |
 | **Incremental index** | Arena + path/name maps, O(1)-ish updates (no rescan on file ops) | `crates/emend-core/src/index`, `WorkspaceModel` tree updates |
 | **Workspace persistence** | Locations + favorites/pins/icons persisted to UserDefaults | `WorkspaceModel`, `AppState` codable struct |
+| **Quick Open superseding (NFR-002)** | Core batches + Cancel flag; FFI supersede via current_search; Swift generation guard | `crates/emend-core/src/search`, `crates/emend-ffi/src/search`, `QuickOpenModel` |
 
 ## Build & Deployment
 
