@@ -2,14 +2,14 @@
 
 > **Purpose**: Document what executes in this codebase — languages, runtimes, frameworks, and critical dependencies.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6); 2026-06-17 (US7 additions: `TypographySettings` + AppKit `NSFontManager`/`NSFont`/`NSParagraphStyle` + CSS injection for preview)
+> **Last Updated**: 2026-06-17 (Phase 10 Polish: perf benchmarking, accessibility identifiers, security review findings, large-file tests)
 
 ## Languages & Runtimes
 
 | Language | Version | Purpose |
 |----------|---------|---------|
 | Rust | 1.85 (pinned MSRV) | Core engine: file IO, watching, indexing, Markdown parsing, search, AI client, typography settings storage |
-| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export, wiki-link autocomplete, typography UI |
+| Swift | 6.0 (Xcode 16.2+) | Native macOS frontend UI, editor surface, sidebar, tabs, preview, PDF export, wiki-link autocomplete, typography UI, accessibility identifiers |
 | C (via UniFFI) | ABI shim | FFI boundary between Rust and Swift |
 
 ## Frameworks
@@ -33,7 +33,7 @@ These packages are actively wired into the runtime:
 | `tree-sitter-md` | 0.5 | Split Markdown grammar (block + inline); wrapped by `MarkdownParser`/`MarkdownTree` | **WIRED** — Phase 3 US1, `parse/highlight.rs` |
 | `comrak` | 0.52 | CommonMark + GFM preview engine (authoritative, whole-document); distinct from tree-sitter editor highlighter ("two engines on purpose"); renders wikilinks natively | **WIRED** — Phase 6 US4 (Preview + PDF export), Phase 7 US5 (embeds), `parse/preview.rs`; rendered via `render_preview_html()` / `render_preview_html_with_embeds()` FFI exports with comrak's `render.sourcepos` + `data-line` scroll-sync anchors (research §C3) |
 | `syntect` | 5.3 | Code-block syntax highlighting (20+ languages) for preview fenced blocks; loads vendored binary `SyntaxSet`/`ThemeSet` dump (`assets/syntaxes-themes.packdump`) | **WIRED** — Phase 6 US4, `parse/code_highlight.rs`; drives `ClassedHTMLGenerator` via `EmendSyntectAdapter` plugged into comrak; theme CSS exported via `preview_theme_css()` FFI |
-| `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename | **WIRED** — used in `fs::write_atomic` and `fs::store_attachment` (Phase 7 US5) |
+| `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename; also used in tests for isolated file I/O (Phase 10 large-file/bounded-memory tests) | **WIRED** — used in `fs::write_atomic`, `fs::store_attachment` (Phase 7 US5), and `tests/` for isolated FS operations |
 | `thiserror` | 2.x | Error type Display/Error derive for `EmendError` enum | **WIRED** — core error handling |
 | `nucleo-matcher` | 0.3.1 | Synchronous fuzzy-matching primitive for workspace search index and wiki-link suggestions (lighter than full `nucleo`); used in both Quick Open and link autocomplete | **WIRED** — Phase 4 US2, Phase 7 US5 `derived::wikilink_suggestions()`, `index.rs` — in-memory haystack for Quick Open + wiki-link resolution |
 | `notify` | 8.2 | File system watching (macOS FSEvents recursive watcher) | **WIRED** — Phase 4 US2, `watcher.rs` — detects external note edits and changes |
@@ -56,7 +56,7 @@ These packages are actively wired into the runtime:
 
 | Package | Version | Purpose | Wiring Status |
 |---------|---------|---------|---------------|
-| `criterion` | 0.7 | Micro-benchmark harness (perf budgets tracked, non-blocking) | **DEV-ONLY** — benchmarking (phase 3) |
+| `criterion` | 0.7 | Micro-benchmark harness (perf budgets tracked, non-blocking per Principle IV) | **WIRED** — Phase 10 Polish: perf-budget tracking for SC-002 (open+parse), SC-003 (keystroke reparse), SC-004 (Quick Open search); benchmarks published in retro but non-blocking in CI |
 
 ### Swift (`EmendCore`)
 
@@ -64,7 +64,7 @@ No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (gener
 
 ### Swift (`app/Emend`)
 
-Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, wiki-link `[[` autocomplete (via `NSTextView` completion), info sidebar (document `stats`/`outline` pull via FFI `OpenDocHandle::stats()` / `outline()` on edit-notification, FR-031a), and typography UI (`TypographyPanel`, font picker using `NSFontManager`, paragraph-style picker) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI. AI key storage uses macOS Security framework Keychain (`SecKeychain` C APIs). Typography settings persist to `NSUserDefaults` and are synced to the Rust core via `SettingsHandle.set_typography()` on app launch and user preference changes.
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`), workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), preview (`PreviewWebView`, `PreviewModel`, `ScrollSync`), PDF export (`PDFExport`), folder-icon picker, tab model, wiki-link `[[` autocomplete (via `NSTextView` completion), info sidebar (document `stats`/`outline` pull via FFI `OpenDocHandle::stats()` / `outline()` on edit-notification, FR-031a), and typography UI (`TypographyPanel`, font picker using `NSFontManager`, paragraph-style picker) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI. AI key storage uses macOS Security framework Keychain (`SecKeychain` C APIs). Typography settings persist to `NSUserDefaults` and are synced to the Rust core via `SettingsHandle.set_typography()` on app launch and user preference changes. **Phase 10 additions**: accessibility identifiers (`UIAccessibility` / `AccessibilityIdentifier` on all major UI elements for VoiceOver support and future UI automation).
 
 ### Catalogued but Inert (Not Yet Wired)
 
@@ -82,6 +82,7 @@ These are pinned in the workspace `[workspace.dependencies]` but not yet importe
 | `just` | (any) | Task runner; see `justfile` for `build`, `test`, `clippy`, `fmt-check`, `check`, `xcframework` |
 | `Xcode` | 16.2+ | Swift build, SwiftUI preview, XCTest |
 | `Swift` (compiler) | 6.0+ | Swift 6 strict-concurrency mode (Swift 5 for generated UniFFI bindings) |
+| `xcodegen` | (latest) | Generate `.xcodeproj` from `project.yml` (Phase 10 Polish: `.xcodeproj` is source-controlled-agnostic, regenerated on build) |
 
 ## Runtime Environment
 
@@ -89,9 +90,9 @@ These are pinned in the workspace `[workspace.dependencies]` but not yet importe
 |-------------|---------|
 | **OS Target** | macOS 14.0+ (Sonoma+) |
 | **Architecture** | arm64 (Apple Silicon) only |
-| **Deployment** | Native .app bundle (single-window macOS application) |
+| **Deployment** | Native .app bundle (single-window macOS application) with hardened runtime and network-client entitlement (Phase 10: added after security review to support BYOM AI; gated by code: zero network without user-configured key) |
 | **No Database** | Plain `.md` files on disk; app state in macOS Keychain (for AI API key) and user defaults (including typography settings); attachments stored in note-relative `attachments/` subdirectories |
-| **No Network by Default** | Zero outbound network unless AI is configured (via user prefs) AND explicitly invoked by the user (SC-008 / FR-035) |
+| **No Network by Default** | Zero outbound network unless AI is configured (via user prefs) AND explicitly invoked by the user (SC-008 / FR-035); entitlements enable capability but code enforces policy |
 
 ## Build Profile
 
@@ -122,6 +123,45 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 - **AI streaming (US6)**: `emend-ffi` owns the `reqwest` HTTP client + `tokio` orchestration (per-chunk inactivity timeout, `CancellationToken` + `tokio::select!`). Bytes feed through the core `emend_core::ai::SseParser` (redacting `ApiKey` newtype, max-input guard FR-036a, pure JSON parsing) to the foreign `AiSink` callback. The FFI exports: `summarize_document(OpenDocHandle, AiRequestConfig, AiSink) → Arc<AiHandle>` (cancellable) + `test_ai_config(AiRequestConfig) → bool` (validates endpoint before full request). The core (`ai.rs`) exports: `SseParser`, `ApiKey`, `check_input_size()`, `build_request_body()`, `build_auth_header()` — all pure, zero network.
 - **Info sidebar (US6)**: FFI exports `OpenDocHandle::stats()` (word/char/task counts via `derived::stats()`) + `outline()` (headings + line numbers via `derived::outline()`). Live pull via `set_doc_observer()` callback on edit (debounced ≤300ms, FR-031a).
 
+## Phase 10 Polish Artifacts
+
+### Performance Benchmarking (Non-Blocking)
+
+Criterion benchmarks verify perf budgets per Constitution Principle IV (tracked, non-blocking):
+
+- **SC-002** (cold open): `benches/open_doc.rs` — measures core open + initial tree-sitter-md parse on a ~1 MiB / ~10k-line document; p95 ≤ 500 ms nominal, currently overbudget (large-file limitation documented; follow-up: debounce advisory highlight)
+- **SC-003** (keystroke reparse): `benches/highlight.rs` — re-highlight one edited line in a large doc; p95 ≤ 50 ms nominal
+- **SC-004** (Quick Open search): `benches/quick_open.rs` — rank + stream a query over a 10k-entry index; p95 ≤ 100 ms warm (currently ~2.5 ms — 40× headroom)
+- **Results**: Published in Phase 10 retro; budgets are not CI gates but inform future optimization priorities
+
+### Bounded-Memory & Large-File Tests
+
+- `tests/large_file_memory.rs` — open a ~5 MB read-only note and verify bounded-memory usage (emend-core max FR-027a cap); isolates FS I/O via `tempfile`
+- `tests/weak_reference_cleanup.rs` — verify `OpenDocHandle` + `AutosaveController` deallocate on close/reload (NFR-005 leak test, no GUI automation)
+
+### Accessibility Identifiers (Phase 10)
+
+All major UI elements tagged with `accessibilityIdentifier` for VoiceOver support:
+
+- `editor.textView` — editor text view
+- `sidebar.outline` — workspace outline view
+- `quickOpen.searchField` — search input
+- `quickOpen.results` — results list
+- `quickOpen.result.<name>` — individual result rows
+- `infoSidebar.stats` — document stats display
+- `infoSidebar.outline` — clickable outline
+- `preview.webView` — preview render
+
+(No XCUITest target by design per Constitution VII; identifiers aid VoiceOver and keep the door open for future UI-test lanes outside CI)
+
+### Security Review Findings (Phase 10)
+
+- **Network entitlement**: `com.apple.security.network.client` added after review to support BYOM AI (Phase 8 US6). Privacy enforced in code: `summarize_document`/`test_ai_config` refuse before socket when key is blank (SC-008 / FR-035). Preview WebView still isolated: CSP `connect-src 'none'` + `nonPersistent` + nav-blocking delegate.
+- **ATS**: Doesn't apply to `reqwest` raw tokio + Security.framework TLS (not CFNetwork/URLSession); local BYOM `http://localhost` endpoints work without exception. Default-deny preserved.
+- **Result**: All findings documented and resolved; no open security gaps.
+
+---
+
 ## What Does NOT Belong Here
 
 - Directory structure → `STRUCTURE.md`
@@ -132,4 +172,4 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 
 ---
 
-*This document captures only what executes. Keep it focused on languages, frameworks, and dependencies. See CLAUDE.md for governance and `.sdd/memory/constitution.md` for Principles.*
+*This document captures only what executes. Keep it focused on languages, frameworks, and dependencies. See CLAUDE.md for governance and `.sdd/memory/constitution.md` for Principles. Phase 10 Polish final.*

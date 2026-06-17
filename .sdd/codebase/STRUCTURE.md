@@ -2,7 +2,7 @@
 
 > **Purpose**: Document directory layout, module boundaries, and where to add new code.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-19 (incremental: US7 typography & appearance settings)
+> **Last Updated**: 2026-06-18 (incremental: Phase 10 complete — US1–US7 with typography settings, final state)
 
 ## Directory Layout
 
@@ -72,7 +72,7 @@ emend/
 │       ├── Emend/                   # App sources
 │       │   ├── EmendApp.swift       # @main entry point
 │       │   ├── Shell/
-│       │   │   └── MainWindow.swift # **Four-pane layout (US6)** + **Settings menu (US7)**: sidebar | editor | preview | info. ⌘P button, Export PDF, Typography Settings
+│       │   │   └── MainWindow.swift # **Four-pane layout (US6+)**: sidebar | editor | preview | info. ⌘P button, Export PDF, **Typography Settings menu (US7)**
 │       │   ├── Platform/
 │       │   │   ├── SecurityScopedBookmarks.swift
 │       │   │   ├── FsObserver.swift # FS event → @MainActor callback bridge
@@ -98,7 +98,7 @@ emend/
 │       │   │   ├── **AIConfig.swift**        # **AIConfigStore: base URL, model, timeout config (persisted); test_ai_config button**
 │       │   │   ├── **AISettingsView.swift**  # **Modal for AI config input**
 │       │   │   └── **SummaryView.swift**     # **Streaming summary display + SummaryModel**
-│       │   ├── **Settings/**                 # **Typography & appearance settings (US7)**
+│       │   ├── **Settings/**                 # **Typography & appearance settings (US7 · T124)**
 │       │   │   ├── **Typography.swift**      # **Helper: Swift enum wrapping FFI TypographySettings**
 │       │   │   ├── **TypographyModel.swift** # **@MainActor: owns core SettingsHandle, persists to UserDefaults, replays on launch**
 │       │   │   └── **TypographySettingsView.swift** # **SwiftUI settings sheet: sliders + font picker + Reset (US7 · T124)**
@@ -254,7 +254,7 @@ emend/
 | Directory | Purpose | Key Components |
 |---|---|---|
 | `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Shell/` | Window and pane structure | `MainWindow: View` (**four-pane layout US6**: sidebar \| editor \| preview \| info); ⌘P shortcut button (US3); Export PDF button (US4); **Settings menu (US7)** |
+| `Shell/` | Window and pane structure | `MainWindow: View` (**four-pane layout US6+**: sidebar \| editor \| preview \| info); ⌘P shortcut button (US3); Export PDF button (US4); **Settings menu (US7)** |
 | `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift`, **`KeychainStore.swift` (US6)** |
 | `Sidebar/` | Workspace outline + navigation | `WorkspaceModel` (@MainActor), `WorkspaceOutlineView` (NSViewRepresentable over NSOutlineView), `WorkspaceNode` (outline item), `OutlineDragDrop`, `FolderIconPicker` |
 | `Tabs/` | Open-document management | `TabModel` (@MainActor), `TabBarView` (tab bar UI) |
@@ -740,7 +740,7 @@ use emend_core::settings::{TypographySettings, TypographyStore};  // **US7 · T1
 // In emend-ffi, import core
 use emend_core::fs;
 use emend_core::error::EmendError;
-use emend_core::search::{quick_open, Cancel};  // US3 · T074
+use emend_core::search::{quick_open, Cancel};  // US3 · T073
 use emend_core::parse::preview;              // US4 · T084
 use emend_core::parse::code_highlight;       // US4 · T084
 use emend_core::parse::embed;                // US5 · T097

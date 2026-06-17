@@ -202,7 +202,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T090 [GIT] Commit: preview WebView, scroll sync, PDF export
 - [x] T091 [US4] [test] `app/Emend/EmendTests/PreviewExportTests.swift`: render sample doc, export, assert multi-page PDF (app-hosted/headless, not XCUITest — same rationale as other flows; the `EmendUITests` target doesn't exist by design)
 - [x] T092 [US4] Run `/sdd:map incremental`; review `retro/P6.md` → CLAUDE.md; [GIT] commit
-- [ ] T093 [GIT] Push; PR "US4: preview + PDF"; verify CI green; report PR ready status
+- [x] T093 [GIT] Push; PR "US4: preview + PDF"; verify CI green; report PR ready status
 
 **Checkpoint**: Preview + PDF export work.
 
@@ -226,7 +226,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T103 [GIT] Commit: wiki-link autocomplete, checkboxes, embeds, image drop
 - [x] T104 [US5] [test] `app/Emend/EmendUITests/LinksFlowTests.swift`: autocomplete → click navigate → checkbox toggle
 - [x] T105 [US5] Run `/sdd:map incremental`; review `retro/P7.md` → CLAUDE.md; [GIT] commit
-- [ ] T106 [GIT] Push; PR "US5: links & embeds"; verify CI green; report PR ready status
+- [x] T106 [GIT] Push; PR "US5: links & embeds"; verify CI green; report PR ready status
 
 **Checkpoint**: Linking, embeds, tasks, and image drop work.
 
@@ -252,7 +252,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T118 [GIT] Commit: info sidebar, AI settings (Keychain), summary UI
 - [x] T119 [US6] [test] `app/Emend/EmendTests/KeychainStoreTests.swift` (headless) + `app/Emend/EmendUITests/InfoSidebarTests.swift`
 - [x] T120 [US6] Run `/sdd:map incremental`; review `retro/P8.md` → CLAUDE.md; [GIT] commit
-- [ ] T121 [GIT] Push; PR "US6: info sidebar + AI"; verify CI green; report PR ready status
+- [x] T121 [GIT] Push; PR "US6: info sidebar + AI"; verify CI green; report PR ready status
 
 **Checkpoint**: Document insight + BYOM AI summary work; privacy preserved.
 
@@ -271,7 +271,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T126 [GIT] Commit: typography settings (core + UI)
 - [x] T127 [US7] [test] `app/Emend/EmendUITests/TypographyTests.swift`: change font → editor + preview reflect
 - [x] T128 [US7] Run `/sdd:map incremental`; review `retro/P9.md` → CLAUDE.md; [GIT] commit
-- [ ] T129 [GIT] Push; PR "US7: typography"; verify CI green; report PR ready status
+- [x] T129 [GIT] Push; PR "US7: typography"; verify CI green; report PR ready status
 
 **Checkpoint**: All seven user stories independently functional.
 
@@ -281,17 +281,17 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Purpose**: Quality, performance, and verification across stories.
 
-- [ ] T130 Create `retro/P10.md`; [GIT] commit
-- [ ] T131 [P] Run all perf benches + Swift `measure` tests; record results vs budgets (SC-002/003/004) in `specs/001-markdown-editor/perf-report.md`; review regressions (tracked, non-blocking per Principle IV) (use devs:rust-dev agent)
-- [ ] T132 [P] Verify bounded memory (NFR-005): closing a tab releases the document buffer — add `app/Emend/EmendTests/MemoryReleaseTests.swift`
-- [ ] T133 [P] Large-file handling (FR-027a): max-size read-only fallback test in `crates/emend-core/tests/large_file.rs` (use devs:rust-dev agent)
-- [ ] T134 [P] Add accessibility identifiers across editor/sidebar/quick-open for XCUITest stability
-- [ ] T135 Security review pass against Principles II/III: audit every outbound call, key handling, and atomic-write path; document in `specs/001-markdown-editor/security-review.md`
-- [ ] T136 [P] Run `quickstart.md` validation end-to-end; fix any drift
-- [ ] T137 [GIT] Commit: performance report, memory/large-file tests, a11y ids, security review
-- [ ] T138 Generate `CHANGELOG.md` from Conventional Commits (DS-007)
-- [ ] T139 Run final `/sdd:map incremental`; review `retro/P10.md` → CLAUDE.md (conservative); [GIT] commit
-- [ ] T140 [GIT] Push; PR "Polish & cross-cutting"; verify CI green; report PR ready status
+- [x] T130 Create `retro/P10.md`; [GIT] commit
+- [x] T131 [P] Run all perf benches + Swift `measure` tests; record results vs budgets (SC-002/003/004) in `specs/001-markdown-editor/perf-report.md`; review regressions (tracked, non-blocking per Principle IV) (use devs:rust-dev agent)
+- [x] T132 [P] Verify bounded memory (NFR-005): closing a tab releases the document buffer — add `app/Emend/EmendTests/MemoryReleaseTests.swift`
+- [x] T133 [P] Large-file handling (FR-027a): max-size graceful-refusal (refuse-with-clear-message) test in `crates/emend-core/tests/large_file.rs` (use devs:rust-dev agent)
+- [x] T134 [P] Add accessibility identifiers across editor/sidebar/quick-open for XCUITest stability
+- [x] T135 Security review pass against Principles II/III: audit every outbound call, key handling, and atomic-write path; document in `specs/001-markdown-editor/security-review.md`
+- [x] T136 [P] Run `quickstart.md` validation end-to-end; fix any drift
+- [x] T137 [GIT] Commit: performance report, memory/large-file tests, a11y ids, security review
+- [x] T138 Generate `CHANGELOG.md` from Conventional Commits (DS-007)
+- [x] T139 Run final `/sdd:map incremental`; review `retro/P10.md` → CLAUDE.md (conservative); [GIT] commit
+- [x] T140 [GIT] Push; PR "Polish & cross-cutting"; verify CI green; report PR ready status
 
 ---
 

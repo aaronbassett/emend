@@ -40,6 +40,8 @@ struct WorkspaceOutlineView: NSViewRepresentable {
 
         outline.registerForDraggedTypes([workspaceNodePasteboardType])
         outline.setDraggingSourceOperationMask([.move], forLocal: true)
+        // Stable identifier for UI automation (T134).
+        outline.setAccessibilityIdentifier("sidebar.outline")
 
         context.coordinator.attach(outline)
 

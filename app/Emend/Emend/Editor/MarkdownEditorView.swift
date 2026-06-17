@@ -110,6 +110,10 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+        // Stable accessibility identifier (T134): aids VoiceOver and leaves the door
+        // open for a future signed UI-test lane. There is no XCUITest target by
+        // design (Constitution VII), so nothing in CI consumes this today.
+        textView.setAccessibilityIdentifier("editor.textView")
         return textView
     }
 }

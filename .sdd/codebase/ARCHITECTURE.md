@@ -2,17 +2,17 @@
 
 > **Purpose**: Document system design, patterns, component relationships, and data flow.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-18 (incremental: US6 info sidebar + BYOM AI summary)
+> **Last Updated**: 2026-06-18 (incremental: Phase 10 complete — US1–US7 with typography settings, final state)
 
 ## Architecture Overview
 
 Emend is a **hybrid Rust+Swift native macOS Markdown editor** with a cleanly separated boundary:
 
-- **Rust core** (`crates/emend-core`) houses ALL business logic: file I/O, document parsing, preview rendering (comrak + syntect), file watching, indexing, search, link/task/embed resolution, attachments, BYOM AI client (pure SSE parser + request building + secret redaction), and per-document stats/outline for the info sidebar. The core is **toolchain-free** — it has no FFI dependency and is fully testable with `cargo test` in isolation.
+- **Rust core** (`crates/emend-core`) houses ALL business logic: file I/O, document parsing, preview rendering (comrak + syntect), file watching, indexing, search, link/task/embed resolution, attachments, BYOM AI client (pure SSE parser + request building + secret redaction), per-document stats/outline for the info sidebar, and **global typography settings with validation & clamping (US7)**. The core is **toolchain-free** — it has no FFI dependency and is fully testable with `cargo test` in isolation.
 - **UniFFI shim** (`crates/emend-ffi`) provides a thin boundary layer that exports the core's capabilities to Swift and manages async infrastructure (tokio runtime, cancellation tokens). The FFI is the **only place reqwest lives** — the core stays tokio/reqwest-free.
-- **Swift/SwiftUI app** (`app/Emend`) wraps the core in a native macOS UI with a four-pane layout: sidebar (workspace/favorites), tabbed editor (with per-document state, US5 link/task UI), live preview pane (US4, with inline embeds US5), a ⌘P Quick Open palette (US3), and an info sidebar (US6, with stats/outline/AI summary).
+- **Swift/SwiftUI app** (`app/Emend`) wraps the core in a native macOS UI with a **four-pane layout (US6+)**: sidebar (workspace/favorites), tabbed editor (with per-document state, US5 link/task UI), live preview pane (US4, with inline embeds US5), and an info sidebar (US6, with stats/outline/AI summary). **Typography is applied live (US7)**: the editor's font/paragraph style and the preview's CSS both respond to typography changes.
 
-The boundary is **synchronous on the hot path** (per-keystroke edits) and **asynchronous only for AI and search** (with cancellable Rust-owned handles). Preview rendering is debounced off the keystroke path and runs off-main-thread. AI summary streams token-by-token to a foreign sink. This design allows the core to stay independent and testable while the UI safely dispatches background work.
+The boundary is **synchronous on the hot path** (per-keystroke edits) and **asynchronous only for AI and search** (with cancellable Rust-owned handles). Preview rendering is debounced off the keystroke path and runs off-main-thread. AI summary streams token-by-token to a foreign sink. **Typography changes propagate live**: the core holds clamped settings; Swift reads back the clamped result and applies NSFont + paragraph styles to the editor, injects CSS to the preview, and ensures PDF exports match.
 
 ## Architecture Pattern
 
@@ -25,14 +25,15 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 | **UTF-16 boundary contract** | All text ranges crossing the FFI boundary are UTF-16 code units, mapping 1:1 to `NSRange` |
 | **Swift owns text buffer** | Canonical text storage lives in NSTextStorage; Rust maintains a shadow ropey rope for structural queries |
 | **Core owns preview HTML + theme CSS + embeds** | Core generates markdown→HTML via comrak, syntect code-highlight CSS, and resolves embeds against the workspace index; Swift embeds these offline into a bundled WKWebView template |
-| **Clear model/view separation (Swift UI)** | `@MainActor` state models (`WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, `InfoModel`) own Rust handles and drive views; views are pure presentations of model state |
+| **Clear model/view separation (Swift UI)** | `@MainActor` state models (`WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, `InfoModel`, **`TypographyModel`**) own Rust handles and drive views; views are pure presentations of model state |
 | **AI client is pure + FFI** (US6) | **Decision logic (SSE parser, request builder, redacting key) lives in core (tokio/reqwest-free); transport (HTTP, streaming) lives in FFI only** |
+| **Settings are core-owned, Swift-persisted** (US7) | **Global typography settings hold clamped values; Swift reads back clamped result from core, applies to editor/preview, persists to UserDefaults** |
 
 ## Core Components
 
 ### 1. Rust Core (`crates/emend-core`)
 
-**Purpose**: The engine — file I/O, document state, parsing, preview rendering, search, watching, link/task/embed/attachment resolution, pure AI client (SSE parser + request builder + secret redaction), and per-document stats/outline.
+**Purpose**: The engine — file I/O, document state, parsing, preview rendering, search, watching, link/task/embed/attachment resolution, pure AI client (SSE parser + request builder + secret redaction), per-document stats/outline, and **global typography settings with validation & clamping (US7)**.
 
 **Location**: `crates/emend-core/src/`
 
@@ -63,6 +64,10 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
   - **`check_input_size`** — Rejects oversized documents locally, before any network send (FR-036a).
   - **`build_request_body` / `build_auth_header`** — Pure request builders (headers/body as data, no network).
   - **`DEFAULT_SUMMARY_SYSTEM_PROMPT`** — Conventional system instruction, testable + consistent.
+- **`settings.rs`** (US7 · T124) — **Global typography settings with validation & clamping (FR-038/039/040, Constitution VII)**:
+  - **`TypographySettings`** — Struct: font family (String), size pt (8–48, clamped), line height multiplier (1–3, clamped), paragraph spacing (0–64, clamped). Immutable record; all modifications go through `TypographyStore`.
+  - **`TypographyStore`** — In-memory store: `new()` (defaults), `get()` (returns clamped), `set(new)` (clamps in-core, infallible). No persistence (Swift owns that).
+  - **Clamping logic** — `u32` size bounds to 8–48 pt (FR-038), `f32` line/paragraph to 1–3 / 0–64 (FR-039), non-finite → default (FR-040). Checked on every `set()` call.
 
 **Dependencies**: `thiserror`, `ropey`, `tempfile`, `tree-sitter`, `tree-sitter-md`, `comrak`, `syntect`, `nucleo`, `nucleo-matcher`, `notify`, `notify-debouncer-full`, `serde` (only for AI SSE deserialization, not for serialization).
 
@@ -76,13 +81,13 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 ### 2. FFI Shim (`crates/emend-ffi`)
 
-**Purpose**: Thin projection of the core to Swift. Manages async infrastructure, panic containment, error mapping, and **the only place reqwest lives**. Bridges the tokio runtime, cancellation, and foreign-trait sinks.
+**Purpose**: Thin projection of the core to Swift. Manages async infrastructure, panic containment, error mapping, and **the only place reqwest lives**. Bridges the tokio runtime, cancellation, and foreign-trait sinks. **Exports the `SettingsHandle` FFI projection for typography (US7)**.
 
 **Location**: `crates/emend-ffi/src/`
 
 **Modules**:
 
-- **`lib.rs`** — FFI entry points (e.g., `read_file_at`, `core_abi_version`, `preview_theme_css`). Each `#[uniffi::export]` function wraps a core function, handling errors. UniFFI's scaffolding automatically wraps calls in `catch_unwind`, so panics cannot unwind into Swift.
+- **`lib.rs`** — FFI entry points (e.g., `read_file_at`, `core_abi_version`, `preview_theme_css`; **`new_settings()` US7**). Each `#[uniffi::export]` function wraps a core function, handling errors. UniFFI's scaffolding automatically wraps calls in `catch_unwind`, so panics cannot unwind into Swift.
 - **`error.rs`** — `#[derive(uniffi::Error)]` projection of `EmendError`. Keeps the same `Display` wording so Swift sees the same error message. Exhaustive `From` impls ensure new core error variants force compilation errors here.
 - **`panic.rs`** — Custom panic hook (if needed for debugging; not yet implemented).
 - **`document.rs`** — FFI projection of document operations: `open_document`, `close_document`, `push_edit`, `highlight_spans`, `render_preview_html`, `flush`, `extract_links` (US5 · T097), **`stats`/`outline`** (US6 · T111). Wraps the core's `Document` in an `OpenDocHandle` (`Arc<Mutex<Document>>`).
@@ -101,6 +106,10 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
   - **`test_ai_config(cfg, api_key)`** (US6 · FR-037) — **Validates AI config with a minimal probe request; sync at boundary (blocks on tokio), transient key (never persisted).**
   - **`AiHandle.cancel()`** (US6) — **Idempotent cancel via `CancellationToken`; on_error(AiCancelled) terminal, no further tokens.**
   - **Per-chunk inactivity timeout (research §B5)**: `tokio::time::timeout` on each `stream.next()` — NOT a whole-request deadline (which would fire mid-stream on slow models).
+- **`settings.rs`** (US7 · T124) — **FFI projection of typography settings**:
+  - **`TypographySettings` (#[derive(uniffi::Record)])** — Value type: font family, size pt, line height, paragraph spacing (mirrors core's struct).
+  - **`SettingsHandle` (uniffi::Object)** — Opaque handle wrapping core's `TypographyStore`. Exported methods: `get_typography()` (returns clamped settings), `set_typography(new)` (clamps, infallible).
+  - **Exhaustive From/Into impls** — Convert between core and FFI types; new core variants force compilation errors.
 - **`handles.rs`** — Rust-owned infrastructure: the tokio runtime (lives here, not core), `CancellationToken` for async tasks, `SearchHit` value type, `LinkRef` and `LinkKind` value projections (US5 · T097), **`DocStats`, `OutlineItem`** (US6), and foreign-trait `DocObserver`/`SearchSink`/`AiSink` callbacks for streaming results.
 
 **Dependencies**: `emend-core`, `uniffi`, `thiserror`, `tokio`, `tokio-util`, `tempfile`, `reqwest` (ONLY in this crate), `futures-util`.
@@ -126,7 +135,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 ### 4. macOS App — Model & Orchestration Layer
 
-**Purpose**: Swift `@MainActor` state models that own the Rust handles and coordinate between workspace/tabs/editor/conflicts/search/preview/links/info/AI.
+**Purpose**: Swift `@MainActor` state models that own the Rust handles and coordinate between workspace/tabs/editor/conflicts/search/preview/links/info/settings/AI.
 
 **Location**: `app/Emend/Emend/`
 
@@ -140,11 +149,13 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`QuickOpenModel`** (`QuickOpen/QuickOpenModel.swift`) — `@MainActor ObservableObject` driving the ⌘P Quick Open palette (US3, FR-017/FR-018, NFR-002). Bridges the core's streaming, supersedable `quick_open_query` to SwiftUI: each keystroke starts a fresh query that supersedes the prior (the core cancels the previous in-flight `SearchHandle`; a monotonic `generation` additionally guards against a late batch from a superseded query landing after the next one began). Ranked `SearchHit`s stream in via a `SearchSink` bridge; arrow keys move the selection, Return opens the file.
 
-- **`PreviewModel`** (US4 · `Preview/PreviewModel.swift`) — `@MainActor ObservableObject` driving the live Markdown preview pane (FR-022/FR-025, research §B1). Debounced ~150 ms off the editor's `onDocEdit` signal; renders via the core's `renderPreviewHtml` (comrak + syntect, authoritative, with embeds resolved US5) off the main thread (NFR-001). Holds the syntect theme CSS (core-owned, fetched once). Publishes `html` (rendered body fragment) and `version` (bumped on each successful render even if HTML unchanged). When the preview pane becomes visible, schedules an immediate refresh; while hidden, renders are skipped to avoid wasted work. Calls `renderPreviewHtmlResolving` to inline embeds (US5).
+- **`PreviewModel`** (US4 · `Preview/PreviewModel.swift`) — `@MainActor ObservableObject` driving the live Markdown preview pane (FR-022/FR-025, research §B1). Debounced ~150 ms off the editor's `onDocEdit` signal; renders via the core's `renderPreviewHtml` (comrak + syntect, authoritative, with embeds resolved US5) off the main thread (NFR-001). Holds the syntect theme CSS (core-owned, fetched once). **Applies typography CSS (US7)**: reads from `TypographyModel` and injects live. Publishes `html` (rendered body fragment) and `version` (bumped on each successful render even if HTML unchanged). When the preview pane becomes visible, schedules an immediate refresh; while hidden, renders are skipped to avoid wasted work. Calls `renderPreviewHtmlResolving` to inline embeds (US5).
 
 - **`ScrollSync`** (US4 · `Preview/ScrollSync.swift`) — `@MainActor ObservableObject` managing bidirectional editor ↔ preview scroll sync (FR-024, research §C3). Both sides keyed on 1-based source line numbers: comrak annotates blocks with `data-line` (via core's scroll-sync anchors); bridge.js builds an anchor table. Editor→preview maps the top visible character's line and calls `__emendScrollToLine`; preview→editor receives the top line from the page. Per-side mute window (160 ms) guards the feedback loop to avoid echoing.
 
 - **`InfoModel`** (US6 · `Info/InfoModel.swift`) — **`@MainActor ObservableObject` powering the info sidebar (FR-029..031). Holds the active document's `DocStats` (word/char/reading-time/tasks) and `OutlineItem`s (headings). Stats are recomputed on each edit via `document.stats()`; outline is scanned on-demand. Publishes them for display + click→scroll integration.**
+
+- **`TypographyModel`** (US7 · `Settings/TypographyModel.swift`) — **`@MainActor ObservableObject` owning the core `SettingsHandle` (US7 · T124). Persists typography settings to UserDefaults and replays them on launch. Reads back clamped values from core on each `set()` call. @Published settings drive the editor (NSFont + paragraph styles), preview (CSS injection), and PDF export (theme CSS matching).**
 
 - **`AIConfigStore`** (US6 · `AI/AIConfig.swift`) — **Swift-side BYOM configuration holder: base URL, model, timeout, max input. Persisted to UserDefaults. No key is stored (it lives in Keychain only, read on each request).**
 
@@ -158,7 +169,7 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 **Major components**:
 
-- **`Shell/MainWindow.swift`** — Four-pane layout (US6): sidebar (workspace outline) | editor pane (tabbed) | preview pane (toggled via "Toggle Preview" toolbar button) | info sidebar (toggled via "Toggle Info" button). Wires up `WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, `ScrollSync`, and `InfoModel`. Includes Export PDF toolbar action (US4). Hidden ⌘P button registers the Quick Open shortcut window-wide. Settings menu launches AI config view.
+- **`Shell/MainWindow.swift`** — **Four-pane layout (US6+)**: sidebar (workspace outline) | editor pane (tabbed) | preview pane (toggled via "Toggle Preview" toolbar button) | info sidebar (toggled via "Toggle Info" button). **Settings menu (US7)** launches `TypographySettingsView`. Wires up `WorkspaceModel`, `TabModel`, `ConflictController`, `QuickOpenModel`, `PreviewModel`, `ScrollSync`, `InfoModel`, and **`TypographyModel`**. Includes Export PDF toolbar action (US4). Hidden ⌘P button registers the Quick Open shortcut window-wide.
 
 - **`Sidebar/WorkspaceOutlineView.swift`** — `NSViewRepresentable` wrapping `NSOutlineView` over the workspace's file tree. Lazy children loading, targeted reloadItem on external FS changes. Context menu + drag-drop.
 
@@ -166,11 +177,11 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`Tabs/TabBarView.swift`** — Tab bar rendering the open documents, active selection, close buttons.
 
-- **`Editor/MarkdownEditorView.swift`** — `NSViewRepresentable` wrapping a TextKit 2 `MarkdownTextView` + coordinate per-keystroke edits. Registers with `ScrollSync` for editor→preview scroll bridging. Wires up wiki-link UI (US5): native completion on `[[`, ⌘-click navigation via `EditorCoordinator`.
+- **`Editor/MarkdownEditorView.swift`** — `NSViewRepresentable` wrapping a TextKit 2 `MarkdownTextView` + coordinate per-keystroke edits. **Registers with `TypographyModel` (US7)** to apply font/paragraph changes. Registers with `ScrollSync` for editor→preview scroll bridging. Wires up wiki-link UI (US5): native completion on `[[`, ⌘-click navigation via `EditorCoordinator`.
 
 - **`Editor/MarkdownTextView.swift`** — `NSTextView` subclass that hooks list/formatting keys (Return, Tab, ⌘B/I/K/⇧T) to pure transforms. Integrates task-checkbox clicking (US5) and image drag-drop (US5).
 
-- **`Editor/EditorCoordinator.swift`** — `NSTextStorageDelegate` that extracts UTF-16 deltas, calls `pushEdit()` synchronously, then signals `PreviewModel.scheduleRefresh()` to debounce the preview render. US5: owns workspace handle for wiki-link resolution, click navigation, and link-autocomplete. US6: signals `InfoModel.refresh()` to recompute stats/outline.
+- **`Editor/EditorCoordinator.swift`** — `NSTextStorageDelegate` that extracts UTF-16 deltas, calls `pushEdit()` synchronously, then signals `PreviewModel.scheduleRefresh()` to debounce the preview render. **Signals `InfoModel.refresh()` (US6)** to recompute stats/outline. **Signals `TypographyModel` observers (US7)** to apply EditorFont transforms. US5: owns workspace handle for wiki-link resolution, click navigation, and link-autocomplete.
 
 - **`Editor/SyntaxAttributing.swift`** — Pure function mapping core `StyleSpan`s to AppKit display attributes (bold/italic/headings/code/quote inline, markers dimmed).
 
@@ -188,23 +199,69 @@ The boundary is **synchronous on the hot path** (per-keystroke edits) and **asyn
 
 - **`Info/InfoSidebarView.swift`** (US6 · FR-029..031) — **Toggleable right sidebar showing document stats (word/char/reading time/tasks) and an outline tree (clickable headings → scroll to line). Wired to `InfoModel`.**
 
+- **`Settings/TypographySettingsView.swift`** (US7 · T124) — **Sheet modal for typography settings: sliders for size/line-height/paragraph-spacing, font family picker, Reset button. Changes apply live to editor + preview + PDF export (all observe `TypographyModel`).**
+
 - **`AI/AISettingsView.swift`** (US6) — **Modal/sheet for configuring BYOM endpoint: base URL, model, timeout. Includes a test-config button (calls `test_ai_config`). No key field; key is from Keychain.**
 
 - **`AI/SummaryView.swift`** (US6) — **Streaming AI summary UI: shows full text as it arrives token-by-token. Cancel button, error display. Wired to `SummaryModel` via `AiSink` bridge (foreign trait).**
 
 - **`Platform/KeychainStore.swift`** (US6 · research §C5, NFR-006) — **Tiny Keychain wrapper for the BYOM API key. Save/read/delete/hasKey. Device-local, no iCloud. Read on each request, never persisted or logged Rust-side.**
 
-- **`Preview/PreviewWebView.swift`** (US4) — `NSViewRepresentable` wrapping an offline `WKWebView` that renders the core's comrak HTML with bundled, offline Mermaid + KaTeX and syntect-classed code. Privacy enforced in three layers: template CSP, nonPersistent data store, navigation delegate blocks remote origins. Receives scroll-to-line commands from `ScrollSync`.
+- **`Preview/PreviewWebView.swift`** (US4) — `NSViewRepresentable` wrapping an offline `WKWebView` that renders the core's comrak HTML with bundled, offline Mermaid + KaTeX and syntect-classed code. **Injects typography CSS (US7)** alongside the syntect theme CSS, so fonts/spacing match the editor. Privacy enforced in three layers: template CSP, nonPersistent data store, navigation delegate blocks remote origins. Receives scroll-to-line commands from `ScrollSync`.
 
 - **`Preview/ScrollSync.swift`** (US4) — Bidirectional scroll sync hub (described above under models).
 
-- **`Preview/PDFExport.swift`** (US4 · FR-026 / SC-010) — Off-screen PDF export via a dedicated `WKWebView` (off-screen, positioned far away so WebKit layouts and runs Mermaid's async JS) and `NSPrintOperation` with `@media print` rules. Uses `createPDF` intentionally avoided (Apple 700418/705138); `NSPrintOperation.runModal` gives multi-page fidelity.
+- **`Preview/PDFExport.swift`** (US4 · FR-026 / SC-010) — **Off-screen PDF export via a dedicated `WKWebView` (off-screen, positioned far away so WebKit layouts and runs Mermaid's async JS) and `NSPrintOperation` with `@media print` rules. **Uses `PreviewModel.css` for typography so PDF matches the preview.** Uses `createPDF` intentionally avoided (Apple 700418/705138); `NSPrintOperation.runModal` gives multi-page fidelity.**
 
 - **`QuickOpen/QuickOpenView.swift`** — The ⌘P overlay palette (US3). Renders the filtered `SearchHit` list with arrows/Return/Escape handlers, wired to `QuickOpenModel`.
 
 **Dependencies**: `EmendCore` SwiftPM package, AppKit (`NSTextView`, `NSOutlineView`, `WKWebView`, `NSPrintOperation`), SwiftUI, WebKit, Security (Keychain).
 
 ## Data Flow
+
+### Typography Settings (US7 · FR-038/039/040)
+
+```
+User opens Settings menu → TypographySettingsView
+    ↓
+User adjusts sliders: size, line height, paragraph spacing
+    ↓
+TypographySettingsView calls TypographyModel.apply(newSettings)
+    ↓
+TypographyModel calls core.setTypography(newSettings) via FFI
+    ↓
+Core (emend_core::settings::TypographyStore) clamps:
+  * Size 8–48 pt (FR-038)
+  * Line height 1–3 (FR-039)
+  * Paragraph spacing 0–64 (FR-040)
+  * Non-finite → defaults
+    ↓
+Core stores clamped values in TypographyStore
+    ↓
+TypographyModel reads back clamped result via core.getTypography()
+    ↓
+@Published settings updates with clamped values
+    ↓
+SIMULTANEOUSLY:
+  1. EditorCoordinator observes settings, applies NSFont + paragraph styles → editor reflows
+  2. PreviewModel observes settings, injects CSS (font-family, size, line-height, paragraph spacing) → preview re-renders
+  3. PDFExport uses PreviewModel.css (includes typography) → PDF matches preview
+    ↓
+TypographyModel persists to UserDefaults
+    ↓
+On app relaunch:
+  TypographyModel loads from UserDefaults
+    ↓
+  Calls core.setTypography(persisted) to restore clamped values
+    ↓
+  Editor + preview render with saved typography
+```
+
+**Why core-owned**: All validation/clamping logic lives in the core for consistency + testability (unit tests verify bounds).
+
+**Why Swift-persisted**: Core has no persistence layer yet; Swift UserDefaults is the source of truth for storage.
+
+**Why live apply**: All three display surfaces (editor font, preview CSS, PDF export CSS) observe `TypographyModel.@Published settings` and reflow immediately on change. No need for user to reopen documents.
 
 ### AI Summary (US6 · FR-032/036/036a)
 
@@ -298,7 +355,7 @@ EditorCoordinator schedules re-attribution via Task @MainActor
     ↓
 reattribute() calls `highlightSpans(viewport)` and applies SyntaxAttributing
     ↓
-EditorCoordinator signals PreviewModel.scheduleRefresh() + InfoModel.refresh()
+EditorCoordinator signals PreviewModel.scheduleRefresh() + **InfoModel.refresh()** + **TypographyModel observers**
     ↓
 AutosaveController.noteEdit() rearms debounce
 ```
@@ -307,7 +364,7 @@ AutosaveController.noteEdit() rearms debounce
 
 **Why off-main-thread**: The Rust core's incremental rope operations are fast enough for per-keystroke throughput but may call `tree-sitter` highlighting — keeping the main thread responsive requires the call not to block.
 
-### Preview Render with Embed Resolution (US4/US5)
+### Preview Render with Embed Resolution & Typography (US4/US5/US7)
 
 ```
 EditorCoordinator signals PreviewModel.scheduleRefresh()
@@ -330,9 +387,13 @@ Returns HTML with data-line scroll-sync anchors + syntect-classed code
     ↓
 Swift updates @Published html + version
     ↓
-PreviewWebView.updateNSView injects via window.__emendRender
+PreviewModel reads TypographyModel.settings + combines syntect CSS + typography CSS
+    ↓
+PreviewWebView.updateNSView injects via window.__emendRender (HTML + CSS)
     ↓
 Template.html re-renders the #emend-content fragment
+    ↓
+**Applied CSS includes typography**: font-family, size, line-height, paragraph-spacing
     ↓
 Mermaid/KaTeX resolve (client-side, bundled, offline)
     ↓
@@ -341,7 +402,7 @@ bridge.js builds anchor table, optionally syncs scroll from editor
 
 **Why debounced off-main-thread**: Preview rendering can be CPU-heavy on large docs with many code blocks. Debouncing coalesces rapid edits (typing bursts). Running off-main-thread keeps the UI responsive. Off-main-thread does **not** mean async — it's a `Task.detached`, which runs on a background GCD queue, not on the tokio runtime.
 
-**Why core-owned HTML + CSS + embeds**: The core's `renderPreviewHtmlResolving` is the authoritative engine (comrak CommonMark). Embeds are resolved by the workspace index (US5) with locks dropped before rendering to avoid deadlock. The theme CSS is syntect-owned, vendored alongside the compiled syntax/theme dump. Both are stable per session and bundled into the app so the WKWebView never needs external resources (privacy, speed, reliability).
+**Why core-owned HTML + CSS + embeds + typography**: The core's `renderPreviewHtmlResolving` is the authoritative engine (comrak CommonMark). Embeds are resolved by the workspace index (US5) with locks dropped before rendering to avoid deadlock. The theme CSS is syntect-owned, vendored alongside the compiled syntax/theme dump. **Typography settings are core-owned and clamped; Swift reads them back and injects into the preview CSS alongside the syntect theme.** Both are stable per session and bundled into the app so the WKWebView never needs external resources (privacy, speed, reliability).
 
 ### Scroll Sync (US4 · FR-024, research §C3)
 
@@ -537,7 +598,7 @@ PDFExport spins up OffscreenPrintHost with a far-off-screen NSWindow
     ↓
 3. Waits for page readiness + Mermaid async layout (KaTeX is sync)
     ↓
-4. Builds NSPrintInfo(savingTo:url) with @page rules from theme.css
+4. Builds NSPrintInfo(savingTo:url) with @page rules from **PreviewModel.css** (includes typography)
     ↓
 5. Calls NSPrintOperation(view:printInfo:).runModal (NOT run())
     ↓
@@ -551,6 +612,8 @@ User sees PDF in Finder
 **Why async + off-screen**: Export must not block the UI. Off-screen window (positioned far away, not hidden) ensures WebKit layouts and runs Mermaid's async JS rather than throttling an occluded view.
 
 **Why NSPrintOperation.runModal, not createPDF**: `createPDF` emits a single tall page and ignores pagination (Apple forums 700418/705138). `runModal` respects `@media print` / `@page` rules and generates true multi-page PDFs with pagination logic.
+
+**Why PreviewModel.css includes typography (US7)**: The CSS loaded by `PDFExport.export` contains both the syntect theme AND the typography settings (font-family, size, line-height, paragraph-spacing), so the exported PDF matches the live preview exactly.
 
 ### Formatting & List Commands
 
@@ -597,11 +660,11 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 | Layer | Responsibility | Can Access | Cannot Access |
 |-------|----------------|------------|---------------|
 | **Swift/SwiftUI app** | UI rendering, event handling, model state | `EmendCore` (boundary), AppKit, WebKit, Security | Directly access files, Rust data structures |
-| **Swift models** (@MainActor: WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync, InfoModel) | State ownership, Rust handle lifecycle, pub/sub via @Published | `EmendCore`, AppKit, app views, Keychain | Other models (one-way data flow via callbacks) |
+| **Swift models** (@MainActor: WorkspaceModel, TabModel, ConflictController, QuickOpenModel, PreviewModel, ScrollSync, InfoModel, **TypographyModel**) | State ownership, Rust handle lifecycle, pub/sub via @Published | `EmendCore`, AppKit, app views, Keychain | Other models (one-way data flow via callbacks) |
 | **Swift views** | Rendering, event capture, formatted display | App models (read-only via @State/@Environment), AppKit, WebKit | Rust handles directly, file I/O |
 | **Swift `EmendCore` wrapper** | Type adaptation, async stream wrapping | Generated UniFFI bindings | App state, UI models |
 | **UniFFI boundary** | Foreign-trait scaffolding, error projection, panic containment | `emend-core`, async runtime | Anything beyond scaffolding |
-| **Rust core (`emend-core`)** | All business logic: files, documents, parsing, preview, search, links/tasks/embeds/attachments, AI (pure), stats/outline, workspace, watching | Only standard library + workspace deps | FFI, async runtime, platform code |
+| **Rust core (`emend-core`)** | All business logic: files, documents, parsing, preview, search, links/tasks/embeds/attachments, AI (pure), stats/outline, **typography settings with clamping**, workspace, watching | Only standard library + workspace deps | FFI, async runtime, platform code |
 | **FFI shim (`emend-ffi`)** | Transport, streaming, cancellation orchestration, reqwest client | Core logic, tokio runtime | Platform/OS code (that's Swift's job) |
 
 **Dependency rules**:
@@ -610,6 +673,7 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 - FFI is a **thin projection only** — no business logic (except unavoidable streaming orchestration).
 - Swift models own Rust handles via `@MainActor` locks; views are read-only presentations.
 - **Keychain is Swift-only** — the key never crosses into Rust persistently; it is read transiently and passed as a `String` on each request.
+- **Typography is core-owned + clamped, Swift-persisted**: Core validates bounds; Swift stores to UserDefaults and observes for live apply.
 
 ## Dependency Rules
 
@@ -654,6 +718,28 @@ Next run loop, consumePendingReloads() calls NSOutlineView.reloadItem() on chang
 - `on_token(text: String)` — Each complete UTF-8 delta (buffered by core parser, never partial).
 - `on_done(full: String)` — Success terminal: all text received.
 - `on_error(err: FfiError)` — Failure/cancellation terminal: exactly one, no further tokens.
+
+### FFI Contract: Typography Settings (US7 · T124)
+
+**Location**: `specs/001-markdown-editor/contracts/ffi-interface.md` §8 (US7)
+
+| Export | Signature | Purpose |
+|--------|-----------|---------|
+| **`new_settings() -> Arc<SettingsHandle>`** (US7 · T124) | **Create a typography settings handle** | **Initialize on app launch** |
+| **`SettingsHandle.get_typography() -> TypographySettings`** (US7 · T124) | **Read current (clamped) typography settings** | **Swift reads back clamped values after set; initial state on launch** |
+| **`SettingsHandle.set_typography(settings: TypographySettings) -> Result<(), FfiError>`** (US7 · T124) | **Apply typography settings; clamps in-core (FR-038/039/040); infallible** | **User adjusts sliders in settings sheet; always succeeds** |
+
+**TypographySettings** (US7 · T124): Record struct with fields:
+- `font_family: String` — e.g., "Menlo", "Monaco", "SF Mono"
+- `size_pt: u32` — Clamped to 8–48 (FR-038)
+- `line_height: f32` — Clamped to 1.0–3.0 (FR-039)
+- `paragraph_spacing: f32` — Clamped to 0.0–64.0 (FR-040)
+
+**Clamping behavior** (all infallible):
+- If `size_pt` < 8 → 8; if > 48 → 48.
+- If `line_height` < 1.0 → 1.0; if > 3.0 → 3.0.
+- If `paragraph_spacing` < 0.0 → 0.0; if > 64.0 → 64.0.
+- If any field is non-finite → default (size 12, line 1.2, paragraph 0, font Menlo).
 
 ### FFI Contract: Preview Assets
 
@@ -738,6 +824,8 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 
 **AiHandle** (US6 · T112): Opaque handle for in-flight AI summary. Holds a `CancellationToken`; only exported method is `cancel()`.
 
+**TypographySettings** (US7 · T124): Record struct for clamped typography. Contains `font_family: String`, `size_pt: u32`, `line_height: f32`, `paragraph_spacing: f32`. All values guaranteed to be within bounds after `set_typography()`.
+
 ## State Management
 
 | State Type | Location | Pattern | Notes |
@@ -748,6 +836,7 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **Highlight cache (editor)** | Rust `parse::highlight` module (tree-sitter) | Incremental, invalidated by `push_edit`; advisory only | Computed on-demand by highlight queries |
 | **Preview HTML** | Swift `PreviewModel.html` (@Published) | Rendered via core's comrak (+ embeds resolved US5); debounced off-main-thread; version bumped on each render for injection | Injected into WKWebView template via `__emendRender` |
 | **Preview theme CSS** | Core-owned, vendored with syntect | Static, session-constant; fetched once on app startup | Injected into template alongside HTML |
+| **Typography settings (clamped)** (US7) | **Core `TypographyStore` (@Published via TypographyModel)** | **Core holds authoritative clamped values; Swift reads back and applies to editor/preview/PDF** | **Persisted to UserDefaults; replayed on launch via `set_typography()`** |
 | **Open-document list** | Swift `TabModel` (@Published tabs) | Registry of handles + text + autosave + UI state | Tracks which Rust `Document` handles are live |
 | **Workspace (locations, favorites, pins, icons)** | Swift `WorkspaceModel` (@Published roots, etc.) | Owns `WorkspaceHandle` (Rust Workspace); app state persisted to UserDefaults | Master registry of user-added locations |
 | **Search index** | Rust `Workspace.index` (behind `Arc<Mutex<>>`) | Fuzzy ranked entries maintained O(1)-ish on file ops | Shared: file ops lock+update, search queries lock briefly |
@@ -779,6 +868,9 @@ All variants use `String` fields only (UniFFI-compatible primitives).
 | **Two-engine split (Constitution)** | tree-sitter and comrak deliberately never unified; different perf/correctness profiles | `crates/emend-core/src/parse.rs` module docs |
 | **Preview authoritativeness** | comrak renders with CommonMark + GFM + extensions; editor highlight is advisory only | `crates/emend-core/src/parse/preview.rs` design doc |
 | **Per-keystroke editing** | Swift owns buffer; Rust maintains shadow; deltas via `push_edit()` | `EditorCoordinator`, `EmendCore` |
+| **Typography validation & clamping** (US7) | Core validates bounds on `set_typography()`; Swift reads back clamped value and applies to all surfaces | `crates/emend-core/src/settings.rs`, `TypographyModel.swift` |
+| **Typography persistence** (US7) | UserDefaults stores clamped settings; replayed on launch via `set_typography()` | `TypographyModel.swift` |
+| **Typography live apply** (US7) | Editor observes `@Published settings`, applies NSFont + paragraph styles; preview observes, injects CSS; PDF uses `PreviewModel.css` | `EditorCoordinator.swift`, `PreviewModel.swift`, `PDFExport.swift` |
 | **Debounced autosave** | `DispatchQueue` serial queue, 1.5 s idle + 5 s hard cap | `AutosaveController` |
 | **Debounced preview render** | Task-based debounce (~150 ms idle), coalesces rapid edits | `PreviewModel.scheduleRefresh()` |
 | **Off-main info refresh** (US6) | `Task.detached` for stats/outline scans (cheap, but off-main for large docs) | `InfoModel.refresh()` |
