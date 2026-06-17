@@ -139,12 +139,12 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T052 [US2] Create `retro/P4.md`; [GIT] commit
 - [ ] T053 [P] [US2] [test] `crates/emend-core/tests/watcher.rs`: `git mv` → one rename event; autosave → zero external-change callbacks; 10k-file burst is bounded (FR-006a/b) (use devs:rust-dev agent)
 - [ ] T054 [P] [US2] [test] `crates/emend-core/tests/workspace_ops.rs`: collision-safe create/rename/move; conflict truth table (clean→reload, dirty→preserve) (FR-004a/FR-006c) (use devs:rust-dev agent)
-- [ ] T055 [P] [US2] [test] `crates/emend-core/tests/index.rs`: single create/rename/delete updates the index in O(1), no full rescan (FR-017a) (use devs:rust-dev agent)
+- [x] T055 [P] [US2] [test] `crates/emend-core/tests/index.rs`: single create/rename/delete updates the index in O(1), no full rescan (FR-017a) (use devs:rust-dev agent)
 - [ ] T055a [P] [US2] [test] `crates/emend-core/tests/concurrency.rs`: parallel watcher events + user create/rename/delete + search queries leave the index/workspace model consistent — no corruption, no panic (NFR-004) (use devs:rust-dev agent)
 - [x] T055b [P] [US2] [test] `crates/emend-core/tests/path_identity.rs`: traversal terminates on a symlink cycle; the same physical file via two paths is indexed once; correct behavior on case-insensitive and case-sensitive volumes (NFR-007) (use devs:rust-dev agent)
 - [x] T056 [US2] Implement `crates/emend-core/src/workspace.rs`: locations add/remove/list, `list_children`, file ops, favorites/pins/icons/child-order store; canonicalize paths and bound traversal depth for symlink-cycle/case-fold safety (NFR-007) (use devs:rust-dev agent)
 - [ ] T057 [US2] Implement `crates/emend-core/src/watcher.rs`: notify + debouncer-full, self-write suppression registry, move detection, conflict state (research §B3) (use devs:rust-dev agent)
-- [ ] T058 [US2] Implement `crates/emend-core/src/index.rs`: nucleo haystack + pathMap + nameMap; incremental updates (research §B2) (use devs:rust-dev agent)
+- [x] T058 [US2] Implement `crates/emend-core/src/index.rs`: nucleo haystack + pathMap + nameMap; incremental updates (research §B2) (use devs:rust-dev agent)
 - [ ] T059 [US2] Export workspace/watcher/file-op functions + `DocObserver`/conflict APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [ ] T060 [GIT] Commit: core workspace, watcher, index + FFI
 - [ ] T061 [US2] Implement `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` (NSOutlineView, targeted `reloadItem`) with add-location via NSOpenPanel (research §C6)

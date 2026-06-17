@@ -36,6 +36,14 @@ ropey.workspace = true
 # (see root Cargo.toml). Pure Rust + a C grammar; no FFI/uniffi dependency.
 tree-sitter.workspace = true
 tree-sitter-md.workspace = true
+# Synchronous fuzzy-matching primitive for the workspace search index (research
+# §B2, FR-017/FR-017a). The LIGHTER sibling of `nucleo` — it has NO worker
+# threadpool and NO async, so the index stays a plain synchronous in-memory
+# structure and emend-core stays free of `tokio` (Constitution V). The streaming
+# Quick Open *driver* (T073) will use the full `nucleo` crate on top of this same
+# matching core; both pin a single unified `nucleo-matcher` version (see the root
+# catalog). Pure Rust, no FFI/uniffi dependency.
+nucleo-matcher.workspace = true
 
 [lints]
 workspace = true

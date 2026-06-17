@@ -38,6 +38,15 @@ pub mod parse;
 /// shaped to project onto the FFI contract's §1/§2 later.
 pub mod workspace;
 
+/// The workspace search index (US2): the derived, in-memory haystack behind
+/// Quick Open (fuzzy name/path ranking, FR-017) and wiki-link resolution (O(1)
+/// name map, FR-019a). Maintained **incrementally** — a single create/rename/
+/// move/delete touches only the affected entry, never a full rescan (FR-017a) —
+/// over a `nucleo-matcher` fuzzy core. Pure `std` + the matcher; **no FFI, no
+/// async** (Constitution V), shaped to project onto the FFI contract's §5
+/// `SearchHit` later.
+pub mod index;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;
