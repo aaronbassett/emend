@@ -214,7 +214,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: `[[` autocompletes with paths; click navigates; `![[embed]]` inlines in preview; checkbox click toggles `[ ]`/`[x]`.
 
-- [ ] T094 [US5] Create `retro/P7.md`; [GIT] commit
+- [x] T094 [US5] Create `retro/P7.md`; [GIT] commit
 - [ ] T095 [P] [US5] [test] `crates/emend-core/tests/links.rs`: deterministic resolution for duplicate basenames; rename leaves old links unresolved (FR-019a) (use devs:rust-dev agent)
 - [ ] T096 [P] [US5] [test] `crates/emend-core/tests/embeds.rs`: embed cycle terminates within max depth (FR-021a) (use devs:rust-dev agent)
 - [ ] T097 [US5] Implement `crates/emend-core/src/derived.rs` link/task extraction + `resolve_wikilink`/`wikilink_suggestions`/`toggle_task`; embed resolution with cycle/depth guard in `parse/embed.rs` (use devs:rust-dev agent)
