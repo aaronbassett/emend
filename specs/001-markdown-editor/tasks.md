@@ -154,7 +154,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T065 [US2] Wire live refresh + conflict UI (reload vs keep-mine) in `app/Emend/Emend/Editor/ConflictController.swift`
 - [x] T066 [GIT] Commit: sidebar, icons, drag-drop, tabs, live refresh
 - [x] T067 [US2] [test] `app/Emend/EmendUITests/WorkspaceFlowTests.swift`: add folder → tree → open tab → rename
-- [ ] T068 [US2] Run `/sdd:map incremental`; review `retro/P4.md` → CLAUDE.md; [GIT] commit
+- [x] T068 [US2] Run `/sdd:map incremental`; review `retro/P4.md` → CLAUDE.md; [GIT] commit
 - [ ] T069 [GIT] Push; PR "US2: workspace"; verify CI green; report PR ready status
 
 **Checkpoint**: US1 + US2 work independently — full editing + browsing.

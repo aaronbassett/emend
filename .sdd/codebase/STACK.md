@@ -33,6 +33,9 @@ These packages are actively wired into the runtime:
 | `tree-sitter-md` | 0.5 | Split Markdown grammar (block + inline); wrapped by `MarkdownParser`/`MarkdownTree` | **WIRED** — Phase 3 US1, `parse/highlight.rs` |
 | `tempfile` | 3.x | Atomic + durable writes via temp file + fsync + rename | **WIRED** — used in `fs::write_atomic` |
 | `thiserror` | 2.x | Error type Display/Error derive for `EmendError` enum | **WIRED** — core error handling |
+| `nucleo-matcher` | 0.3.1 | Synchronous fuzzy-matching primitive for workspace search index (lighter than full `nucleo`) | **WIRED** — Phase 4 US2, `index.rs` — in-memory haystack for Quick Open + wiki-link resolution |
+| `notify` | 8.2 | File system watching (macOS FSEvents recursive watcher) | **WIRED** — Phase 4 US2, `watcher.rs` — detects external note edits and changes |
+| `notify-debouncer-full` | 0.7 | Debounced file watcher with self-write suppression (FileIdCache) | **WIRED** — Phase 4 US2, `watcher.rs` — coalesces FS bursts, prevents echo-back on autosaves |
 
 ### Rust FFI Bridge (`emend-ffi`)
 
@@ -55,7 +58,7 @@ No external dependencies beyond the Rust-compiled `EmendCore.xcframework` (gener
 
 ### Swift (`app/Emend`)
 
-Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`) are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
+Pure AppKit/SwiftUI; no external package dependencies. All editor transforms (`SmartLists`, `FormattingCommands`, `SyntaxAttributing`, `AutosaveController`, `ConflictController`, workspace sidebar (`WorkspaceModel`, `WorkspaceOutlineView`), folder-icon picker, and tab model are hand-written pure Swift modules using only Foundation/AppKit/SwiftUI.
 
 ### Catalogued but Inert (Not Yet Wired)
 
@@ -65,9 +68,7 @@ These are pinned in the workspace `[workspace.dependencies]` but not yet importe
 |---------|---------|---------|-----------|------------|
 | `comrak` | 0.52 | CommonMark + GFM parsing for preview HTML (authoritative, whole-document engine; distinct from tree-sitter editor highlight) | Not imported | Phase 1 (US3 — preview) |
 | `syntect` | 5.3 | Code block syntax highlighting (20+ languages) | Not imported | Phase 1 (US7) |
-| `nucleo` | 0.5 | Fuzzy search / Quick Open ranking | Not imported | Phase 2 (US2 — location tree + Quick Open) |
-| `notify` | 8.2 | File watching (macOS native) | Not imported | Phase 0–1 (FR-006a — autoreload on external change) |
-| `notify-debouncer-full` | 0.7 | Debounced file watcher + self-write suppression | Not imported | Phase 0–1 (FR-006a) |
+| `nucleo` | 0.5 | Fuzzy search / Quick Open ranking (full worker-pool engine; current index uses lighter `nucleo-matcher` only) | Not imported | Phase 2 (US2 — streaming Quick Open driver T073) |
 | `reqwest` | 0.13 (json, stream) | HTTP client with SSE streaming for AI | Not imported | Phase 1 (FR-023 — AI client) |
 | `serde` / `serde_json` | 1.x | Serialization for AI request/response JSON | Not imported | Phase 1 (FR-023) |
 
@@ -108,6 +109,7 @@ Thin LTO for faster builds while retaining optimization; single codegen unit for
 - **Coordinates**: FFI boundary uses **UTF-16 code units** (not UTF-8 offsets) to map 1:1 onto `NSRange` and avoid per-keystroke transcoding (research §A2).
 - **Async wiring**: Rust tokio runtime lives in `emend-ffi`; `emend-core` stays purely synchronous for testability (Constitution V, research §B8).
 - **Highlight engine**: `tree-sitter-md` (split block + inline grammar) runs incrementally on the per-keystroke hot path (≤50 ms budget, SC-003); is advisory-only (does not affect preview rendering, which uses comrak separately).
+- **Workspace and file watching**: `emend-core` provides synchronous workspace metadata (`workspace.rs`) and incremental search index (`index.rs`); file watcher (`notify` + `notify-debouncer-full`) runs on a dedicated `std::thread`, not tokio (Constitution V).
 
 ## What Does NOT Belong Here
 

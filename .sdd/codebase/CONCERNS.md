@@ -2,11 +2,11 @@
 
 > **Purpose**: Document technical debt, known risks, bugs, fragile areas, and improvement opportunities.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (US2 Phase 4 complete; known runtime limitations added)
 
 ## Executive Summary
 
-Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US1 editor MVP begun for Phase 3). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks. **Phase 1 in scope**: most feature implementations (AI, preview, search, linking, export) remain to be coded. Key risks are around **unimplemented AI key handling** (designed but not coded), **unvalidated security-scoped-bookmark behavior in the signed app**, and **deferred performance regression testing** for incremental Markdown parsing on large documents. **US1 (Phase 3) status**: editor pane + smart lists drafted; whole-document re-attribution on each edit is a tracked perf concern (viewport windowing deferred).
+Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete as of 2026-06-17). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US2 (Phase 4)** added: location bookmarks + app state (favorites/pins/icons) persisted via UserDefaults; self-write suppression designed (stat-based identity); conflict truth table (clean→reload, dirty→preserve+flag). **Phase 1 in scope**: most feature implementations (AI, preview, search, linking, export) remain to be coded. Key risks are around **unimplemented AI key handling** (designed but not coded), **unvalidated security-scoped-bookmark behavior in the signed app**, **untested self-write suppression + conflict path**, and **deferred performance regression testing** for incremental Markdown parsing on large documents. **US1 (Phase 3) status**: editor pane + smart lists drafted; whole-document re-attribution on each edit is a tracked perf concern (viewport windowing deferred).
 
 ---
 
@@ -29,6 +29,18 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 | ID | Area | Description | Risk Level | Mitigation |
 |----|------|-------------|------------|------------|
 | **SEC-003** | `Cargo.toml` (workspace) + Phase 1 tasks | `reqwest`, `comrak`, `syntect`, `tree-sitter`, `notify`, `nucleo` are pinned but not yet imported into the code. This is by design (Phase 0 planning resolved technical unknowns; Phase 1 imports as needed), but introduces a small risk: if a crate is later imported without review, or if a new crate is added, the security implications may be overlooked. | **Medium** | Code review gate (Constitution VII / DS-006): every Phase 1 task that imports a new crate or adds a dependency MUST justify its inclusion and threat surface. Automated `cargo audit` runs pre-release. |
+
+### SEC-004: Self-Write Suppression + Rename Correlation Untested (US2 Runtime Debt)
+
+| ID | Area | Description | Risk Level | Mitigation |
+|----|------|-------------|------------|------------|
+| **SEC-004** | `crates/emend-core/src/watcher.rs` (self-write registry, rename correlation) | The conflict handling implementation is complete in the pure logic layer (`classify`, `SuppressionRegistry`, `resolve_conflict`), but integration testing is deferred. Self-write suppression relies on post-persist `(mtime,len)` stat identity matching. Rename correlation (single `RawChange::Renamed` from debouncer's `Both` mode) is untested. Risk: if stat identity is wrong or rename is not correlated correctly, file-change loops or loss of external edits could occur. | **High** | (1) Unit tests: feed synthetic `DebouncedEvent` vectors to `classify()` with known `SuppressionRegistry` state; assert correct `RawChange` output. (2) Integration test: rapid autosaves + external edits in overlapping time windows; assert no spurious reloads. (3) Verify rename correlation: delete+create on same file → single `Renamed` event, not two separate changes. (Phase 1 tasks T065, T066.) |
+
+### SEC-005: Live File-Watcher Integration Not Exercised by Headless Tests (US2 Runtime Debt)
+
+| ID | Area | Description | Risk Level | Mitigation |
+|----|------|-------------|------------|------------|
+| **SEC-005** | `crates/emend-core/src/watcher.rs` (FsWatcher real notify integration) + `app/Emend` (MainWindow conflict handling) | The pure conflict-detection core is unit-tested thoroughly. However, real OS filesystem events (FSEvents on macOS) are nondeterministic and directory-coalescing. The integration path—notify event → debouncer → pure classifier → UI conflict banner—is not exercised by the headless test suite. Risk: real OSEvents may exhibit timing/coalescing behavior not covered by synthetic tests. | **Medium** | (1) Manual UI testing: open a document, edit it, modify the file on disk from another tool (or via `touch -m`/`cp`), verify UI correctly detects conflict + offers reload/keep. (2) Stress test: rapid external edits (e.g., `yes "new line" >> file.md`) while buffer is dirty; verify no data loss. (3) Deferred: formal integration test harness (Phase 1 T067). |
 
 ---
 
@@ -55,11 +67,11 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 | **TD-003** | `crates/emend-core/src/parse.rs` (incremental highlight) + `app/Emend` (editor rendering) | US1 editor MVP re-parses the entire document on each keystroke (tree-sitter `parse()` from tree root, then filter by delta). This is functional but suboptimal for large documents. Research §B1 specifies **incremental reparse** (tree-sitter `parse(old_tree)` API), but full-sync implementation is deferred. | Latency on 100k+ line docs; noticeable stutter during sustained typing | Medium | Phase 3 Polish (T131) |
 | **Prevention** | Measure p95 latency on the 1 MB worst-case doc (TD-002 bench). If > 50 ms, implement incremental reparse: pass the previous tree to `parse()` and measure delta. Trade-off: incremental is ~10% slower per-call but amortizes over sustained edits. Decision is data-driven (measure first). | | | |
 
-### TD-004: Self-Write Suppression Logic Untested
+### TD-004: Self-Write Suppression Logic Untested (Duplicate of SEC-004)
 
 | ID | Area | Description | Impact | Effort | Status |
 |----|------|-------------|--------|--------|--------|
-| **TD-004** | `crates/emend-core/src/watcher.rs` (planned: self-write registry) | Autosave must **not** trigger an external-change reload (FR-006a). Design uses post-persist `(mtime,len)` tuple matching + ~300 ms window, but the implementation is deferred and untested. Risk: file-change loop (save triggers reload, user edits, save triggers reload…) if stat identity is wrong. | Data loss, UX regression, potential infinite loop | Medium | Phase 1 (T066) |
+| **TD-004** | `crates/emend-core/src/watcher.rs` (SuppressionRegistry) | Autosave must **not** trigger an external-change reload (FR-006a). Design uses post-persist `(mtime,len)` tuple matching + ~300 ms window, but integration testing is deferred. Risk: file-change loop (save triggers reload, user edits, save triggers reload…) if stat identity is wrong. | Data loss, UX regression, potential infinite loop | Medium | Phase 1 (T066) |
 | **Prevention** | Unit test: (1) save a file, stat it, feed `(mtime,len)` to registry; (2) manually trigger FSEvents with matching `(mtime,len)` → verify event suppressed; (3) trigger with different `(mtime,len)` → verify not suppressed. Integration test: rapid autosaves + external edits in the same window → no spurious reloads. | | | |
 
 ### TD-005: Watcher Coalescing Behavior on Bulk Operations Untested
@@ -75,6 +87,45 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 |----|------|-------------|--------|--------|--------|
 | **TD-006** | `crates/emend-core/src/fs.rs::read_tolerant` | To satisfy FR-003a, reads accept UTF-8 BOM, CRLF, and lossy UTF-8 decoding. On round-trip (read → edit → write), the original encoding is lost: BOM is stripped, CRLF is **preserved** (not normalized), invalid UTF-8 is replaced with U+FFFD. Files written by tools with specific encodings may degrade slightly on first save. | Subtle data change on first save after opening; user confusion if encoding was intentional | Low | Post-v1 |
 | **Prevention** | Document the normalization behavior in settings ("Encoding" section). Consider a future "preserve encoding" flag if users request it. CRLF preservation is intentional (research §B4). | | | |
+
+---
+
+## US2 Phase 4 Known Runtime Limitations
+
+The following are **by design** — deferred to Phase 1 or later, but documented here as runtime constraints that affect the correctness of the live-file-refresh path:
+
+### RUNTIME-001: AppState Duplication (Favorites/Pins/Icons)
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-001** | `app/Emend/Emend/Sidebar/WorkspaceModel.swift` (lines 33–37) + `crates/emend-core/src/workspace.rs` | The data-model specifies app state (favorites, pins, custom folder icons) as **core-owned persistence**. Implementation: Swift-side `AppState` struct in UserDefaults, replayed into Rust core on launch via setters. The core maintains in-memory maps but has no persistence layer. On each edit (toggle favorite, set icon), Swift updates both local state and Rust via setter calls. Risk: if Rust and Swift get out of sync, the UI displays stale state. | App state is duplicated; future refactor should centralize core-side. | Setter calls are synchronous and immediate; Swift is the authoritative display source. | By design (Phase 0 / Phase 1 refactor) |
+| **Prevention** | Phase 1 task (future): implement a core-owned async persistence layer (`emend-core/src/appstate.rs`) backed by a lightweight JSON file (or Keychain for sensitive data). Rust → Swift callback on changes. Then remove Swift-side duplication. | | | |
+
+### RUNTIME-002: No FFI Getter for Folder Icon / isFavorite / isPinned
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-002** | `crates/emend-ffi/src/lib.rs` (FFI contract) + `app/Emend/Emend/Sidebar/WorkspaceModel.swift` | The FFI boundary exports setters (e.g., `set_folder_icon`, `set_favorite`) but **not getters**. Swift must independently track these values. On launch, Swift reads UserDefaults + replays state into Rust via setters. The core has the in-memory state, but Swift is the source of truth for display. | If Swift AppState is lost (e.g., corrupted UserDefaults), the UI falls back to defaults (no icons, no favorites), even though Rust has the data. | Synchronous replay on launch ensures state agreement. Swift is the authoritative display source for now. | By design (Phase 1 refactor) |
+| **Prevention** | Phase 1: add FFI getters (`get_favorites()`, `get_folder_icon()`, etc.) and use them on launch to rebuild Swift state. Unifies the source of truth. | | | |
+
+### RUNTIME-003: Conflict Banner Always Shown on Dirty External Change
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-003** | `crates/emend-core/src/watcher.rs::resolve_conflict()` + `app/Emend/Emend/Shell/MainWindow.swift` | When a file is dirty in the buffer and changes on disk, the conflict state becomes `DirtyExternalChanged` and the UI shows a reload/keep-mine banner. The core does **not** auto-reload a clean buffer (which would be silent); instead, it preserves user edits and waits for choice. This is correct behavior and prevents data loss, but it can be UX-heavy if external edits are frequent (e.g., auto-formatter running in the background). | Users see the banner every time an external tool touches the file while they're editing. No silent auto-reload; requires explicit choice. | By design (Constitution Principle III: never lose user data). Phase 1 could add a preference ("auto-reload clean files"). | Correct behavior; not a bug |
+
+### RUNTIME-004: Self-Write Suppression Uses Stat Identity (May Miss Matches)
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-004** | `crates/emend-core/src/watcher.rs::SuppressionRegistry` | Self-write suppression compares `(mtime_ns, len)` stat tuples. On some filesystems or with rapid successive writes, `mtime` granularity may be coarse (e.g., 1 second on some volumes). If Swift writes → Rust stats → records identity, then immediately writes again before `mtime` rolls forward, the second write might not be distinguished from external changes (both have same `mtime`). Double layer of protection (Rust registry + Swift time window) mitigates this, but test coverage is incomplete (see TD-004). | Edge case: very rapid successive autosaves might not suppress the second write's event. UI might briefly show an external-change banner even though it was our own save. | (1) Rust + Swift time windows provide defense-in-depth. (2) Full integration test on Phase 1 (T066). | Design is sound; testing deferred |
+
+### RUNTIME-005: Moving Folder Doesn't Re-Path Descendants' AppState
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-005** | `crates/emend-core/src/workspace.rs::move_node()` + `app/Emend/Emend/Sidebar/WorkspaceModel.swift` | When a folder is moved, Rust updates the moved item's canonical path. However, app state entries (favorites, pins, icons) are keyed by absolute path string. Descendants of the moved folder **do not** have their app state paths updated. Example: `notes/old/a.md` is favorited; user moves `notes/old/` to `notes/new/`; the old path `notes/old/a.md` stays in favorites (stale), and `notes/new/a.md` is not recognized as the same file. | Descendants lose their app state (icons, pins) after parent folder is moved. | Users must manually re-favorite/re-pin after moving a folder. Or manually edit UserDefaults (developers only). | By design (Phase 0); Phase 1 refactor will address with centralized persistence |
+| **Prevention** | Phase 1: when `move_node` is called on a folder, walk its tree and update app state path keys for all descendants. Or unify persistence so paths are resolved canonically (eliminating string keys). | | | |
 
 ---
 
@@ -147,11 +198,13 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 | Area | Why Fragile | Precautions |
 |------|-------------|------------|
 | `crates/emend-core/src/fs.rs` | Atomic write choreography is critical to Constitution Principle III; any step (temp creation, sync, rename, dir sync) can silently break durability. | Every change must justify its atomicity contract and durability guarantees. Pair code review with `fs.rs` test inspection (lines 186–221). Always verify `File::sync_all()` is present after temp write and after directory rename. |
+| `crates/emend-core/src/watcher.rs` | Pure logic (classify, suppression registry, conflict resolution) is well-tested, but FsWatcher integration with real notify events is untested. Rename correlation (debouncer `Both` mode → single `Renamed` event) is critical to avoid duplicating moves. | Every change to event classification must have corresponding unit test with synthetic `DebouncedEvent` vectors. Rename correlation tests required before Phase 1 merge. Full integration test on real macOS FSEvents strongly recommended. |
 | `crates/emend-core/src/document.rs` | UTF-16 range handling with surrogate-pair validation; off-by-one errors risk silent text corruption. | Every edit operation must use `U16Range` branded newtype, never raw `u32`. Property-based tests required before Phase 3 merge (T035). Code review: check all `try_from` calls are present, never `as` casts for conversions. |
 | `crates/emend-ffi/src/error.rs` | FFI error projection is exhaustive (no wildcard match). Adding a variant to `EmendError` breaks this file at compile time until mirrored. | Always mirror variants exactly. Test that projection round-trips are lossless (`FfiError::from(core_err)` preserves all fields). |
 | `crates/emend-ffi/src/panic.rs` | Panic containment is the boundary between crashing FFI panics and recoverable Rust errors. `contain_panic` wraps spawned tasks; missing it → process abort. | Every `tokio::spawn` body must be wrapped. Add a comment: `// SAFETY: panic contained by contain_panic(…)` over the spawn call. Code review gate: verify no bare `spawn()` calls exist. |
 | `app/Emend/Platform/SecurityScopedBookmarks.swift` | Scope lifecycle (start/stop balance) is error-prone. Unbalanced calls leak scopes; missing calls allow unauthorized file access. | Code review: every `startAccessingSecurityScopedResource` must have a corresponding `stopAccessing…` in the same scope (defer or try-finally). Add a test that simulates an unbalanced call and asserts it fails gracefully. |
-| `app/Emend/Shell/MainWindow.swift` (US1 Phase 3) | Bookmark refresh, stale-file detection, and autosave coordination are intertwined. A bug in one cascades (file gets opened stale, edits trigger reload, data loss). | Review autosave + file-change integration together. Add integration tests: autosave while external tool modifies file → conflict resolution works, no data loss. |
+| `app/Emend/Sidebar/WorkspaceModel.swift` (US2 Phase 4) | Bookmark persistence, stale-bookmark refresh, scope lifecycle, and app-state duplication are intertwined. Unbalanced scope calls or losing UserDefaults state could break file access or lose favorites. | Code review: verify all `startAccessing` / `stopAccessing` calls are balanced. Verify bookmark persistence is replayed correctly on launch (test with simulator state wipe). Verify app-state setters are called synchronously after toggling favorites/pins. |
+| `app/Emend/Shell/MainWindow.swift` (US1 Phase 3) | Autosave coordination + conflict detection + external file monitoring create a complex state machine. A bug cascades: stale file opened → edits trigger reload → potential data loss. | Review autosave + file-change integration together. Add integration tests: autosave while external tool modifies file → conflict resolution works, no data loss. Test plan from TD-004 / SEC-004. |
 | `crates/emend-core/src/parse.rs` (Phase 1 T072) | tree-sitter incremental reparse and comrak HTML generation are two separate engines. A mismatch in Markdown interpretation could render one way in editor, another in preview. | Keep parity tests: parse the same doc in both engines, render to strings, assert visually equivalent. Don't unify the engines (Constitution principle); maintain two tests. |
 
 ---
@@ -165,7 +218,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | Phase 1 (T110) | Implement `crates/emend-core/tests/ai_privacy.rs`: verify no network when AI unconfigured, key never in logs | High | T110 | Deferred |
 | Phase 1 (T112) | Implement `crates/emend-core/src/ai.rs`: reqwest SSE, redacting key, timeout, max-input guard | High | T112 | Deferred |
 | Phase 1 (T083) | Implement `crates/emend-core/tests/preview_offline.rs`: WKWebView zero network access | High | T083 | Deferred |
-| Phase 1 (T065–T067) | Implement `crates/emend-core/src/watcher.rs`: file watching, debounce, self-write suppression | High | T065–T067 | Deferred |
+| Phase 1 (T065–T067) | Implement `crates/emend-core/src/watcher.rs` integration tests: file watching, debounce, self-write suppression, rename correlation, conflict handling | High | T065–T067 | Logic complete; integration tests deferred |
 | Phase 1 (T072–T073) | Implement `crates/emend-core/src/parse.rs`: tree-sitter + comrak integration | High | T072–T073 | Deferred |
 | Phase 1 (T074–T076) | Implement `crates/emend-core/src/index.rs`: Quick Open, wiki-link resolution | High | T074–T076 | Deferred |
 | Phase 3 (T035) | Wire Swift editor (keystroke deltas) → Rust core (push_edit) with UTF-16 ranges | High | T035 | In progress (US1) |
@@ -198,11 +251,14 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 
 | Area | Current State | Desired State | Benefit | Effort |
 |------|---------------|---------------|---------|--------|
+| **AppState persistence** | Swift-side UserDefaults duplication | Core-owned async persistence layer (emend-core/src/appstate.rs) | Single source of truth; Phase 1 refactor | Medium |
+| **FFI getters** | No getters for favorites/pins/icons | Expose `get_favorites()`, `get_folder_icon()`, etc. | Support full launch replay from core; Phase 1 refactor | Low |
 | **Dependency pinning** | Versions in `Cargo.toml` workspace; no lock file | Add `Cargo.lock` to the repo; pin transitive deps (TD-009) | Reproducible builds; easier bisection; easier `cargo update` reviews | Low |
 | **Performance observability** | Benches + measure tests only | Add `tracing` + `os_signpost` for runtime instrumentation | Diagnose field slowdowns without rebuilds | Low |
 | **Error consistency** | Errors are structured but formatting is ad-hoc | Centralize error message formatting; consider structured error codes (e.g., EMEND-001) | Better logging / user docs | Low |
-| **Test coverage for watcher** | Panic containment + atomic writes tested; watcher logic deferred | Add unit/integration tests for file-change coalescing, self-write suppression, rename correlation (TD-004, TD-005) | Confidence in production file handling | Medium |
+| **Test coverage for watcher** | Pure logic tested; real OSEvents untested | Add integration tests for file-change coalescing, self-write suppression, rename correlation (TD-004, TD-005, SEC-004) | Confidence in production file handling | Medium |
 | **Incremental parse benchmark** | Manual performance measurement only | Criterion bench in CI with baseline tracking | Detect perf regressions before merge (TD-002) | Medium |
+| **Move-folder re-pathing** | App state paths not updated when folder moved | Walk descendants and update app-state paths on move | Favorites/pins/icons persist after folder move (RUNTIME-005) | Low |
 
 ---
 
@@ -213,6 +269,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Dependency audits** | No automated `cargo audit` in CI | Could ship with known CVEs | Pre-release gate |
 | **Build reproducibility** | No lock file; transitive deps not pinned (TD-009) | Nondeterministic builds across machines | Phase 1 |
 | **Performance regression detection** | Benches exist but aren't tracked over time (no baseline comparison) | Slow builds/edits merge without notice | Phase 3 Polish (T138) |
+| **Integration test coverage** | Watcher, conflict, bookmark lifecycle untested with real macOS events | Hard to debug file-handling bugs in field | Phase 1 (T065–T067) |
 | **Error telemetry** | App records errors locally but doesn't report them (by design—offline-first) | Hard to detect widespread bugs in field | Post-v1 (intentional design) |
 
 ---
@@ -222,8 +279,8 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | Level | Definition | Response Time | Examples |
 |-------|------------|----------------|----------|
 | **Critical** | Production impact, security breach, data loss | Immediate (block merge) | Panic in FFI, atomic write bug, key leak |
-| **High** | Degraded functionality, security risk, test gap for security features | Before Phase 1 merge | SEC-001, SEC-002, SEC-003, TD-001, TD-002 |
-| **Medium** | Developer experience, correctness edge case, performance concern | During Phase in progress | TD-003 (perf), TD-004–TD-005 (testing gaps) |
+| **High** | Degraded functionality, security risk, test gap for security features | Before Phase 1 merge | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, TD-001, TD-002, TD-004 |
+| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints) |
 | **Low** | Nice to have, cosmetic, post-v1 enhancement | Backlog | TD-011–TD-014, localization, observability |
 
 ---

@@ -54,6 +54,9 @@ Tests are **co-located with source code** in two forms:
      - `crates/emend-core/tests/document.rs` — UTF-16 boundary correctness (T018)
      - `crates/emend-core/tests/fs_atomic.rs` — File I/O atomicity (T011)
      - `crates/emend-core/tests/parse_incremental.rs` — Incremental parsing + highlight (T021)
+     - `crates/emend-core/tests/workspace_ops.rs` — Collision-safe file operations (T054, US2)
+     - `crates/emend-core/tests/watcher.rs` — Filesystem watching + conflict resolution (T057, US2)
+     - `crates/emend-core/tests/index.rs` — Incremental search index (T073, US2)
      - `crates/emend-ffi/tests/panic_containment.rs` — Panic capture across FFI (T015)
 
 #### Test Files
@@ -63,6 +66,11 @@ Tests are **co-located with source code** in two forms:
 | `crates/emend-core/tests/document.rs` | UTF-16↔char conversions, line indexing, edit splicing | Per-keystroke editor hot path correctness (research §A2/A3) |
 | `crates/emend-core/tests/fs_atomic.rs` | Atomic+durable writes, tolerance to BOM/CRLF | File I/O reliability (FR-009a, research §B4) |
 | `crates/emend-core/tests/parse_incremental.rs` | Tree-sitter incremental parsing, astral chars, edge cases | Highlight synthesis (T021, research §B1) |
+| `crates/emend-core/tests/workspace_ops.rs` | Collision-safe create/rename/move, `note 2.md` suffix scheme | Workspace file ops (T054, FR-004/FR-004a/FR-013a, US2) |
+| `crates/emend-core/tests/watcher.rs` | Debounced FSEvents, rename correlation, self-write suppression, conflict truth table | File watcher (T057/T065, FR-006a/FR-006b/FR-006c, US2) |
+| `crates/emend-core/tests/index.rs` | Incremental search index updates, fuzzy ranking, wiki-link lookup | Quick Open + link resolution (T073, FR-017/FR-017a/FR-019a, US2) |
+| `crates/emend-core/tests/path_identity.rs` | Path canonicalization, symlink handling, bounded traversal | Path safety (NFR-007, US2) |
+| `crates/emend-core/tests/concurrency.rs` | Workspace concurrent access, edit conflicts, multi-thread safety | Concurrent workspace ops (US2) |
 | `crates/emend-ffi/tests/panic_containment.rs` | Panics routed through `contain_panic` surface as `EmendError::Internal` | FFI boundary safety (NFR-003, research §B7) |
 
 #### Lint Exceptions in Tests
@@ -91,18 +99,19 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
 | `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
-#### Test Files
+#### Test Files (Comprehensive, US2 Phase 4)
 
-| Path | Purpose |
-|------|---------|
-| `swift/EmendCore/Tests/EmendCoreTests/EmendCoreTests.swift` | Core ABI version smoke test |
-| `swift/EmendCore/Tests/EmendCoreTests/StreamingTests.swift` | AsyncStream adapter correctness (`AiStreamAdapter`, `SearchStreamAdapter`) |
-| `app/Emend/EmendTests/EmendCoreLinkageTests.swift` | App links the local `EmendCore` package; core ABI is reachable |
-| `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmark → file I/O flow |
-| `app/Emend/EmendTests/SmartListsTests.swift` | Pure smart-list transforms: list continuation, empty-item termination, indentation preservation (T045, headless) |
-| `app/Emend/EmendTests/FormattingCommandsTests.swift` | Formatting transforms: bold, italic, code (T046, headless) |
-| `app/Emend/EmendTests/SyntaxAttributingTests.swift` | Syntax highlight attribute synthesis from tree-sitter (T047, headless) |
-| `app/Emend/EmendTests/EditorPersistenceTests.swift` | End-to-end persistence: `EditorCoordinator` + `AutosaveController` + disk round-trip (T049, headless integration) |
+| Path | Purpose | Test Type |
+|------|---------|-----------|
+| `swift/EmendCore/Tests/EmendCoreTests/EmendCoreTests.swift` | Core ABI version smoke test | Smoke |
+| `swift/EmendCore/Tests/EmendCoreTests/StreamingTests.swift` | AsyncStream adapter correctness (`AiStreamAdapter`, `SearchStreamAdapter`) | Unit |
+| `app/Emend/EmendTests/EmendCoreLinkageTests.swift` | App links the local `EmendCore` package; core ABI is reachable | Smoke |
+| `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmark → file I/O flow | Unit integration |
+| `app/Emend/EmendTests/SmartListsTests.swift` | Pure smart-list transforms: list continuation, empty-item termination, indentation preservation (T045, headless) | Unit |
+| `app/Emend/EmendTests/FormattingCommandsTests.swift` | Formatting transforms: bold, italic, code (T046, headless) | Unit |
+| `app/Emend/EmendTests/SyntaxAttributingTests.swift` | Syntax highlight attribute synthesis from tree-sitter (T047, headless) | Unit |
+| `app/Emend/EmendTests/EditorPersistenceTests.swift` | End-to-end persistence: `EditorCoordinator` + `AutosaveController` + disk round-trip (T049, headless integration) | Integration |
+| `app/Emend/EmendTests/WorkspaceFlowTests.swift` | End-to-end workspace: add folder → list tree → open tab → move/rename (T067, US2 Phase 4) | Integration |
 
 #### Test Pattern (XCTest)
 
@@ -125,6 +134,23 @@ final class MyTests: XCTestCase {
 ```
 
 Tests are **headless** (no GUI launch) and run in the test bundle (`@testable` import). Classes annotated `@MainActor` or that touch AppKit state are marked with `@MainActor` for Swift 6 strict concurrency compliance.
+
+#### @MainActor Annotation for Headless Tests
+
+Tests that create or interact with `@MainActor` models (e.g., `WorkspaceModel`, `TabModel`) must themselves be annotated `@MainActor`:
+
+```swift
+@MainActor
+final class WorkspaceFlowTests: XCTestCase {
+    func testAddLocationListsFolderTree() throws {
+        let workspace = newWorkspace()
+        let location = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
+        // Test logic here — all code runs on main thread
+    }
+}
+```
+
+**Rationale**: These models own `@Published` properties and must update on the main thread. XCTest automatically runs each test on the main thread if the test class is marked `@MainActor`.
 
 #### Headless Integration Testing
 
@@ -156,6 +182,40 @@ final class EditorPersistenceTests: XCTestCase {
 ```
 
 This pattern exercises the full stack (Rust core → file I/O → disk → read-back) without launching the app GUI, making it feasible in CI with `CODE_SIGNING_ALLOWED=NO`.
+
+**Example: WorkspaceFlowTests (T067, US2)**
+```swift
+@MainActor
+final class WorkspaceFlowTests: XCTestCase {
+    func testAddLocationListsFolderTree() throws {
+        let dir = try seededDirectory(files: ["alpha.md", "beta.md"], folders: ["sub"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let workspace = newWorkspace()
+
+        let location = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
+        XCTAssertEqual(location.path, dir.path)
+        
+        let names = try Set(workspace.listChildren(folderPath: dir.path).map(\.name))
+        XCTAssertEqual(names, ["alpha.md", "beta.md", "sub"])
+    }
+    
+    func testModelListsFolderChildrenAndMovesFile() throws {
+        let dir = try seededDirectory(files: ["doc.md"], folders: ["archive"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let model = WorkspaceModel(workspace: newWorkspace(), defaults: isolatedDefaults())
+
+        let folder = WorkspaceNode(url: dir, name: dir.lastPathComponent, kind: .folder)
+        let childNames = Set(model.children(of: folder).map(\.name))
+        XCTAssertEqual(childNames, ["doc.md", "archive"])
+        
+        let archive = WorkspaceNode(...)
+        let moved = model.move(sourcePath: ..., into: archive)
+        XCTAssertTrue(moved)
+    }
+}
+```
+
+This tests the workspace handle directly + the SwiftUI model glue (`WorkspaceModel`, `TabModel`) without launching the GUI. The real `NSOutlineView` rendering, drag-drop gestures, and conflict runtime remain pragmatic-UI (manual verification per Constitution VII).
 
 ## Test Patterns
 
@@ -200,6 +260,43 @@ fn astral_utf16_len_differs_from_char_len() {
     assert_eq!(doc.len_utf16(), 4);  // 1 + 2 + 1
 }
 ```
+
+### Rust: Collision-Safe File Operations (T054, US2)
+
+Workspace file operations (`create_note`, `rename_node`, `move_node`) are tested for **collision safety** — they never overwrite existing files/folders and use a deterministic auto-suffix scheme:
+
+```rust
+/// Creating `note.md` when it already exists must NOT overwrite it; the new file
+/// is auto-suffixed to `note 2.md`, and the original is byte-for-byte intact.
+#[test]
+fn create_note_collision_auto_suffixes_and_preserves_original() {
+    let dir = tempdir().unwrap();
+    let ws = Workspace::new();
+
+    let first = ws.create_note(dir.path().to_str().unwrap(), "note.md").unwrap();
+    std::fs::write(&first, "ORIGINAL").unwrap();
+
+    let second = ws.create_note(dir.path().to_str().unwrap(), "note.md").unwrap();
+    
+    // First file is untouched
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ORIGINAL");
+    // Second has the auto-suffix
+    assert_eq!(name_of(&second), "note 2.md");
+}
+```
+
+**Naming scheme** (pinned as executable contract):
+- `note.md` taken → `note 2.md`, then `note 3.md`, …
+- `folder` taken → `folder 2`, then `folder 3`, …
+- Multi-dot `a.tar.gz` taken → `a 2.tar.gz` (split on last dot)
+
+### Rust: Watcher + Conflict Resolution (T057/T065, US2)
+
+File watcher integration tests verify:
+1. **Debouncing**: Bursts of FSEvents are coalesced into single updates
+2. **Rename correlation**: One rename event (not delete+create) via `FileIdCache`
+3. **Self-write suppression**: Our own atomic saves don't echo back
+4. **Conflict truth table**: Open file changes on disk → clean (reload) vs dirty (preserve+mark stale)
 
 ### Rust: Panic Containment Testing
 
@@ -295,11 +392,13 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 **Fixtures in Rust tests**:
 - Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests)
 - Temp files created by `tempfile` crate (atomic cleanup via `defer`)
+- Pre-seeded directory trees (`seededDirectory(files:folders:)`) for workspace tests
 
 **Fixtures in Swift tests**:
 - Simple test doubles (e.g., fake bookmarks, `makeTempDirectory()`) or hardcoded test data
 - Real `EmendCore` API calls and real `NSTextView` storage (no mocking)
 - Real file I/O via `FileManager` to verify end-to-end persistence
+- Real Rust workspace handle + SwiftUI model instances for integration tests
 
 ## Benchmarking
 
@@ -392,9 +491,13 @@ Full-feature tests exercising public APIs and boundaries:
 | CRLF tolerance | `crates/emend-core/tests/document.rs` | Mixed LF/CRLF in same document | Yes (cross-platform) |
 | Incremental parsing | `crates/emend-core/tests/parse_incremental.rs` | Tree-sitter incremental updates, edge cases | Yes (highlight synthesis) |
 | File atomicity | `crates/emend-core/tests/fs_atomic.rs` | Writes via temp+fsync+rename are atomic | Yes (FR-009a autosave) |
+| Collision safety | `crates/emend-core/tests/workspace_ops.rs` | Create/rename/move never overwrite; `note 2.md` suffix scheme | Yes (FR-004/FR-004a, US2) |
+| Watcher + conflict resolution | `crates/emend-core/tests/watcher.rs` | Debounce, rename correlation, self-write suppression, truth table | Yes (FR-006a/FR-006b/FR-006c, US2) |
+| Search index | `crates/emend-core/tests/index.rs` | Incremental index, fuzzy ranking, wiki-link O(1) lookup | Yes (FR-017/FR-017a/FR-019a, US2) |
 | Panic containment | `crates/emend-ffi/tests/panic_containment.rs` | Panics in async tasks surface as `EmendError::Internal` | Yes (NFR-003) |
 | Bookmark resolution | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmarks resolve to files | Yes (FR-004) |
 | Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
+| Workspace flow | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | Add folder → tree → open tab → move/rename (T067, US2) | Yes (workspace UX) |
 
 ## CI Integration
 
@@ -464,16 +567,19 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 - ✅ Error paths are tested (timeout, cancellation, oversized input)
 - ✅ Panic containment is verified across FFI
 - ✅ Incremental parsing edge cases are covered (T021)
+- ✅ Collision-safe file operations are guaranteed (T054, US2)
+- ✅ Watcher + conflict resolution deterministically tested (T057/T065, US2)
+- ✅ Incremental search index verified (T073, US2)
 
 ### Pragmatic UI Testing
 
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
 - ✅ Pure transform tests (headless, isolated unit tests for editor behavior)
-- ✅ Critical-path integration tests (persistence, bookmark resolution)
+- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow)
 - ⏳ Full-app behavior tests deferred until features land (Phase 2+)
 
-**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit.
+**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, and the live-refresh runtime remain manual-verification (Constitution VII).
 
 ### Benchmark Philosophy
 

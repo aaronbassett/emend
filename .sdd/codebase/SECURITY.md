@@ -2,11 +2,11 @@
 
 > **Purpose**: Document authentication, authorization, security controls, and vulnerability status.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (US2 Phase 4 complete)
 
 ## Overview
 
-Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III.
+Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US2 Phase 4 (complete)**: workspace model persists location bookmarks and app state (favorites/pins/icons) via UserDefaults; path identity enforced via canonicalization; live-refresh + conflict handling implemented.
 
 ---
 
@@ -27,11 +27,75 @@ The app uses **security-scoped bookmarks** to persist access to user-selected fo
 
 | Aspect | Implementation | Location |
 |--------|-----------------|----------|
-| **Lifecycle** | `NSOpenPanel` → `bookmarkData(options:.withSecurityScope)` → persist → resolve on launch | `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift` |
-| **Scope management** | `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` (balanced per scope) | `SecurityScopedBookmarks.swift` |
-| **Rust-Swift handshake** | Swift opens the scope; Rust file IO (`read_file_at`, `write_atomic`, `notify` watcher) operates within scope | `crates/emend-ffi/src/lib.rs` (exports) |
+| **Lifecycle** | `NSOpenPanel` → `bookmarkData(options:.withSecurityScope)` → persist in UserDefaults → resolve on launch | `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift` |
+| **Scope management** | `startAccessingSecurityScopedResource()` / `stopAccessingSecurityScopedResource()` (balanced per scope, held for session) | `SecurityScopedBookmarks.swift` (lines 54–60) + `WorkspaceModel.swift` (lines 136–138) |
+| **Rust-Swift handshake** | Swift opens the scope at location registration; Rust file IO (`read_file_at`, `write_atomic`, `notify` watcher) operates within scope | `crates/emend-ffi/src/lib.rs` (exports) |
+| **Stale bookmark refresh** | Transparently re-creates stale bookmarks on resolution; refreshed data persisted back to UserDefaults | `SecurityScopedBookmarks.resolve()` (lines 32–48) |
 | **Validation** | Security-scoped behavior verified in the signed app; tests use plain bookmarks (test process is unsandboxed) | `app/Emend/EmendTests/BookmarkResolutionTests.swift` |
 | **Scope lifecycle tests** | Plain bookmarks (no `.withSecurityScope`) parameterized into `resolve()` / `makeBookmark()`; stale-bookmark refresh tested | `app/Emend/EmendTests/BookmarkResolutionTests.swift` |
+
+### Path Identity (NFR-007: Symlink Cycles & Case Folding)
+
+Rust enforces canonical path identity in the workspace layer to prevent symlink-cycle attacks and ensure the same physical file has one identity:
+
+| Mechanism | Implementation | Location |
+|-----------|---|---|
+| **Canonicalization** | Every path resolved via `std::fs::canonicalize()` (resolves symlinks, `..`, and normalizes case on case-insensitive volumes) | `crates/emend-core/src/workspace.rs::canonical_id()` |
+| **Bounded traversal** | `Workspace::collect_files()` caps recursion depth + maintains canonical path set to detect already-visited directories (symlink cycle termination) | `crates/emend-core/src/workspace.rs` (lines 200+) |
+| **Same-file deduplication** | Identity is the symlink-resolved absolute path; `HashSet<PathBuf>` dedupes lexical aliases to same inode | `crates/emend-core/src/workspace.rs::canonical_id()` |
+| **Case-insensitive volumes** | Canonicalize respects host filesystem semantics; `Note.md` and `note.md` resolve to one inode on macOS (correct behavior) | `crates/emend-core/src/workspace.rs` (research §A3) |
+
+---
+
+## Workspace & Location Management
+
+### Location Addition & Persistence
+
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **User grants folder** | `NSOpenPanel` prompts user; Swift resolves to URL and creates security-scoped bookmark | `SecurityScopedBookmarks.promptForFolder()` (lines 64–73) |
+| **Rust registration** | Swift calls `add_location(folder_path, bookmark)` → Rust stores path (bookmark stays Swift-side) | `crates/emend-core/src/workspace.rs::add_location()` |
+| **Bookmark persistence** | Swift persists bookmarks in UserDefaults under `com.aaronbassett.Emend.locationBookmarks` | `WorkspaceModel.swift::persistBookmarks()` (lines ~330) |
+| **AppState persistence** | Favorites, pins, custom folder icons stored separately in UserDefaults under `com.aaronbassett.Emend.appState` | `WorkspaceModel.swift::AppState` (lines 33–37) + `saveAppState()` |
+| **Launch replay** | On app start, Swift restores bookmarks → resolves each → opens scope → passes path to Rust to rebuild workspace state | `WorkspaceModel.init()` (lines 60–66) |
+
+### Location Removal & Scope Cleanup
+
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **Scope release** | When location removed, Swift calls `stopAccessingSecurityScopedResource()` to balance scope open | `WorkspaceModel.removeLocation()` (lines 136–138) |
+| **Watcher cleanup** | Watcher handle for location stopped before scope release | `WorkspaceModel.removeLocation()` (line 133) |
+| **Bookmark deletion** | Bookmark removed from UserDefaults | `WorkspaceModel.removeLocation()` + `persistBookmarks()` |
+
+---
+
+## Live File-System Monitoring & Conflict Handling
+
+### Self-Write Suppression (FR-006a)
+
+Autosave must not trigger an external-change notification (race condition). Implementation uses **identity-based suppression** (not time-window):
+
+| Mechanism | Detail | Location |
+|-----------|--------|----------|
+| **Post-write stat** | After atomic `rename()`, Rust calls `FileIdentity::of_path()` to capture `(mtime_ns, len)` | `crates/emend-core/src/watcher.rs::FileIdentity` (lines 78–94) |
+| **Registry recording** | `SuppressionRegistry::record()` stores identity with ~300 ms TTL (injected `Instant` for testing) | `crates/emend-core/src/watcher.rs::SuppressionRegistry` (lines ~200+) |
+| **Event suppression** | When debounced modify event arrives, `take_if_self_write()` checks if path's **current identity** matches recorded one; if yes, suppress event (consume one record) | `crates/emend-core/src/watcher.rs::SuppressionRegistry::take_if_self_write()` |
+| **Third-party immunity** | A genuine third-party edit in the same time window changes `mtime`/`len`, so it is **not** suppressed (contract obligation 4) | `crates/emend-core/src/watcher.rs` (research §B3, line 38–49) |
+| **Double-layer protection** | Rust registry (stat-based) + Swift-side time window (authoritative) ensures autosave never echoes | `WorkspaceModel.swift` (async watcher task) + `crates/emend-core/src/watcher.rs` |
+
+### Conflict Resolution (FR-006c)
+
+When a file changes on disk while the buffer is dirty, the conflict model preserves unsaved work:
+
+| Scenario | Behavior | Code |
+|----------|----------|------|
+| **File changed on disk, buffer clean** | Silent reload (external version is authoritative) | `crates/emend-core/src/watcher.rs::resolve_conflict()` → `ConflictAction::Reload` |
+| **File changed on disk, buffer dirty** | Preserve local edits; flag document as externally-changed; UI offers Reload or Keep | `crates/emend-core/src/watcher.rs::resolve_conflict()` → `ConflictAction::PreserveLocal` |
+| **Self-write detected** | Suppress the event (no conflict, just our own save) | `SuppressionRegistry::take_if_self_write()` → `ConflictAction::Ignore` |
+
+**Location**: `crates/emend-core/src/watcher.rs` (lines 51–60 truth table)
+
+**Note on testing**: Self-write suppression + rename correlation are deferred to Phase 1 (T065–T066). Live-refresh path depends on real OS filesystem events (not exercised by headless tests) — needs manual UI verification in signed app.
 
 ---
 
@@ -104,7 +168,7 @@ All fallible operations return `Result<T, EmendError>`:
 | Variant | Meaning | UI Rendering |
 |---------|---------|---|
 | `NotFound { path }` | File/folder not found | User-friendly message with path |
-| `PermissionDenied { path }` | App lacks permission | Suggest re-grant folder access |
+| `PermissionDenied { path }` | App lacks permission (sandbox scope exhausted or bookmark stale) | Suggest re-grant folder access or refresh bookmark |
 | `IoFailure { path, detail }` | Disk I/O error | System error context |
 | `NameCollision { path }` | Name already exists | Prompt rename / disambiguate |
 | `NoteTooLarge { path, bytes, limit }` | Doc exceeds ~5 MB | Open read-only with notice |
@@ -126,7 +190,7 @@ All fallible operations return `Result<T, EmendError>`:
 
 | Data Type | Validation | Location | Status |
 |-----------|-----------|----------|--------|
-| **File paths** | Resolved within scope of security-scoped bookmark; no `..` traversal above location root | `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift` | ✅ Implemented |
+| **File paths** | Resolved within scope of security-scoped bookmark; no `..` traversal above location root; symlink cycles detected via canonicalization + bounded recursion | `app/Emend/Emend/Platform/SecurityScopedBookmarks.swift` + `crates/emend-core/src/workspace.rs` | ✅ Implemented |
 | **File content (read)** | Tolerant reads: UTF-8 BOM stripped, CRLF preserved, invalid UTF-8 decoded lossily (not rejected) | `crates/emend-core/src/fs.rs` | ✅ Implemented |
 | **File content (write)** | Atomic write via tempfile; no special escaping (Markdown is plain text) | `crates/emend-core/src/fs.rs::write_atomic` | ✅ Implemented |
 | **Markdown syntax (edit)** | tree-sitter (editor) handles malformed input gracefully (incremental reparse, no crash) | `crates/emend-core/src/parse.rs` | Phase 1 T072 |
@@ -245,6 +309,9 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | **Tolerant reads** | BOM/CRLF/invalid UTF-8 read correctly | `crates/emend-core/src/fs.rs` (unit tests, lines 186–221) | ✅ Implemented |
 | **Bookmark resolution** | Add folder, quit, relaunch → reads + watches without new prompt | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | ✅ Implemented (plain bookmarks, unsandboxed test) |
 | **Bookmark scope lifecycle** | Stale bookmark re-creation, balanced start/stop calls | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | ✅ Implemented |
+| **Path identity** | Symlink cycles terminated; same file via two paths has one identity | `crates/emend-core/tests/workspace_ops.rs` (Phase 1 T048) | Headless test ready; manual signed-app test pending |
+| **Self-write suppression** | Post-persist `(mtime,len)` suppresses matching event; third-party edits not suppressed | `crates/emend-core/tests/watcher_unit.rs` (planned Phase 1 T066) | Deferred to Phase 1 |
+| **Conflict resolution** | Clean buffer + external change → reload; dirty buffer + external change → preserve local + flag | `crates/emend-core/tests/watcher_unit.rs` (planned Phase 1 T067) | Deferred to Phase 1 |
 | **AI privacy (offline)** | No network with AI unconfigured | `crates/emend-core/tests/ai_privacy.rs` | Phase 1 T110 |
 | **AI key redaction** | Logs never contain key substring | Code review + test capture | Phase 1 T112 |
 | **Preview offline** | WKWebView makes zero network calls | Airplane mode test + CSP verification | Phase 1 T083 |
@@ -255,8 +322,10 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 
 1. **AI features** (key redaction, privacy tests, timeout handling) are designed and specified but not yet implemented (Phase 1 tasks T110–T113).
 2. **Security-scoped-bookmark validation** is tested with plain (non-security-scoped) bookmarks in the test process (which is unsandboxed). Full sandbox behavior is validated only in the signed, notarized app.
-3. **Dependency vulnerability scanning** is not automated in CI; manual `cargo audit` checks recommended pre-release (tracked in TD-006).
-4. **Performance regression testing** for incremental parsing is deferred (tracked in TD-002).
+3. **Live-refresh path** (file watcher events, conflict handling) depends on real OS filesystem events (not exercised by headless tests) — needs manual UI verification in signed app.
+4. **Dependency vulnerability scanning** is not automated in CI; manual `cargo audit` checks recommended pre-release (tracked in TD-006).
+5. **Performance regression testing** for incremental parsing is deferred (tracked in TD-002).
+6. **Folder move re-pathing** for descendants' favorite/pin state is deferred (known limitation captured in CONCERNS.md).
 
 ---
 

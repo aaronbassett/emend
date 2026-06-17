@@ -15,7 +15,14 @@ emend/
 │   │   │   ├── lib.rs               # Module map + U16Range type
 │   │   │   ├── error.rs             # EmendError enum (error source of truth)
 │   │   │   ├── fs.rs                # Atomic writes + tolerant reads
-│   │   │   └── document.rs          # Shadow rope + UTF-16/line indices
+│   │   │   ├── document.rs          # Shadow rope + UTF-16/line indices
+│   │   │   ├── workspace.rs         # File-based workspace model (US2)
+│   │   │   ├── index.rs             # Incremental search index (US2)
+│   │   │   ├── watcher.rs           # File watching + conflict model (US2)
+│   │   │   ├── parse.rs             # tree-sitter + comrak parsing
+│   │   │   ├── parse/highlight.rs   # Incremental highlight (tree-sitter)
+│   │   │   ├── search.rs            # Fuzzy search (placeholder)
+│   │   │   └── ai.rs                # OpenAI-compatible client (placeholder)
 │   │   └── tests/                   # Integration tests (cargo test)
 │   │
 │   ├── emend-ffi/                   # UniFFI shim (thin projection of core)
@@ -24,6 +31,9 @@ emend/
 │   │       ├── lib.rs               # #[uniffi::export] entry points
 │   │       ├── error.rs             # FfiError projection of EmendError
 │   │       ├── panic.rs             # Panic containment hook
+│   │       ├── document.rs          # OpenDocHandle + document ops (T039)
+│   │       ├── workspace.rs         # WorkspaceHandle + file ops (T059)
+│   │       ├── watcher.rs           # WatchHandle + conflict model (T059)
 │   │       └── handles.rs           # Async runtime + cancellation tokens
 │   │
 │   └── emend-bench/                 # Criterion benchmarks
@@ -52,15 +62,26 @@ emend/
 │       │   ├── Shell/
 │       │   │   └── MainWindow.swift # Three-pane layout (US1+)
 │       │   ├── Platform/
-│       │   │   └── SecurityScopedBookmarks.swift
+│       │   │   ├── SecurityScopedBookmarks.swift
+│       │   │   └── FsObserver.swift # FS event → @MainActor callback bridge
+│       │   ├── Sidebar/
+│       │   │   ├── WorkspaceModel.swift      # @MainActor: workspace + index + bookmarks
+│       │   │   ├── WorkspaceOutlineView.swift # NSOutlineView over file tree
+│       │   │   ├── WorkspaceNode.swift       # Outline node (file/folder)
+│       │   │   ├── OutlineDragDrop.swift     # Drag-drop handlers
+│       │   │   └── FolderIconPicker.swift    # Icon picker UI
+│       │   ├── Tabs/
+│       │   │   ├── TabModel.swift            # @MainActor: open documents
+│       │   │   └── TabBarView.swift          # Tab bar UI
 │       │   ├── Editor/              # Editor pane (US1)
-│       │   │   ├── MarkdownEditorView.swift    # NSViewRepresentable over TextKit 2
-│       │   │   ├── MarkdownTextView.swift      # NSTextView subclass + list/format keys
-│       │   │   ├── EditorCoordinator.swift     # NSTextStorageDelegate + sync/re-attribute
-│       │   │   ├── SyntaxAttributing.swift     # Pure: spans → attributes
-│       │   │   ├── SmartLists.swift            # Pure: newline/renumber/indent/outdent
-│       │   │   ├── FormattingCommands.swift    # Pure: bold/italic/link/task
-│       │   │   └── AutosaveController.swift    # Debounced atomic flush
+│       │   │   ├── MarkdownEditorView.swift     # NSViewRepresentable over TextKit 2
+│       │   │   ├── MarkdownTextView.swift       # NSTextView subclass + list/format keys
+│       │   │   ├── EditorCoordinator.swift      # NSTextStorageDelegate + sync/re-attribute
+│       │   │   ├── SyntaxAttributing.swift      # Pure: spans → attributes
+│       │   │   ├── SmartLists.swift             # Pure: newline/renumber/indent/outdent
+│       │   │   ├── FormattingCommands.swift     # Pure: bold/italic/link/task
+│       │   │   ├── AutosaveController.swift     # Debounced atomic flush
+│       │   │   └── ConflictController.swift     # Conflict detection + resolution (US2)
 │       │   ├── Screens/             # Pane views (US2/US6+)
 │       │   ├── Models/              # SwiftUI state (US2/US6+)
 │       │   ├── Bindings/            # Rust↔Swift type adapters (US2+)
@@ -70,8 +91,11 @@ emend/
 │       │       └── Emend.entitlements
 │       └── EmendTests/              # App unit tests
 │           ├── BookmarkResolutionTests.swift
-│           ├── EditorTests.swift    # Editor pane + coordinator tests
-│           ├── SmartListsTests.swift # SmartLists pure transform tests
+│           ├── WorkspaceFlowTests.swift   # WorkspaceModel + outline tests
+│           ├── EditorPersistenceTests.swift # AutosaveController + disk I/O
+│           ├── SmartListsTests.swift      # Pure transform tests
+│           ├── SyntaxAttributingTests.swift
+│           ├── FormattingCommandsTests.swift
 │           └── EmendCoreLinkageTests.swift
 │
 ├── specs/                           # Specification documents
@@ -114,86 +138,111 @@ emend/
 
 ### `crates/emend-core/src/` — Rust Core Engine
 
-| Directory/File | Purpose | Naming Convention |
+| File | Purpose | Key Types/Functions |
 |---|---|---|
-| `lib.rs` | Module map, `U16Range` type, public exports | N/A |
-| `error.rs` | `EmendError` enum (error source of truth) | `Error` suffix for variants |
-| `fs.rs` | Atomic writes, tolerant reads, file I/O gateway | Function names: `write_atomic`, `read_tolerant` |
-| `document.rs` | Shadow rope, UTF-16/char/line indices | Public struct: `Document`, methods: `push_edit`, `line_at`, etc. |
-| `watcher/` (Phase 1) | File watching + self-write suppression | Module: `watcher`, functions: `watch_dir`, `start_watcher` |
-| `index/` (Phase 1) | Path/name indexing, quick-open ranking | Module: `index`, struct: `FileIndex` |
-| `parse/` (Phase 1) | tree-sitter highlight + comrak preview | Module: `parse`, functions: `highlight_range`, `preview_html` |
-| `search/` (Phase 1) | Fuzzy search + nucleo ranking | Module: `search`, struct: `FuzzySearcher` |
-| `ai/` (Phase 1) | OpenAI-compatible SSE streaming client | Module: `ai`, struct: `AiClient`, methods: `request_stream` |
-| `tests/` | Integration tests (run with `cargo test`) | File: `*.rs`, function: `#[test] fn ...` |
+| `lib.rs` | Module map, `U16Range` type, public exports | `U16Range`, re-exports all public modules |
+| `error.rs` | `EmendError` enum (error source of truth) | `EmendError` (exhaustive variants for UI rendering) |
+| `fs.rs` | Atomic writes, tolerant reads, file I/O gateway | `read_tolerant()`, `write_atomic()` |
+| `document.rs` | Shadow rope, UTF-16/char/line indices | `Document`, `Document::push_edit()`, `highlight_spans()` |
+| `workspace.rs` | File-based workspace model (US2) | `Workspace`, `Location`, `FsNode`, `free_name()` |
+| `index.rs` | Path/name indexing, quick-open ranking | `Index`, `SearchHit`, `Index::query()`, `Index::resolve_name()` |
+| `watcher.rs` | File watching + self-write suppression + conflict model | `FsWatcher`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
+| `parse.rs` | tree-sitter highlight + comrak preview | `Highlighter`, `preview_html()` |
+| `parse/highlight.rs` | Incremental tree-sitter highlighting | `highlight_range()` |
+| `search.rs` (placeholder) | Fuzzy search + nucleo ranking | (to be implemented) |
+| `ai.rs` (placeholder) | OpenAI-compatible SSE streaming client | (to be implemented) |
 
 **Naming conventions**:
 - **Modules**: snake_case (e.g., `document`, `error`, `fs`)
 - **Structs**: PascalCase (e.g., `Document`, `EmendError`, `U16Range`)
-- **Enums**: PascalCase (e.g., `EmendError`)
-- **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`)
-- **Constants**: UPPER_CASE (e.g., `UTF8_BOM`)
-- **Lifetimes/generics**: lowercase letter (e.g., `'a`, `T`)
+- **Enums**: PascalCase (e.g., `EmendError`, `ChangeEvent`, `ConflictState`)
+- **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`)
+- **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`)
 
 ### `crates/emend-ffi/src/` — FFI Projection
 
-| File | Purpose |
-|---|---|
-| `lib.rs` | `#[uniffi::export]` entry points; `uniffi::setup_scaffolding!()` |
-| `error.rs` | `#[derive(uniffi::Error)] FfiError` — mirror of `EmendError` |
-| `panic.rs` | Custom panic hook for debugging (if needed) |
-| `handles.rs` | tokio runtime (lives here, not core), `CancellationToken`, foreign-trait sinks |
+| File | Purpose | Key Types/Functions |
+|---|---|---|
+| `lib.rs` | `#[uniffi::export]` entry points; `uniffi::setup_scaffolding!()` | `read_file_at()`, `core_abi_version()` |
+| `error.rs` | `#[derive(uniffi::Error)] FfiError` — mirror of `EmendError` | `FfiError` (exhaustive From impls) |
+| `panic.rs` | Custom panic hook for debugging (if needed) | (reserved) |
+| `document.rs` | Document FFI ops: open, close, push_edit, highlight, flush | `OpenDocHandle`, `open_document()`, `push_edit()`, `highlight_spans()`, `flush()` |
+| `workspace.rs` | Workspace + index FFI ops: locations, file ops, search | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()` |
+| `watcher.rs` | Watcher FFI ops: start watching, track self-writes, resolve conflicts | `WatchHandle`, `ChangeEvent`, `ConflictState`, `ConflictChoice`, `start_watching()`, `record_self_write()`, `apply_conflict_choice()` |
+| `handles.rs` | tokio runtime, `CancellationToken`, foreign-trait sinks | `SearchHit`, `DocObserver`, `SearchSink`, `AiSink` foreign traits |
 
-**Rule**: Keep FFI free of business logic. If you are tempted to add logic here, move it to the core instead.
+**Rule**: Keep FFI free of business logic. If you're tempted to add logic here, move it to the core instead.
 
 ### `swift/EmendCore/Sources/` — Swift Package
 
-| Path | Purpose | Naming |
+| Path | Purpose | Key Types |
 |---|---|---|
 | `EmendCoreFFI/` | Generated UniFFI bindings (git-ignored) | Generated names (e.g., `emend_ffiFFI`) |
-| `EmendCore/EmendCore.swift` | Public module re-export | Module: `EmendCore`, enum: `EmendCore` |
-| `EmendCore/Streaming.swift` | Idiomatic Swift adapters (AsyncStream, etc.) | Class/struct: `PascalCase` |
-
-### `app/Emend/Emend/Editor/` — Live Editor Pane (US1)
-
-**Purpose**: Editor component with TextKit 2 backing, synchronous delta → core path, and pure formatting/list transforms.
-
-| File | Purpose | Key Classes/Structs |
-|---|---|---|
-| `MarkdownEditorView.swift` | NSViewRepresentable, builds TextKit 2 stack | `MarkdownEditorView` |
-| `MarkdownTextView.swift` | NSTextView subclass, intercepts list/format keys | `MarkdownTextView` |
-| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop | `EditorCoordinator` |
-| `SyntaxAttributing.swift` | Pure: spans → attributes | `SyntaxAttributing` (enum with static methods) |
-| `SmartLists.swift` | Pure transforms: newline/renumber/indent/outdent | `SmartLists`, `SmartLists.Edit` |
-| `FormattingCommands.swift` | Pure transforms: bold/italic/link/task | `FormattingCommands`, `FormattingCommands.Edit` |
-| `AutosaveController.swift` | Debounced flush on private queue | `AutosaveController` |
-
-**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → AutosaveController rearms.
-
-**Formatting & list commands** are **pure functions**: no access to editor state. They take `(text: NSString, selection: NSRange)` and return an `Edit`. This makes them unit-testable without a window (Constitution VII).
+| `EmendCore/EmendCore.swift` | Public module re-export | Module: `EmendCore` |
+| `EmendCore/Streaming.swift` | Idiomatic Swift adapters (AsyncStream, etc.) | (to be implemented as features land) |
 
 ### `app/Emend/Emend/` — macOS Xcode App
 
 **Source of truth**: `project.yml` (XcodeGen spec). The `.xcodeproj` is generated and git-ignored.
 
-| Directory | Purpose | Naming |
+| Directory | Purpose | Key Components |
 |---|---|---|
 | `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Shell/` | Window and pane structure | Views: `MainWindow`, `EditorPane`, `SidebarPane` |
-| `Platform/` | macOS/AppKit integration | Files: `FeatureName.swift` (e.g., `SecurityScopedBookmarks.swift`) |
-| `Editor/` | Live editor pane (US1) | Views + pure transforms (see above) |
-| `Screens/` (US2+) | Major feature screens | Views: `LocationTree`, `SearchResults`, `PreviewPane` |
-| `Models/` (US2+) | SwiftUI `@Observable` state | Classes: `PascalCase` + `Model` suffix (e.g., `DocumentModel`) |
-| `Bindings/` (US2+) | Rust↔Swift type adapters | Structs: `PascalCase` (e.g., `EmendDocument`, `HighlightToken`) |
-| `Services/` (US2+) | Core API wrappers | Classes: `PascalCase` + `Service` suffix (e.g., `EditorService`) |
-| `Resources/` | Assets, entitlements, vendored deps | Subfolders: `preview/` (Mermaid+KaTeX, bundled) |
-| `EmendTests/` | Unit tests | Files: `*Tests.swift` or `*Spec.swift` |
+| `Shell/` | Window and pane structure | `MainWindow: View` (three-pane layout) |
+| `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift` |
+| `Sidebar/` | Workspace outline + navigation | `WorkspaceModel` (@MainActor), `WorkspaceOutlineView` (NSViewRepresentable over NSOutlineView), `WorkspaceNode` (outline item), `OutlineDragDrop`, `FolderIconPicker` |
+| `Tabs/` | Open-document management | `TabModel` (@MainActor), `TabBarView` (tab bar UI) |
+| `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator`, `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController` |
+| `Screens/` (US2+) | Major feature screens | (to be implemented) |
+| `Models/` (US2+) | SwiftUI `@Observable` state | (to be implemented) |
+| `Bindings/` (US2+) | Rust↔Swift type adapters | (to be implemented) |
+| `Services/` (US2+) | Core API wrappers | (to be implemented) |
+| `Resources/` | Assets, entitlements, vendored deps | `preview/` (Mermaid+KaTeX, bundled) |
+| `EmendTests/` | Unit tests | `*Tests.swift` files |
 
 **Naming conventions**:
-- **Views**: PascalCase (e.g., `EditorPane`, `MainWindow`)
-- **Models**: PascalCase + `Model` suffix (e.g., `DocumentModel`, `AppModel`)
-- **Services**: PascalCase + `Service` suffix (e.g., `EditorService`)
-- **Bindings**: Struct names matching Rust counterpart (e.g., `Document` → `SwiftDocument` if needed)
+- **Views**: PascalCase (e.g., `MainWindow`, `EditorPane`, `WorkspaceOutlineView`)
+- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `DocumentModel`)
+- **Controllers**: PascalCase + `Controller` suffix (e.g., `ConflictController`, `AutosaveController`)
+- **Observers**: PascalCase + `Observer` suffix (e.g., `FsObserver`)
+
+### `app/Emend/Emend/Sidebar/` — Workspace Navigation (US2)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `WorkspaceModel.swift` | @MainActor: workspace state + bookmark lifecycle + watchers | `WorkspaceModel`, `AppState` (Codable for persistence) |
+| `WorkspaceOutlineView.swift` | NSViewRepresentable wrapping NSOutlineView | `WorkspaceOutlineView: NSViewRepresentable`, `OutlineViewCoordinator` |
+| `WorkspaceNode.swift` | Outline item representing file/folder/special group | `WorkspaceNode`, `NodeKind` (file, folder, favorites, etc.) |
+| `OutlineDragDrop.swift` | Drag-drop handlers for file operations | Drag-drop delegate methods |
+| `FolderIconPicker.swift` | UI for choosing custom folder icons | `FolderIconPicker: View` |
+
+**Data flow**: `WorkspaceModel` owns `WorkspaceHandle` (Rust workspace + index) → `WorkspaceOutlineView` renders hierarchy via NSOutlineView → children loaded lazily via `workspace.collect_files()` → external FS changes trigger targeted `reloadItem()` calls → drag-drop calls workspace file-op methods.
+
+### `app/Emend/Emend/Tabs/` — Open-Document Management (US1+)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `TabModel.swift` | @MainActor: open-document registry | `TabModel`, `TabModel.Tab: Identifiable` |
+| `TabBarView.swift` | Tab bar UI showing open files | `TabBarView: View` |
+
+**Data flow**: `TabModel` owns list of `Tab`s, each with `OpenDocHandle` + `AutosaveController` + initial text. `TabBarView` renders tabs. User clicks tab → `activeID` changes → `MainWindow` swaps editor view.
+
+### `app/Emend/Emend/Editor/` — Live Editor Pane (US1)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `MarkdownEditorView.swift` | NSViewRepresentable, builds TextKit 2 stack | `MarkdownEditorView: NSViewRepresentable` |
+| `MarkdownTextView.swift` | NSTextView subclass, intercepts list/format keys | `MarkdownTextView: NSTextView` |
+| `EditorCoordinator.swift` | NSTextStorageDelegate, per-keystroke loop | `EditorCoordinator: NSObject, NSTextStorageDelegate` |
+| `SyntaxAttributing.swift` | Pure: spans → attributes | `SyntaxAttributing` (enum with static methods) |
+| `SmartLists.swift` | Pure transforms: newline/renumber/indent/outdent | `SmartLists` (enum with static methods) |
+| `FormattingCommands.swift` | Pure transforms: bold/italic/link/task | `FormattingCommands` (enum with static methods) |
+| `AutosaveController.swift` | Debounced flush on private queue | `AutosaveController: NSObject` |
+| `ConflictController.swift` | Conflict detection + resolution (US2) | `ConflictController: @MainActor ObservableObject` |
+
+**Data flow**: User types → NSTextStorageDelegate fires → EditorCoordinator extracts UTF-16 delta → calls Rust `push_edit()` (sync) → schedules re-attribute → AutosaveController rearms.
+
+**Formatting & list commands** are **pure functions**: no access to editor state. They take `(text: NSString, selection: NSRange)` and return an `Edit`. This makes them unit-testable without a window (Constitution VII).
 
 ## Module Boundaries
 
@@ -201,23 +250,32 @@ emend/
 
 Each `crates/emend-core/src/*.rs` file is a self-contained module exposing a public API:
 
-```
+```rust
 // emend-core is a library crate
 emend_core::error::EmendError     // Public
 emend_core::fs::read_tolerant()   // Public
 emend_core::fs::write_atomic()    // Public
-emend_core::document::Document    // Public (Phase 1)
+emend_core::document::Document    // Public
+emend_core::workspace::Workspace  // Public
+emend_core::workspace::Location   // Public
+emend_core::index::Index          // Public
+emend_core::watcher::FsWatcher    // Public
 emend_core::U16Range              // Public (boundary type)
 ```
 
 ### FFI Exports
 
-Each `#[uniffi::export]` in `emend-ffi` wraps a core function:
+Each `#[uniffi::export]` in `emend-ffi` wraps a core function or type:
 
 ```rust
 #[uniffi::export]
 pub fn read_file_at(path: String) -> Result<String, FfiError> {
     emend_core::fs::read_tolerant(path).map_err(Into::into)
+}
+
+#[uniffi::export]
+pub fn new_workspace() -> Arc<WorkspaceHandle> {
+    Arc::new(WorkspaceHandle::new())
 }
 ```
 
@@ -233,9 +291,11 @@ The `EmendCore` package re-exports the generated FFI bindings:
 ```
 
 Consumers import it as:
+
 ```swift
 import EmendCore
-let version = EmendCore.abiVersion
+let version = EmendCore.abiVersion()
+let workspace = EmendCore.newWorkspace()
 ```
 
 ### App Layer
@@ -243,49 +303,52 @@ let version = EmendCore.abiVersion
 The app layers upon `EmendCore`:
 
 ```swift
-// app/Emend/Emend/Services/EditorService.swift
+// app/Emend/Emend/Sidebar/WorkspaceModel.swift
 import EmendCore
 
-class EditorService {
-    func readFile(path: String) async throws -> String {
-        return try EmendCore.readFileAt(path: path)
-    }
+@MainActor
+final class WorkspaceModel: ObservableObject {
+    let workspace: EmendCore.WorkspaceHandle
+    // ...
 }
 ```
+
+**One-way data flow**: Models own Rust handles and publish state → Views read model state (one-way binding via @Published, @State, @Environment).
 
 ## Where to Add New Code
 
 | If you're adding... | Put it in... | Example |
 |---------------------|--------------|---------|
-| **Core business logic** (file I/O, document ops, parsing, search) | `crates/emend-core/src/{module}.rs` | `fs::write_atomic`, `document::Document::push_edit`, `parse::highlight_range` |
-| **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/lib.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
-| **Async scaffolding** (tokio runtime, cancellation, sinks) | `crates/emend-ffi/src/handles.rs` | Extend `struct Handle`, add `pub async fn ...` |
+| **Core business logic** (file I/O, document ops, parsing, search) | `crates/emend-core/src/{module}.rs` | `fs::write_atomic`, `document::Document::push_edit`, `index::Index::query` |
+| **Core error variant** | `crates/emend-core/src/error.rs` (and mirror in `emend-ffi/src/error.rs`) | `#[error("...")] NewVariant { field: Type }` |
+| **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/{module}.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
+| **FFI value type projection** | `crates/emend-ffi/src/{module}.rs` (with exhaustive From impl) | `#[derive(uniffi::Record)] pub struct MyRecord { ... }` |
+| **Async scaffolding** (tokio runtime, cancellation, sinks) | `crates/emend-ffi/src/handles.rs` | Extend `struct CancellationHandle`, add foreign traits |
 | **Swift wrapper** (idiomatic adapters over UniFFI bindings) | `swift/EmendCore/Sources/EmendCore/*.swift` | `extension EmendCore`, `struct AsyncStreamAdapter` |
-| **Editor UI view** | `app/Emend/Emend/Editor/{FeatureName}.swift` | `struct EditorPane: View` (US1 complete) |
+| **App-level state model** | `app/Emend/Emend/{Feature}Model.swift` (e.g., Sidebar/WorkspaceModel.swift) | `@MainActor final class WorkspaceModel: ObservableObject` |
+| **App-level controller** | `app/Emend/Emend/Editor/{Feature}Controller.swift` | `@MainActor final class ConflictController: ObservableObject` |
+| **Editor UI view** | `app/Emend/Emend/Editor/{FeatureName}.swift` | `struct EditorPane: View` |
 | **Pure transform** (formatting, lists, etc.) | `app/Emend/Emend/Editor/SmartLists.swift` or `FormattingCommands.swift` | `static func indent(in:selection:) -> Edit?` |
-| **Autosave logic** | `app/Emend/Emend/Editor/AutosaveController.swift` | Extend existing controller |
-| **Syntax attributing** | `app/Emend/Emend/Editor/SyntaxAttributing.swift` | Add style class cases |
-| **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct LocationTree: View` (US2+) |
-| **App state model** | `app/Emend/Emend/Models/{Feature}Model.swift` | `@Observable class EditorModel` |
-| **App service** (wrapper over EmendCore) | `app/Emend/Emend/Services/{Feature}Service.swift` | `class EditorService` |
+| **Outline view** | `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` | `struct WorkspaceOutlineView: NSViewRepresentable` |
+| **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct SearchResultsPane: View` (US2+) |
+| **App service** (wrapper over EmendCore) | `app/Emend/Emend/Services/{Feature}Service.swift` | `class EditorService` (US2+) |
 | **App-level test** | `app/Emend/EmendTests/{Feature}Tests.swift` | `final class SmartListsTests` |
-| **Core-level test** | `crates/emend-core/tests/integration.rs` or `src/*.rs` | `#[test] fn ...` or module `#[cfg(test)]` |
+| **Core-level test** | `crates/emend-core/tests/integration.rs` or inline in `src/*.rs` | `#[test] fn ...` or module `#[cfg(test)]` |
 | **Benchmark** | `crates/emend-bench/benches/emend_bench.rs` | `fn criterion_benchmark()` (Criterion) |
-| **Error variant** | `crates/emend-core/src/error.rs` (and mirror in `emend-ffi/src/error.rs`) | `#[error("...")] NewVariant { field: Type }` |
 
 ## Import Paths & Visibility
 
 ### Core Imports
 
 ```rust
-// Inside emend-core, import from the core
+// Inside emend-core, import from crate root
 use crate::error::EmendError;
-use crate::document::Document;
+use crate::workspace::Workspace;
 use crate::U16Range;  // Re-exported from lib.rs
 
 // Outside emend-core, import like any Rust crate
 use emend_core::error::EmendError;
-use emend_core::document::Document;  // When/if public (Phase 1+)
+use emend_core::workspace::Workspace;
 ```
 
 ### FFI Imports
@@ -293,7 +356,7 @@ use emend_core::document::Document;  // When/if public (Phase 1+)
 ```rust
 // In emend-ffi, import core
 use emend_core::fs;
-use emend_core::EmendError;
+use emend_core::error::EmendError;
 
 // Export via UniFFI
 #[uniffi::export]
@@ -318,8 +381,11 @@ import EmendCore
 // Import EmendCore for core API
 import EmendCore
 
-// Coordinate with services
-let result = try service.editHandle(range: range, text: text)
+// Models own the Rust handles
+let workspace: EmendCore.WorkspaceHandle = EmendCore.newWorkspace()
+
+// Views read model state
+@State var model: WorkspaceModel
 ```
 
 ## Generated Files
@@ -341,18 +407,20 @@ Files that are auto-generated and should NOT be manually edited:
 | `swift/EmendCore/Sources/EmendCore/EmendCore.swift` | Public Swift API | App |
 | `app/Emend/Emend/EmendApp.swift` | App entry point | macOS launcher |
 | `app/Emend/Emend/Shell/MainWindow.swift` | Main window + three panes | App |
+| `app/Emend/Emend/Sidebar/WorkspaceModel.swift` | Workspace state owner | MainWindow |
+| `app/Emend/Emend/Tabs/TabModel.swift` | Open-document owner | MainWindow |
 | `app/Emend/Emend/Editor/MarkdownEditorView.swift` | Live editor pane | MainWindow |
 
 ## Phase Milestones
 
 Structure changes as phases land:
 
-| Phase | New Directories | New Modules | New FFI Exports | New App Components |
-|-------|-----------------|-------------|-----------------|-------------------|
-| 0 (Phase 0 complete) | Core, FFI, Swift package, app skeleton | `error`, `fs`, `document` | `core_abi_version`, `read_file_at` | EmendApp, MainWindow shell |
-| 1 (Phase 1 current) | `app/Emend/Editor/` | `watcher`, `index`, `parse`, `search`, `ai` | `open_document`, `push_edit`, `highlight_spans`, `search_files`, `ai_request`, `flush`, `close_document` | MarkdownEditorView, EditorCoordinator, SmartLists, FormattingCommands, AutosaveController, SyntaxAttributing |
-| 2 (Phase 2 future) | `app/Emend/Screens`, `Models`, `Services` | (none — app wiring) | (none) | LocationTree, SearchResults, PreviewPane |
-| 3+ | As needed | (depends on features) | (depends on features) | Per-feature models, services, screens |
+| Phase | New Directories | New Rust Modules | New FFI Exports | New App Components |
+|-------|-----------------|------------------|-----------------|-------------------|
+| 0 (complete) | Core, FFI, Swift package, app skeleton | `error`, `fs`, `document` | `core_abi_version`, `read_file_at` | EmendApp, MainWindow shell |
+| 1 (current) | `app/Emend/Editor/`, `Sidebar/`, `Tabs/` | `workspace`, `index`, `watcher`, `parse/highlight` | `open_document`, `push_edit`, `highlight_spans`, `new_workspace`, `start_watching`, file-op methods | MarkdownEditorView, EditorCoordinator, SmartLists, FormattingCommands, AutosaveController, WorkspaceModel, TabModel, WorkspaceOutlineView, ConflictController |
+| 2 (future) | `app/Emend/Screens`, `Models`, `Services` | (none — app wiring) | Search streaming (`SearchHandle`/`SearchSink`), AI streaming (`AiHandle`/`AiSink`) | SearchResultsPane, PreviewPane, model/service layer |
+| 3+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
 
 ---
 
@@ -361,18 +429,22 @@ Structure changes as phases land:
 ```
    App (Swift/SwiftUI)
     ↑
-    └─ EmendCore (package)
-        ↑
-        └─ EmendCoreFFI (generated bindings)
-            ↑
-            └─ emend_ffi (FFI shim crate)
-                ↑
-                └─ emend_core (core engine)
-                    ↑
-                    └─ std + deps (no back-edges)
+    ├─ WorkspaceModel, TabModel, ConflictController (@MainActor models)
+    │  ↑
+    │  └─ EmendCore (package)
+    │     ↑
+    │     └─ EmendCoreFFI (generated bindings)
+    │        ↑
+    │        └─ emend_ffi (FFI shim crate)
+    │           ↑
+    │           └─ emend_core (core engine)
+    │              ↑
+    │              └─ std + deps (no back-edges)
+    │
+    └─ Views (read model state one-way)
 ```
 
-All arrows point upward. The core never depends on FFI or the app.
+All arrows point upward. The core never depends on FFI or the app. Models own Rust handles; views read model state passively (no back-edges).
 
 ---
 
