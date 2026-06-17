@@ -38,6 +38,9 @@ struct WorkspaceOutlineView: NSViewRepresentable {
         menu.delegate = context.coordinator
         outline.menu = menu
 
+        outline.registerForDraggedTypes([workspaceNodePasteboardType])
+        outline.setDraggingSourceOperationMask([.move], forLocal: true)
+
         context.coordinator.attach(outline)
 
         let scrollView = NSScrollView()
@@ -56,7 +59,7 @@ struct WorkspaceOutlineView: NSViewRepresentable {
 /// isolated — all `NSOutlineView` access is on the main thread.
 @MainActor
 final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
-    private let model: WorkspaceModel
+    let model: WorkspaceModel // internal: the drag-drop extension (other file) uses it
     private let onOpenFile: (URL) -> Void
     private weak var outline: NSOutlineView?
     private var lastRevision = -1

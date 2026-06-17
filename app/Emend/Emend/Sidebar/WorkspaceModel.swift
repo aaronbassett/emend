@@ -174,7 +174,54 @@ final class WorkspaceModel: ObservableObject {
         node.children = nil
     }
 
+    /// The loaded node at `path`, searching the (expanded) location tree.
+    func node(withPath path: String) -> WorkspaceNode? {
+        func search(_ nodes: [WorkspaceNode]) -> WorkspaceNode? {
+            for node in nodes {
+                if node.path == path { return node }
+                if let kids = node.children, let found = search(kids) { return found }
+            }
+            return nil
+        }
+        return search(roots)
+    }
+
+    /// Move `sourcePath` into the `target` folder/location (drag-drop reorganize,
+    /// FR-004/FR-005). Invalidates the affected folders' caches and reloads.
+    @discardableResult
+    func move(sourcePath: String, into target: WorkspaceNode) -> Bool {
+        guard target.isExpandable, target.kind != .favorites else { return false }
+        let oldParent = URL(fileURLWithPath: sourcePath).deletingLastPathComponent().path
+        guard oldParent != target.path else { return false } // no-op into same parent
+        guard target.path != sourcePath, !target.path.hasPrefix(sourcePath + "/") else {
+            return false // can't drop a folder into itself or a descendant
+        }
+        let newPath: String
+        do {
+            newPath = try workspace.moveNode(path: sourcePath, newParent: target.path)
+        } catch {
+            return false
+        }
+        repath(from: sourcePath, to: newPath)
+        target.children = nil
+        node(withPath: oldParent)?.children = nil
+        refreshFavorites()
+        revision += 1
+        return true
+    }
+
     // MARK: - Private
+
+    /// Carry favorite/pin/icon state across a move/rename of `oldPath`. Descendant
+    /// paths of a moved folder are not repathed (rare; refreshed on next listing).
+    private func repath(from oldPath: String, to newPath: String) {
+        guard oldPath != newPath else { return }
+        if let idx = appState.favorites
+            .firstIndex(of: oldPath) { appState.favorites[idx] = newPath }
+        if let idx = appState.pinned.firstIndex(of: oldPath) { appState.pinned[idx] = newPath }
+        if let icon = appState.icons.removeValue(forKey: oldPath) { appState.icons[newPath] = icon }
+        saveAppState()
+    }
 
     private func register(bookmark: Data, persist: Bool) throws {
         let resolved = try SecurityScopedBookmarks.resolve(bookmark)
