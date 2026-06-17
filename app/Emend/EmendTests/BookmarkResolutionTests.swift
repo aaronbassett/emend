@@ -42,7 +42,8 @@ final class BookmarkResolutionTests: XCTestCase {
         let file = dir.appending(path: "note.md")
         try "hello world".write(to: file, atomically: true, encoding: .utf8)
 
-        // The same chain handshakeRead() runs, with plain bookmark options.
+        // The scope→Rust read chain (resolve → withScope → readFileAt), with
+        // plain bookmark options since the test process isn't sandboxed.
         let data = try SecurityScopedBookmarks.makeBookmark(for: dir, options: [])
         let resolved = try SecurityScopedBookmarks.resolve(
             data, resolutionOptions: [], creationOptions: []

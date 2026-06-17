@@ -47,8 +47,13 @@ pub fn core_abi_version() -> u32 {
 /// This is the foundational read primitive behind the security-scoped-bookmark
 /// handshake (research §A4): Swift opens the scope for a user-granted folder and
 /// hands Rust the resolved path; a successful read here proves the sandbox
-/// extension is process-wide. Higher-level document loading (`open_document`,
-/// with the size cap and an `OpenDocHandle`) arrives with US1.
+/// extension is process-wide.
+///
+/// **Prototype only — uncapped.** It does NOT enforce the `Document` note-size
+/// cap (`MAX_NOTE_BYTES`) and would allocate an arbitrarily large file into a
+/// `String`; its only caller is the dev handshake. The capped, handle-based
+/// loader `open_document` (US1) **supersedes** this — it must not become a
+/// load-bearing general-purpose read.
 #[uniffi::export]
 pub fn read_file_at(path: String) -> Result<String, error::FfiError> {
     emend_core::fs::read_tolerant(path).map_err(Into::into)

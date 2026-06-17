@@ -117,7 +117,7 @@ struct MainWindow: View {
             }
             do {
                 let text = try readFileAt(path: file.path(percentEncoded: false))
-                return "Handshake OK: read \(text.count) characters from "
+                return "Handshake OK: read \(text.utf16.count) UTF-16 code units from "
                     + "“\(file.lastPathComponent)” through Rust."
             } catch let error as FfiError {
                 return "Scope opened, but the Rust read failed: \(error.userMessage)"

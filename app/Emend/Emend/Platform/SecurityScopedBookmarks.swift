@@ -1,5 +1,4 @@
 import AppKit
-import EmendCore
 import Foundation
 
 /// App-scoped security-scoped bookmarks for user-granted folder "locations"
@@ -71,18 +70,5 @@ enum SecurityScopedBookmarks {
         panel.prompt = "Add Location"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         return try makeBookmark(for: url)
-    }
-
-    /// Prove the scope ↔ Rust file-IO handshake (research §A4): resolve the
-    /// bookmark, open its scope, and read `relativePath` within it *through the
-    /// Rust core*. A successful read confirms the sandbox extension reaches Rust.
-    /// Returns the file's text. (The bookmark is for a folder; `relativePath`
-    /// names a file inside it.)
-    static func handshakeRead(bookmark: Data, relativePath: String) throws -> String {
-        let resolved = try resolve(bookmark)
-        return try withScope(resolved.url) { folder in
-            let fileURL = folder.appending(path: relativePath)
-            return try readFileAt(path: fileURL.path(percentEncoded: false))
-        }
     }
 }

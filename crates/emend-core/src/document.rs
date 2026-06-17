@@ -153,18 +153,20 @@ impl Document {
     /// boundary reports (research §A2). Not the same as byte length or char
     /// length when the document contains astral chars.
     ///
-    /// # Errors
-    ///
-    /// [`EmendError::Internal`] if the UTF-16 length does not fit in `u32`. A
-    /// `u32` of code units covers ~4 GiB of UTF-16, far above
-    /// [`Document::MAX_NOTE_BYTES`], so this is unreachable for opened notes;
-    /// it is reported rather than truncated for total safety.
+    /// A `u32` of code units covers ~4 GiB of UTF-16, far above
+    /// [`Document::MAX_NOTE_BYTES`], so the length always fits for an opened
+    /// note. The saturating fallback only keeps this infallible on the
+    /// (unreachable) overflow path without a truncating `as` cast; the
+    /// `debug_assert!` makes that assumption fail loudly in tests if the size
+    /// cap is ever raised past `u32::MAX` code units.
     #[must_use]
     pub fn len_utf16(&self) -> u32 {
-        // `len_utf16` is documented to return `u32` and never panics; for an
-        // in-bounds document this conversion cannot fail, but we saturate rather
-        // than risk a truncating `as` cast on the (unreachable) overflow path.
-        u32::try_from(self.rope.len_utf16_cu()).unwrap_or(u32::MAX)
+        let units = self.rope.len_utf16_cu();
+        debug_assert!(
+            u32::try_from(units).is_ok(),
+            "UTF-16 length {units} exceeds u32; MAX_NOTE_BYTES should keep this unreachable"
+        );
+        u32::try_from(units).unwrap_or(u32::MAX)
     }
 
     /// The full document text. Allocates a fresh `String`; intended for tests,
