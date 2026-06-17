@@ -31,6 +31,13 @@ jobs:
         # Compile-verify the Criterion harness (current + future perf benches)
         # without running measurements — perf budgets are tracked, non-blocking.
         run: cargo bench --no-run
+      - name: MSRV check (rust-version 1.85)
+        # The workspace promises rust-version = 1.85; the runner's default stable
+        # is newer and would otherwise mask an MSRV regression (as criterion 0.8,
+        # which needs 1.86, would have). `check` is enough to catch build breaks.
+        run: |
+          rustup toolchain install 1.85 --profile minimal
+          cargo +1.85 check --all
 
   # ---- Swift app (DS-002, DS-006): Apple Silicon runner ----
   swift:
