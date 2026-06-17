@@ -72,7 +72,7 @@ struct MainWindow: View {
         WorkspaceOutlineView(model: workspace) { url in open(url: url) }
             .navigationSplitViewColumnWidth(min: 200, ideal: 240)
             .overlay {
-                if workspace.roots.isEmpty {
+                if workspace.displayRoots.isEmpty {
                     ContentUnavailableView(
                         "No Locations",
                         systemImage: "folder.badge.plus",

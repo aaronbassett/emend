@@ -7,6 +7,7 @@ import Foundation
 /// lazily from the Rust core on expansion (research §C6).
 final class WorkspaceNode {
     enum Kind: Equatable {
+        case favorites // synthetic "Favorites" group row
         case location(id: UInt64)
         case folder
         case file
@@ -52,7 +53,7 @@ final class WorkspaceModel: ObservableObject {
     /// (favorites/pins/icons). Persisted Swift-side here and replayed into the
     /// core on launch — the data-model envisions a core-owned store, but the core
     /// has no persistence layer yet, so this mirrors how location bookmarks are
-    /// persisted. Favorites/pins are wired in a later slice; icons are live now.
+    /// persisted.
     struct AppState: Codable {
         var favorites: [String] = []
         var pinned: [String] = []
@@ -66,12 +67,59 @@ final class WorkspaceModel: ObservableObject {
     private var bookmarks: [UInt64: Data] = [:]
     private var heldScopes: [UInt64: URL] = [:]
     private var appState = AppState()
+    /// Stable synthetic root for the Favorites group (stable identity matters for
+    /// `NSOutlineView`); its children are refreshed when favorites change.
+    private let favoritesGroup = WorkspaceNode(
+        url: URL(fileURLWithPath: "/"),
+        name: "Favorites",
+        kind: .favorites
+    )
 
     init(workspace: WorkspaceHandle = newWorkspace(), defaults: UserDefaults = .standard) {
         self.workspace = workspace
         self.defaults = defaults
         loadAppState()
         restorePersistedLocations()
+        refreshFavorites()
+    }
+
+    /// Outline roots: the Favorites group (when non-empty) above the locations.
+    var displayRoots: [WorkspaceNode] {
+        appState.favorites.isEmpty ? roots : [favoritesGroup] + roots
+    }
+
+    func isFavorite(_ path: String) -> Bool {
+        appState.favorites.contains(path)
+    }
+
+    func isPinned(_ path: String) -> Bool {
+        appState.pinned.contains(path)
+    }
+
+    /// Toggle Favorite (FR-007). Structural — refreshes the Favorites group and
+    /// bumps `revision` so the top level reloads.
+    func toggleFavorite(_ path: String) {
+        if let idx = appState.favorites.firstIndex(of: path) {
+            appState.favorites.remove(at: idx)
+        } else {
+            appState.favorites.append(path)
+        }
+        try? workspace.setFavorite(path: path, favorite: isFavorite(path))
+        saveAppState()
+        refreshFavorites()
+        revision += 1
+    }
+
+    /// Toggle Pinned (FR-007). A per-row indicator only — the caller reloads the
+    /// affected row, so this does not bump `revision`.
+    func togglePin(_ path: String) {
+        if let idx = appState.pinned.firstIndex(of: path) {
+            appState.pinned.remove(at: idx)
+        } else {
+            appState.pinned.append(path)
+        }
+        try? workspace.setPinned(path: path, pinned: isPinned(path))
+        saveAppState()
     }
 
     /// The custom icon set for `path`, if any (display source of truth — the FFI
@@ -110,8 +158,10 @@ final class WorkspaceModel: ObservableObject {
         revision += 1
     }
 
-    /// Lazily-listed children for `node`, cached on the node.
+    /// Lazily-listed children for `node`, cached on the node. The Favorites group
+    /// is filled by `refreshFavorites`, never by directory listing.
     func children(of node: WorkspaceNode) -> [WorkspaceNode] {
+        if node.kind == .favorites { return node.children ?? [] }
         if let cached = node.children { return cached }
         let listed = listChildren(of: node)
         node.children = listed
@@ -175,10 +225,35 @@ final class WorkspaceModel: ObservableObject {
     }
 
     /// Re-apply persisted app state to the freshly-created core handle (the core
-    /// starts empty each launch). Favorites/pins are replayed once wired.
+    /// starts empty each launch).
     private func replayAppStateToCore() {
         for (path, icon) in appState.icons {
             try? workspace.setFolderIcon(folderPath: path, icon: icon)
+        }
+        for path in appState.favorites {
+            try? workspace.setFavorite(path: path, favorite: true)
+        }
+        for path in appState.pinned {
+            try? workspace.setPinned(path: path, pinned: true)
+        }
+    }
+
+    private func refreshFavorites() {
+        favoritesGroup.children = favoriteNodes()
+    }
+
+    /// Build nodes for the favorited paths, skipping any that no longer exist.
+    private func favoriteNodes() -> [WorkspaceNode] {
+        appState.favorites.compactMap { path in
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+            else { return nil }
+            let url = URL(fileURLWithPath: path)
+            return WorkspaceNode(
+                url: url,
+                name: url.lastPathComponent,
+                kind: isDir.boolValue ? .folder : .file
+            )
         }
     }
 

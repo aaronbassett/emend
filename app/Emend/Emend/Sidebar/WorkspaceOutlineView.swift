@@ -63,6 +63,7 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     private var clickedNode: WorkspaceNode?
     private var iconPopover: NSPopover?
     private let cellID = NSUserInterfaceItemIdentifier("WorkspaceCell")
+    private let pinViewTag = 99
 
     init(model: WorkspaceModel, onOpenFile: @escaping (URL) -> Void) {
         self.model = model
@@ -87,12 +88,12 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     func outlineView(_: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         if let node = item as? WorkspaceNode { return model.children(of: node).count }
-        return model.roots.count
+        return model.displayRoots.count
     }
 
     func outlineView(_: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         if let node = item as? WorkspaceNode { return model.children(of: node)[index] }
-        return model.roots[index]
+        return model.displayRoots[index]
     }
 
     func outlineView(_: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -113,6 +114,7 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         let (image, tint) = iconImage(for: node)
         cell.imageView?.image = image
         cell.imageView?.contentTintColor = tint
+        cell.viewWithTag(pinViewTag)?.isHidden = !model.isPinned(node.path)
         return cell
     }
 
@@ -133,7 +135,8 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         guard let outline, outline.clickedRow >= 0,
-              let node = outline.item(atRow: outline.clickedRow) as? WorkspaceNode
+              let node = outline.item(atRow: outline.clickedRow) as? WorkspaceNode,
+              node.kind != .favorites
         else {
             clickedNode = nil
             return
@@ -161,6 +164,20 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
                 action: #selector(removeLocationAction),
                 keyEquivalent: ""
             )
+        } else {
+            // Files & folders can be favorited / pinned (FR-007).
+            menu.addItem(.separator())
+            menu.addItem(
+                withTitle: model
+                    .isFavorite(node.path) ? "Remove from Favorites" : "Add to Favorites",
+                action: #selector(toggleFavoriteAction),
+                keyEquivalent: ""
+            )
+            menu.addItem(
+                withTitle: model.isPinned(node.path) ? "Unpin" : "Pin",
+                action: #selector(togglePinAction),
+                keyEquivalent: ""
+            )
         }
         for item in menu.items where item.action != nil {
             item.target = self
@@ -180,6 +197,17 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     @objc private func removeLocationAction() {
         guard let node = clickedNode else { return }
         model.removeLocation(node) // revision bump → reload via updateNSView
+    }
+
+    @objc private func toggleFavoriteAction() {
+        guard let node = clickedNode else { return }
+        model.toggleFavorite(node.path) // revision bump → reload via updateNSView
+    }
+
+    @objc private func togglePinAction() {
+        guard let node = clickedNode else { return }
+        model.togglePin(node.path)
+        outline?.reloadItem(node, reloadChildren: false) // row indicator only
     }
 
     private func presentIconPicker() {
@@ -212,8 +240,15 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.lineBreakMode = .byTruncatingTail
 
+        let pinView = NSImageView()
+        pinView.translatesAutoresizingMaskIntoConstraints = false
+        pinView.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pinned")
+        pinView.contentTintColor = .secondaryLabelColor
+        pinView.tag = pinViewTag
+
         cell.addSubview(imageView)
         cell.addSubview(textField)
+        cell.addSubview(pinView)
         cell.imageView = imageView
         cell.textField = textField
 
@@ -222,8 +257,11 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
             imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             imageView.widthAnchor.constraint(equalToConstant: 16),
             textField.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 6),
-            textField.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
-            textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+            textField.trailingAnchor.constraint(equalTo: pinView.leadingAnchor, constant: -4),
+            textField.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            pinView.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
+            pinView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            pinView.widthAnchor.constraint(equalToConstant: 11)
         ])
         return cell
     }
@@ -231,11 +269,12 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// The icon image + optional tint for a node: a custom folder icon (FR-008)
     /// when set, otherwise the default per kind.
     private func iconImage(for node: WorkspaceNode) -> (NSImage?, NSColor?) {
-        if node.kind != .file, let custom = model.icon(for: node.path) {
+        if node.kind != .file, node.kind != .favorites, let custom = model.icon(for: node.path) {
             let image = NSImage(systemSymbolName: custom.symbol, accessibilityDescription: nil)
             return (image, custom.tint?.nsColor)
         }
         let symbol = switch node.kind {
+        case .favorites: "star.fill"
         case .location: "folder.fill"
         case .folder: "folder"
         case .file: "doc.text"
