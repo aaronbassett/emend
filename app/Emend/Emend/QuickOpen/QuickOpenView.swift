@@ -33,6 +33,7 @@ struct QuickOpenView: View {
                 .focused($fieldFocused)
                 .onSubmit { model.openSelected() }
                 .onChange(of: model.query) { _, _ in model.runQuery() }
+                .accessibilityIdentifier("quickOpen.searchField")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -57,6 +58,7 @@ struct QuickOpenView: View {
                     }
                 }
                 .frame(maxHeight: 360)
+                .accessibilityIdentifier("quickOpen.results")
                 .onChange(of: model.selection) { _, sel in
                     withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(sel, anchor: .center) }
                 }
@@ -102,5 +104,7 @@ private struct QuickOpenRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(isSelected ? Color.accentColor : Color.clear)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("quickOpen.result.\(hit.name)")
     }
 }
