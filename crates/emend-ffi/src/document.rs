@@ -18,8 +18,8 @@
 //!    `Mutex<DocSession>`; the contract's methods take `&self` and the mutex
 //!    gives the `&mut` for edits.
 //!
-//! 3. **Exports** `open_document` / `push_edit` / `highlight_spans` / `close`
-//!    matching the contract's names and threading rules.
+//! 3. **Exports** `open_document` / `push_edit` / `highlight_spans` / `flush` /
+//!    `close` matching the contract's names and threading rules.
 //!
 //! ## Design choices (documented per the task brief)
 //!
@@ -52,6 +52,7 @@ use emend_core::parse::highlight::{
     Highlighter, StyleClass as CoreStyleClass, StyleSpan as CoreStyleSpan,
 };
 use emend_core::U16Range as CoreU16Range;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// UTF-16 code-unit text range crossing the FFI boundary (FFI contract §3,
@@ -164,13 +165,17 @@ impl From<CoreStyleSpan> for StyleSpan {
     }
 }
 
-/// The mutable state behind one open document: the shadow [`Document`] and its
-/// [`Highlighter`], driven in lock-step by the same `(range, replacement)`
-/// deltas.
+/// The mutable state behind one open document: the shadow [`Document`], its
+/// [`Highlighter`] (driven in lock-step by the same `(range, replacement)`
+/// deltas), and the on-disk [`PathBuf`] [`flush`](OpenDocHandle::flush) writes
+/// back to.
 ///
 /// `None` after [`OpenDocHandle::close`] consumes the session, so the handle
 /// becomes inert rather than panicking on use-after-close.
 struct DocSession {
+    /// The note's path on disk, captured at [`open_document`] time so a later
+    /// [`flush`](OpenDocHandle::flush) knows where to write the buffer back.
+    path: PathBuf,
     doc: Document,
     highlighter: Highlighter,
 }
@@ -178,10 +183,12 @@ struct DocSession {
 /// Open-document handle exported to Swift (FFI contract §3).
 ///
 /// Handed to Swift as `Arc<Self>`; methods take `&self` and reach the inner
-/// `&mut` through the [`Mutex`]. The lock is held only for the in-memory splice
-/// / tree walk — **no IO happens under the lock** (autosave/flush, when added,
-/// must snapshot text under the lock and write outside it), so the hot path
-/// stays non-blocking per the contract.
+/// `&mut` through the [`Mutex`]. On the **hot path** ([`Self::push_edit`],
+/// [`Self::highlight_spans`]) the lock is held only for the in-memory splice /
+/// tree walk — **no IO happens under the lock**, so it stays non-blocking per
+/// the contract. The one exception is [`Self::flush`], the explicit, debounced
+/// durable write-back: it deliberately writes under the lock (the write *is*
+/// the work, and it never runs per keystroke).
 #[derive(uniffi::Object)]
 pub struct OpenDocHandle {
     /// `None` once closed. Wrapped in a `Mutex` for interior mutability (the
@@ -269,6 +276,42 @@ impl OpenDocHandle {
         Ok(spans.into_iter().map(StyleSpan::from).collect())
     }
 
+    /// Force a **durable** write-back of the current buffer to the note's path
+    /// (FFI contract §3 `flush`; FR-009a).
+    ///
+    /// Autosave is internal + debounced; this is the explicit-flush path the
+    /// Swift `AutosaveController` calls on its idle/hard-cap timers and on
+    /// close/quit. It snapshots the buffer ([`Document::text`]) under the lock
+    /// and writes it via [`emend_core::fs::write_atomic`] (tempfile → fsync →
+    /// atomic rename → dir fsync; `sync_all` is `F_FULLFSYNC` on Apple), so an
+    /// external observer never sees a half-written note.
+    ///
+    /// Unlike [`Self::push_edit`] this is **not** the hot path: it is an
+    /// explicit, debounced flush, so doing the IO under the lock is acceptable
+    /// here (the write *is* the work) — it does not run per keystroke.
+    ///
+    /// Self-write suppression — feeding the post-write `(mtime, len)` to the
+    /// file watcher so the app's own save does not echo back as an external
+    /// change (FR-006a) — arrives with US2's watcher. For now `flush` only
+    /// performs the atomic durable write; once the watcher exists this method
+    /// will also report the resulting `(mtime, len)` so the save is ignored.
+    ///
+    /// # Errors
+    ///
+    /// - [`FfiError::NotFound`] / [`FfiError::PermissionDenied`] /
+    ///   [`FfiError::IoFailure`] for the corresponding write failures
+    ///   (propagated from [`emend_core::fs::write_atomic`]).
+    /// - [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub fn flush(&self) -> Result<(), FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        // Snapshot the buffer and write it durably to the captured path. The
+        // write is the explicit-flush work, so holding the lock across it is
+        // fine (this is not the per-keystroke path).
+        emend_core::fs::write_atomic(&session.path, &session.doc.text())?;
+        Ok(())
+    }
+
     /// Explicit close (FFI contract §3 `close_document`). Consumes the inner
     /// session, running [`Document::close`]; the handle is inert afterwards.
     ///
@@ -313,13 +356,20 @@ fn closed_handle() -> FfiError {
 ///   [`FfiError::IoFailure`] for the corresponding IO failures.
 #[uniffi::export]
 pub fn open_document(path: String) -> Result<Arc<OpenDocHandle>, FfiError> {
+    // Retain the path so a later `flush` can write the buffer back to the same
+    // file (FR-009a). `Document::open` only borrows it for the read.
+    let path = PathBuf::from(path);
     let doc = Document::open(&path)?;
     // Build the highlighter from the document's text so both shadows agree from
     // the first delta onward. `text()` allocates once at open time (not on the
     // hot path), which is acceptable for a one-shot load.
     let highlighter = Highlighter::new(&doc.text());
     Ok(Arc::new(OpenDocHandle {
-        session: Mutex::new(Some(DocSession { doc, highlighter })),
+        session: Mutex::new(Some(DocSession {
+            path,
+            doc,
+            highlighter,
+        })),
     }))
 }
 
@@ -487,6 +537,38 @@ mod tests {
             .highlight_spans(U16Range { start: 0, len: 0 })
             .expect_err("query after close must error");
         assert!(matches!(query_err, FfiError::Internal { .. }));
+    }
+
+    #[test]
+    fn flush_writes_edited_buffer_to_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "Title\n");
+        let handle = open_document(path.clone()).expect("open");
+
+        // Turn the plain line into a heading, then force a durable write-back.
+        handle
+            .push_edit(U16Range { start: 0, len: 0 }, "# ".to_owned())
+            .expect("push_edit insert");
+        handle.flush().expect("flush");
+
+        // The bytes on disk must now match the edited buffer.
+        let on_disk = std::fs::read_to_string(&path).expect("read flushed note");
+        assert_eq!(on_disk, "# Title\n");
+    }
+
+    #[test]
+    fn flush_after_close_returns_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "abc\n");
+        let handle = open_document(path).expect("open");
+
+        handle.close().expect("close");
+
+        let err = handle.flush().expect_err("flush after close must error");
+        assert!(
+            matches!(err, FfiError::Internal { .. }),
+            "expected Internal for flush after close, got {err:?}"
+        );
     }
 
     #[test]
