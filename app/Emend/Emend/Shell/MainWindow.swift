@@ -17,12 +17,6 @@ private extension Notification.Name {
 /// later. "Add Location" still exercises the security-scoped-bookmark ↔ Rust
 /// handshake (research §A4).
 struct MainWindow: View {
-    private struct Location: Identifiable {
-        let id = UUID()
-        let name: String
-        let bookmark: Data
-    }
-
     private struct OpenDocument: Identifiable {
         let id = UUID()
         let name: String
@@ -32,8 +26,7 @@ struct MainWindow: View {
         let autosave: AutosaveController
     }
 
-    @State private var locations: [Location] = []
-    @State private var selection: Location.ID?
+    @StateObject private var workspace = WorkspaceModel()
     @State private var openDoc: OpenDocument?
     @State private var status: String?
 
@@ -51,7 +44,7 @@ struct MainWindow: View {
                 Button("Open File", systemImage: "doc.badge.plus", action: openFile)
             }
             ToolbarItem(placement: .secondaryAction) {
-                Button("Add Location", systemImage: "folder.badge.plus", action: addLocation)
+                Button("Add Location", systemImage: "folder.badge.plus") { workspace.addLocation() }
             }
         }
         // Durability (FR-009/FR-009a): flush pending edits before the app quits or
@@ -76,19 +69,17 @@ struct MainWindow: View {
     }
 
     private var sidebar: some View {
-        List(locations, selection: $selection) { location in
-            Label(location.name, systemImage: "folder")
-        }
-        .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        .overlay {
-            if locations.isEmpty {
-                ContentUnavailableView(
-                    "No Locations",
-                    systemImage: "folder.badge.plus",
-                    description: Text("Add a folder, or open a file to start editing.")
-                )
+        WorkspaceOutlineView(model: workspace) { url in open(url: url) }
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240)
+            .overlay {
+                if workspace.roots.isEmpty {
+                    ContentUnavailableView(
+                        "No Locations",
+                        systemImage: "folder.badge.plus",
+                        description: Text("Add a folder, or open a file to start editing.")
+                    )
+                }
             }
-        }
     }
 
     @ViewBuilder private var editorPane: some View {
@@ -189,51 +180,6 @@ struct MainWindow: View {
             autosave: autosave
         )
         status = "Editing “\(url.lastPathComponent)”."
-    }
-
-    private func addLocation() {
-        do {
-            guard let bookmark = try SecurityScopedBookmarks.promptForFolder() else { return }
-            let resolved = try SecurityScopedBookmarks.resolve(bookmark)
-            locations.append(
-                Location(
-                    name: resolved.url.lastPathComponent,
-                    bookmark: resolved.refreshedData ?? bookmark
-                )
-            )
-            status = handshakeStatus(folder: resolved.url)
-        } catch let error as FfiError {
-            status = error.userMessage
-        } catch {
-            status = error.localizedDescription
-        }
-    }
-
-    /// Demonstrate the scope↔Rust handshake by reading the first file in the
-    /// granted folder through the Rust core, while Swift holds the scope.
-    private func handshakeStatus(folder: URL) -> String {
-        SecurityScopedBookmarks.withScope(folder) { dir in
-            let manager = FileManager.default
-            let entries = (try? manager.contentsOfDirectory(
-                at: dir,
-                includingPropertiesForKeys: [.isRegularFileKey]
-            )) ?? []
-            let firstFile = entries.first { url in
-                (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-            }
-            guard let file = firstFile else {
-                return "Added “\(dir.lastPathComponent)” — scope opened (no files to read)."
-            }
-            do {
-                let text = try readFileAt(path: file.path(percentEncoded: false))
-                return "Handshake OK: read \(text.utf16.count) UTF-16 code units from "
-                    + "“\(file.lastPathComponent)” through Rust."
-            } catch let error as FfiError {
-                return "Scope opened, but the Rust read failed: \(error.userMessage)"
-            } catch {
-                return "Scope opened, but the Rust read failed: \(error.localizedDescription)"
-            }
-        }
     }
 }
 

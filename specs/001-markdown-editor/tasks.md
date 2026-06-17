@@ -147,7 +147,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T058 [US2] Implement `crates/emend-core/src/index.rs`: nucleo haystack + pathMap + nameMap; incremental updates (research §B2) (use devs:rust-dev agent)
 - [x] T059 [US2] Export workspace/watcher/file-op functions + `DocObserver`/conflict APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [x] T060 [GIT] Commit: core workspace, watcher, index + FFI
-- [ ] T061 [US2] Implement `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` (NSOutlineView, targeted `reloadItem`) with add-location via NSOpenPanel (research §C6)
+- [x] T061 [US2] Implement `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` (NSOutlineView, targeted `reloadItem`) with add-location via NSOpenPanel (research §C6)
 - [ ] T062 [P] [US2] Implement `app/Emend/Emend/Sidebar/FolderIconPicker.swift` (SF Symbols grid + tint) and favorites/pins rows
 - [ ] T063 [P] [US2] Implement sidebar drag-drop reorganize in `app/Emend/Emend/Sidebar/OutlineDragDrop.swift`
 - [ ] T064 [US2] Implement tabs: `app/Emend/Emend/Tabs/TabModel.swift` + `TabBarView.swift` (open file in tab, per-tab state) (research §C7)
