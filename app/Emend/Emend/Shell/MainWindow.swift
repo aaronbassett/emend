@@ -14,6 +14,9 @@ struct MainWindow: View {
     @StateObject private var tabs = TabModel()
     @StateObject private var conflict = ConflictController()
     @StateObject private var quickOpen = QuickOpenModel()
+    @StateObject private var preview = PreviewModel()
+    @StateObject private var scrollSync = ScrollSync()
+    @State private var showPreview = false
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +34,20 @@ struct MainWindow: View {
             ToolbarItem(placement: .secondaryAction) {
                 Button("Add Location", systemImage: "folder.badge.plus") { workspace.addLocation() }
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showPreview.toggle()
+                } label: {
+                    Label("Toggle Preview", systemImage: "rectangle.split.2x1")
+                }
+                .help("Show or hide the live preview")
+                .disabled(tabs.active == nil)
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Export PDF", systemImage: "arrow.down.doc", action: exportPDF)
+                    .help("Export the current document to a paginated PDF")
+                    .disabled(tabs.active == nil)
+            }
         }
         // ⌘P opens Quick Open (US3, FR-017). A hidden button registers the
         // shortcut window-wide without occupying the toolbar.
@@ -47,7 +64,12 @@ struct MainWindow: View {
         .task {
             conflict.attach(tabs: tabs, workspace: workspace)
             quickOpen.attach(workspace: workspace.workspace) { url in tabs.open(url: url) }
+            tabs.onDocEdit = { [weak preview] in preview?.scheduleRefresh() }
+            preview.isVisible = showPreview
+            preview.setActiveDocument(tabs.active?.handle)
         }
+        .onChange(of: tabs.activeID) { _, _ in preview.setActiveDocument(tabs.active?.handle) }
+        .onChange(of: showPreview) { _, visible in preview.isVisible = visible }
     }
 
     @ViewBuilder private var quickOpenOverlay: some View {
@@ -91,7 +113,16 @@ struct MainWindow: View {
             if let activeID = tabs.activeID, conflict.isConflicted(activeID) {
                 conflictBanner(activeID)
             }
-            editorStack
+            if showPreview, tabs.active != nil {
+                HSplitView {
+                    editorStack
+                        .frame(minWidth: 280)
+                    PreviewWebView(model: preview, scrollSync: scrollSync)
+                        .frame(minWidth: 240)
+                }
+            } else {
+                editorStack
+            }
         }
         .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -129,7 +160,9 @@ struct MainWindow: View {
                         handle: tab.handle,
                         initialText: tab.text,
                         isReadOnly: tab.isReadOnly,
-                        autosave: tab.autosave
+                        autosave: tab.autosave,
+                        scrollSync: scrollSync,
+                        isActive: tab.id == tabs.activeID
                     )
                     .id("\(tab.id)-\(tab.reloadToken)")
                     .opacity(tab.id == tabs.activeID ? 1 : 0)
@@ -173,6 +206,30 @@ struct MainWindow: View {
         ].compactMap(\.self)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         tabs.open(url: url)
+    }
+
+    /// Export the active document to a paginated PDF (US4 · FR-026). Renders the
+    /// preview HTML off-main, then writes via the off-screen print host.
+    private func exportPDF() {
+        guard let tab = tabs.active else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = (tab.name as NSString).deletingPathExtension + ".pdf"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let handle = tab.handle
+        let css = preview.themeCSS
+        Task {
+            do {
+                let html = try await Task.detached { try handle.renderPreviewHtml() }.value
+                try await PDFExport.export(html: html, css: css, to: url)
+                tabs.status = "Exported PDF to “\(url.lastPathComponent)”."
+            } catch {
+                tabs.status = (error as? LocalizedError)?.errorDescription ?? error
+                    .localizedDescription
+            }
+        }
     }
 }
 

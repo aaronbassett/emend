@@ -2,11 +2,11 @@
 
 > **Purpose**: Document authentication, authorization, security controls, and vulnerability status.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US2 Phase 4 complete)
+> **Last Updated**: 2026-06-17 (US4 Phase 6 complete — preview + PDF export security controls)
 
 ## Overview
 
-Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US2 Phase 4 (complete)**: workspace model persists location bookmarks and app state (favorites/pins/icons) via UserDefaults; path identity enforced via canonicalization; live-refresh + conflict handling implemented.
+Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US4 Phase 6 (complete)**: faithful Markdown preview with offline bundled Mermaid + KaTeX, PDF export with three-layer privacy enforcement (CSP + nonPersistent store + navigation delegate), comrak HTML escaping as the trust boundary for untrusted markdown input.
 
 ---
 
@@ -99,6 +99,49 @@ When a file changes on disk while the buffer is dirty, the conflict model preser
 
 ---
 
+## Preview & PDF Export Security (US4)
+
+### Preview Web View Isolation (FR-035, SC-008)
+
+The preview pane (`WKWebView`) renders untrusted Markdown-derived HTML with three layers of privacy enforcement to guarantee **zero outbound network access**:
+
+| Layer | Implementation | Purpose | Location |
+|-------|---|---|---|
+| **CSP** | `Content-Security-Policy` header: `default-src 'none'`, `connect-src 'none'`, `script-src 'self'`, `img-src 'self' data:`, `style-src 'self' 'unsafe-inline'` | Prevents remote resource loads; allows only bundled assets + data URIs | `Resources/preview/template.html` (research §C2) |
+| **Non-persistent store** | `config.websiteDataStore = .nonPersistent()` | No cookies, localStorage, or persistent caches across sessions | `app/Emend/Emend/Preview/PreviewWebView.swift::PreviewWebView.makeNSView()` (line 24) |
+| **Navigation delegate** | `WKNavigationDelegate.decidePolicyFor()` whitelists only `file:` + `about:` URLs; external links are intercepted and opened in the user's browser | Blocks navigation to remote origins; preserves user intent for external links | `app/Emend/Emend/Preview/PreviewWebView.swift::Coordinator.webView(_:decidePolicyFor:)` (lines 96–115) |
+
+**Verification**: Defensive test `crates/emend-core/tests/preview_offline.rs` (Phase 1 T083) verifies the **core rendering path** emits only literal URL attributes (never fetched).
+
+### Markdown Trust Boundary (Comrak Escaping)
+
+Untrusted user Markdown is the threat model; the trust boundary is **comrak's HTML escaping**:
+
+| Aspect | Implementation | Location |
+|--------|---|---|
+| **Raw HTML escaping** | comrak default: `unsafe_` = `false`. User-supplied HTML tags are entity-escaped (e.g., `<script>` → `&lt;script&gt;`) | `crates/emend-core/src/parse/preview.rs::build_options()` (line 129) |
+| **Remote URLs emitted as-is** | Image + link URLs are emitted as literal `src=` / `href=` attributes; comrak does **not** dereference them | `crates/emend-core/src/parse/preview.rs::build_options()` (comment lines 131–132) |
+| **Code block syntax highlighting** | Colored code is wrapped in `<span class=…>` (syntect classed HTML, no inline styles or `<script>` | `crates/emend-core/src/parse/code_highlight.rs` (inert until Phase 1 T079) |
+| **No embed processing** | Embed syntax `![[…]]` renders literally; embed resolution (with cycle/depth guards) is deferred to US5 | `crates/emend-core/src/parse/preview.rs::build_options()` (lines 120–123) |
+
+**Verification**: Test suite `crates/emend-core/tests/preview_render.rs` validates that comrak renders GFM, wikilinks, and highlight syntax correctly without injecting extra HTML.
+
+### PDF Export Offline Guarantee
+
+The off-screen PDF export path (`PDFExport`) uses an identical offline template + privacy stack to the on-screen preview:
+
+| Stage | Implementation | Location |
+|-------|---|---|
+| **Template load** | Off-screen `WKWebView` loads the same bundled `template.html` (grants read access to `preview/` dir for KaTeX, Mermaid, CSS) | `app/Emend/Emend/Preview/PDFExport.swift::OffscreenPrintHost.loadTemplate()` (lines 66–76) |
+| **Non-persistent store** | PDF export WebView has `config.websiteDataStore = .nonPersistent()` | `PDFExport.swift::OffscreenPrintHost.makeWebView()` (line 134) |
+| **Content injection** | HTML + CSS injected via `callAsyncJavaScript()` (same `window.__emendRender()` bridge as on-screen preview) | `PDFExport.swift::OffscreenPrintHost.renderContent()` (lines 79–90) |
+| **Watchdog timeout** | Template load and print operations have 20 s + 30 s timeouts respectively to prevent hangs | `PDFExport.swift` (lines 69, 107) |
+| **Print pagination** | Delegates to `NSPrintOperation` with `@media print` CSS rules in `theme.css` for true multi-page output (avoids `createPDF`'s single-tall-page limitation) | `PDFExport.swift::OffscreenPrintHost.paginate()` (lines 97–120) |
+
+**Privacy guarantee**: PDF export is offline and uses the same isolation (CSP + nonPersistent + offline assets) as the on-screen preview. The printed output is deterministic (Mermaid + KaTeX are bundled and run synchronously in the off-screen view).
+
+---
+
 ## AI & Network Security
 
 ### AI Configuration & Key Storage (Deferred to Phase 1)
@@ -115,8 +158,8 @@ When a file changes on disk while the buffer is dirty, the conflict model preser
 | Constraint | Implementation | Status |
 |-----------|---|---|
 | **Default offline** | No network calls without explicit AI configuration + invocation | Phase 1 T110 (test: `ai_privacy.rs`) |
-| **Preview is offline** | WKWebView with CSP blocking remote loads, `nonPersistent` store, no navigation to non-`file:`/`about:` URLs | Deferred (US2 Phase 1) |
-| **Bundled assets** | Mermaid.js + KaTeX vendored locally; loaded via `loadFileURL`, not CDN | Deferred (US4 Phase 1) |
+| **Preview is offline** | WKWebView with CSP blocking remote loads, `nonPersistent` store, navigation delegate cancels non-`file:`/`about:` URLs, PDF export identical | ✅ US4 T087 (implemented) |
+| **Bundled assets** | Mermaid.js + KaTeX vendored locally; loaded via `loadFileURL`, not CDN | ✅ US4 (implemented) |
 | **AI request validation** | Max input size checked before sending; requests are cancellable via `tokio_util::sync::CancellationToken`; per-chunk timeout + overall deadline | Phase 1 T112 |
 | **AI error handling** | Failed or timed-out requests never leave sensitive data in logs | Phase 1 (code review gate) |
 
@@ -194,7 +237,7 @@ All fallible operations return `Result<T, EmendError>`:
 | **File content (read)** | Tolerant reads: UTF-8 BOM stripped, CRLF preserved, invalid UTF-8 decoded lossily (not rejected) | `crates/emend-core/src/fs.rs` | ✅ Implemented |
 | **File content (write)** | Atomic write via tempfile; no special escaping (Markdown is plain text) | `crates/emend-core/src/fs.rs::write_atomic` | ✅ Implemented |
 | **Markdown syntax (edit)** | tree-sitter (editor) handles malformed input gracefully (incremental reparse, no crash) | `crates/emend-core/src/parse.rs` | Phase 1 T072 |
-| **Markdown syntax (preview)** | comrak (CommonMark) handles malformed input gracefully (no crash, renders as-is) | `crates/emend-core/src/parse.rs` | Phase 1 T073 |
+| **Markdown syntax (preview)** | comrak (CommonMark) handles malformed input gracefully (no crash, renders as-is) with HTML escaping (no raw user HTML) | `crates/emend-core/src/parse/preview.rs` | ✅ US4 T084 (implemented) |
 | **Wiki links** | Resolved deterministically by name + path; unresolved links marked visually | `crates/emend-core/src/index.rs` | Phase 1 T074 |
 | **Embed depth** | Max depth of 8 enforced; cycles detected and stopped | `crates/emend-core/src/parse.rs` | Phase 1 T080 |
 
@@ -260,7 +303,7 @@ Pinned in `Cargo.toml` workspace `[workspace.dependencies]` and `[workspace.pack
 | `tokio-util` | 0.7.x | Cancellation tokens (emend-ffi only) | ≤ 1.85 |
 | `tree-sitter` | 0.26.x | Incremental parser runtime | ≤ 1.85 |
 | `tree-sitter-md` | 0.5.x | Markdown grammar (parser feature required) | ≤ 1.85 |
-| `comrak` | 0.52.x | CommonMark preview (inert until Phase 1) | ≤ 1.85 |
+| `comrak` | 0.52.x | CommonMark preview; HTML escaping enforces trust boundary | ≤ 1.85 |
 | `syntect` | 5.3.x | Code highlighting (inert until Phase 1) | ≤ 1.85 |
 | `nucleo` | 0.5.x | Fuzzy search (inert until Phase 1) | ≤ 1.85 |
 | `notify`, `notify-debouncer-full` | 8.2.x, 0.7.x | File watching (inert until Phase 1) | ≤ 1.85 |
@@ -276,7 +319,6 @@ Pinned in `Cargo.toml` workspace `[workspace.dependencies]` and `[workspace.pack
 
 The following are pinned but **not used in code** until Phase 1 features land:
 - `tree-sitter`, `tree-sitter-md` (Phase 1 T072)
-- `comrak` (Phase 1 T073)
 - `syntect` (Phase 1 T079)
 - `nucleo` (Phase 1 T074–T076)
 - `notify`, `notify-debouncer-full` (Phase 1 T065–T067)
@@ -312,9 +354,12 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | **Path identity** | Symlink cycles terminated; same file via two paths has one identity | `crates/emend-core/tests/workspace_ops.rs` (Phase 1 T048) | Headless test ready; manual signed-app test pending |
 | **Self-write suppression** | Post-persist `(mtime,len)` suppresses matching event; third-party edits not suppressed | `crates/emend-core/tests/watcher_unit.rs` (planned Phase 1 T066) | Deferred to Phase 1 |
 | **Conflict resolution** | Clean buffer + external change → reload; dirty buffer + external change → preserve local + flag | `crates/emend-core/tests/watcher_unit.rs` (planned Phase 1 T067) | Deferred to Phase 1 |
+| **Preview offline (core path)** | Markdown render is a pure `&str -> String` function; remote URLs emitted as literal `src=`/`href=` (never fetched) | `crates/emend-core/tests/preview_offline.rs` | ✅ US4 T083 (implemented) |
+| **Preview HTML rendering** | GFM, wikilinks, highlight syntax render correctly; comrak escapes raw HTML | `crates/emend-core/tests/preview_render.rs` | ✅ US4 T084 (implemented) |
+| **Preview CSP + isolation** | WKWebView enforces CSP, nonPersistent store, navigation delegate blocks remote loads | Manual signed-app test + `app/Emend/EmendTests/PreviewExportTests.swift` | ✅ US4 (partial; runtime path requires manual UI verification) |
+| **PDF export offline** | Off-screen export uses same isolation (CSP + nonPersistent + bundled assets) as on-screen preview | `app/Emend/EmendTests/PreviewExportTests.swift` | ✅ US4 (implemented) |
 | **AI privacy (offline)** | No network with AI unconfigured | `crates/emend-core/tests/ai_privacy.rs` | Phase 1 T110 |
 | **AI key redaction** | Logs never contain key substring | Code review + test capture | Phase 1 T112 |
-| **Preview offline** | WKWebView makes zero network calls | Airplane mode test + CSP verification | Phase 1 T083 |
 
 ---
 
@@ -326,6 +371,8 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 4. **Dependency vulnerability scanning** is not automated in CI; manual `cargo audit` checks recommended pre-release (tracked in TD-006).
 5. **Performance regression testing** for incremental parsing is deferred (tracked in TD-002).
 6. **Folder move re-pathing** for descendants' favorite/pin state is deferred (known limitation captured in CONCERNS.md).
+7. **Preview scroll-sync runtime path** (Section §C3): the pure core logic for data-line anchors is tested; the runtime integration (editor↔preview scroll sync) requires manual UI verification in the signed app.
+8. **Embed resolution** (`![[…]]` with cycle/depth guards) is deferred to US5 and will require a future security review of embed trust boundaries.
 
 ---
 

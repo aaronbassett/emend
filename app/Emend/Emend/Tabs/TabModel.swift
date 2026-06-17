@@ -52,6 +52,10 @@ final class TabModel: ObservableObject {
     /// Invoked after a tab's autosave flushes, so external watchers can suppress
     /// the app's own write (FR-006a).
     var onTabFlushed: ((URL) -> Void)?
+    /// Invoked (on the main actor) on each edit to an open document, so the live
+    /// preview can re-render (US4). Only the active tab is interactive, so in
+    /// practice this signals edits to the active document.
+    var onDocEdit: (() -> Void)?
 
     var active: Tab? {
         tabs.first { $0.id == activeID }
@@ -161,6 +165,9 @@ final class TabModel: ObservableObject {
         }
         autosave.onFlush = { [weak self] in
             Task { @MainActor in self?.onTabFlushed?(url) }
+        }
+        autosave.onEdit = { [weak self] in
+            Task { @MainActor in self?.onDocEdit?() }
         }
         return autosave
     }

@@ -2,11 +2,11 @@
 
 > **Purpose**: Document technical debt, known risks, bugs, fragile areas, and improvement opportunities.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US2 Phase 4 complete; known runtime limitations added)
+> **Last Updated**: 2026-06-17 (US4 Phase 6 complete; preview/PDF security verified; scroll-sync runtime testing deferred)
 
 ## Executive Summary
 
-Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete as of 2026-06-17). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US2 (Phase 4)** added: location bookmarks + app state (favorites/pins/icons) persisted via UserDefaults; self-write suppression designed (stat-based identity); conflict truth table (clean→reload, dirty→preserve+flag). **Phase 1 in scope**: most feature implementations (AI, preview, search, linking, export) remain to be coded. Key risks are around **unimplemented AI key handling** (designed but not coded), **unvalidated security-scoped-bookmark behavior in the signed app**, **untested self-write suppression + conflict path**, and **deferred performance regression testing** for incremental Markdown parsing on large documents. **US1 (Phase 3) status**: editor pane + smart lists drafted; whole-document re-attribution on each edit is a tracked perf concern (viewport windowing deferred).
+Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete; US4 preview + PDF export complete). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US4 (Phase 6)** added: offline Markdown preview with bundled Mermaid + KaTeX, three-layer network isolation (CSP + nonPersistent store + navigation delegate), PDF export with identical privacy guarantees, comrak HTML escaping as the trust boundary for untrusted markdown. **Phase 1 in scope**: AI integration (key redaction, privacy tests), scroll-sync runtime validation, and most feature implementations remain. Key risks are around **unimplemented AI key handling** (designed but not coded), **untested self-write suppression + conflict path**, **scroll-sync runtime verification deferred** (core logic tested, runtime integration untested on real macOS events), and **deferred performance regression testing** for incremental Markdown parsing on large documents.
 
 ---
 
@@ -41,6 +41,12 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 | ID | Area | Description | Risk Level | Mitigation |
 |----|------|-------------|------------|------------|
 | **SEC-005** | `crates/emend-core/src/watcher.rs` (FsWatcher real notify integration) + `app/Emend` (MainWindow conflict handling) | The pure conflict-detection core is unit-tested thoroughly. However, real OS filesystem events (FSEvents on macOS) are nondeterministic and directory-coalescing. The integration path—notify event → debouncer → pure classifier → UI conflict banner—is not exercised by the headless test suite. Risk: real OSEvents may exhibit timing/coalescing behavior not covered by synthetic tests. | **Medium** | (1) Manual UI testing: open a document, edit it, modify the file on disk from another tool (or via `touch -m`/`cp`), verify UI correctly detects conflict + offers reload/keep. (2) Stress test: rapid external edits (e.g., `yes "new line" >> file.md`) while buffer is dirty; verify no data loss. (3) Deferred: formal integration test harness (Phase 1 T067). |
+
+### SEC-006: Preview Scroll-Sync Runtime Path Untested (US4 Runtime Debt)
+
+| ID | Area | Description | Risk Level | Mitigation |
+|----|------|-------------|------------|------------|
+| **SEC-006** | `app/Emend/Emend/Preview/PreviewWebView.swift` + `app/Emend/Emend/Preview/ScrollSync.swift` + `crates/emend-core/src/parse/preview.rs` | The preview pane's scroll-sync mechanism (research §C3) works as follows: comrak renders with `data-sourcepos` attributes, Rust post-processes to add `data-line`, Swift's `PreviewWebView` injects content via `window.__emendRender()`, the preview page scrolls and posts `{ line }` back to Swift via `emendScroll` message handler, and `ScrollSync` coordinates editor↔preview scroll position. The **pure core logic** (data-line anchor generation) is tested; the **runtime integration** (bridging editor scroll ↔ preview scroll via WebKit message passing) is **not exercised by headless tests**. Risk: if scroll-sync message passing fails (e.g., message name mismatch, coordinate conversion bug), the editor and preview scroll out of sync, degrading UX. | **Medium** | (1) Manual UI testing: open a multi-page document, scroll the preview, verify the editor scrolls to match and vice versa. (2) Edge cases: scroll to the bottom, top, middle; edit while scrolled to verify re-sync. (3) Verify that collapsed code blocks and long fenced blocks don't break line-number mapping. (4) Formal integration test suite deferred (Phase 1 T086). |
 
 ---
 
@@ -87,6 +93,33 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 |----|------|-------------|--------|--------|--------|
 | **TD-006** | `crates/emend-core/src/fs.rs::read_tolerant` | To satisfy FR-003a, reads accept UTF-8 BOM, CRLF, and lossy UTF-8 decoding. On round-trip (read → edit → write), the original encoding is lost: BOM is stripped, CRLF is **preserved** (not normalized), invalid UTF-8 is replaced with U+FFFD. Files written by tools with specific encodings may degrade slightly on first save. | Subtle data change on first save after opening; user confusion if encoding was intentional | Low | Post-v1 |
 | **Prevention** | Document the normalization behavior in settings ("Encoding" section). Consider a future "preserve encoding" flag if users request it. CRLF preservation is intentional (research §B4). | | | |
+
+---
+
+## US4 Phase 6 Known Runtime Limitations & Testing Gaps
+
+The following are runtime concerns specific to US4 preview/PDF functionality — the **pure core logic is tested**, but the **runtime integration is partially untested**:
+
+### RUNTIME-006: Preview Scroll-Sync Integration Not Fully Tested (US4)
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-006** | `app/Emend/Emend/Preview/PreviewWebView.swift` + `crates/emend-core/src/parse/preview.rs` + `app/Emend/Emend/Preview/ScrollSync.swift` | The data-line anchor generation (Rust) is unit-tested (`preview_render.rs`, `preview_offline.rs`). The WebView injection (`PreviewWebView.Coordinator.render()`) is functional. The **scroll-sync message passing** (preview page posts `{ line }` via `emendScroll`, Swift processes it to scroll editor) is **not exercised by automated tests**. Edge cases: line numbering in nested blocks, fenced code blocks with long content, collapsed regions. | If scroll-sync message fails or coordinate mapping is wrong, preview and editor scrolling are out of sync, degrading UX. | Workaround: manual UI testing. No way to fully test WebKit message passing in CI (would need a running WebView). | By design (runtime integration testing deferred) |
+| **Prevention** | Phase 1 task T086 (proposed): add integration tests that exercise scroll-sync end-to-end in the signed app (app-hosted tests with @testable import to drive both editor and preview). For now, manual testing is required: open a multi-page doc, scroll preview, verify editor follows; scroll editor, verify preview follows. | | | |
+
+### RUNTIME-007: Comrak HTML Escaping Is the Trust Boundary for Untrusted Markdown
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-007** | `crates/emend-core/src/parse/preview.rs` + `app/Emend/Emend/Preview/PreviewWebView.swift` | The trust boundary for untrusted user Markdown is **comrak's HTML escaping**. User-supplied raw HTML tags (e.g., `<script>`, `<iframe>`) are entity-escaped (`<` → `&lt;`). If comrak's escaping is ever disabled (e.g., via `Options::unsafe_ = true` or a future option), or if a different rendering engine is used, raw HTML could be executed in the WebView. The Swift side (CSP + nonPersistent store + navigation delegate) provides defense-in-depth, but the core boundary is the escape. | If comrak's escaping is disabled or bypassed, malicious markdown could execute arbitrary JavaScript (XSS). | Defense-in-depth: CSP (default-src 'none') blocks most injection; nonPersistent store prevents state leakage; navigation delegate blocks navigation to external origins. But the first line of defense is comrak escaping. | By design; reviewed during US4 |
+| **Prevention** | Code review gate: any change to comrak options (e.g., `Options::unsafe_` or new settings) MUST be explicitly justified and approved. Add a comment in `preview.rs` explaining why escaping is required. Consider a test that validates a malicious markdown payload renders as escaped text (not executable). | | | |
+
+### RUNTIME-008: PDF Export Off-Screen WebView Lifecycle
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **RUNTIME-008** | `app/Emend/Emend/Preview/PDFExport.swift` + `OffscreenPrintHost` | PDF export creates an off-screen `WKWebView`, loads the template, injects content, runs Mermaid.js (async), then calls `NSPrintOperation.runModal()` (blocking the main thread but pumping the run loop for WebKit IPC). Timeouts are 20 s (template load) + 30 s (print). If the watchdog fires, the continuation is resumed with an error, but the off-screen window and WebView are still alive (cleanup is deferred). Risk: if a user repeatedly exports while edits are happening, off-screen WebViews could accumulate until memory pressure. | Edge case: rapid successive PDF exports on large documents could leak WebViews. | Workaround: `defer { cleanup() }` ensures cleanup runs even if a timeout fires. But if the continuation is lost (e.g., Swift runtime error), cleanup might not run. | By design; timeouts are defensive |
+| **Prevention** | (1) Test: open a 1000-page document, export to PDF 10 times rapidly, measure memory usage (should be constant, not growing). (2) Add @Sendable finalizer to `OffscreenPrintHost` so cleanup is guaranteed even if the continuation is dropped. (3) Monitor in field: if users report memory bloat during batch exports, investigate. | | | |
 
 ---
 
@@ -202,10 +235,14 @@ The following are **by design** — deferred to Phase 1 or later, but documented
 | `crates/emend-core/src/document.rs` | UTF-16 range handling with surrogate-pair validation; off-by-one errors risk silent text corruption. | Every edit operation must use `U16Range` branded newtype, never raw `u32`. Property-based tests required before Phase 3 merge (T035). Code review: check all `try_from` calls are present, never `as` casts for conversions. |
 | `crates/emend-ffi/src/error.rs` | FFI error projection is exhaustive (no wildcard match). Adding a variant to `EmendError` breaks this file at compile time until mirrored. | Always mirror variants exactly. Test that projection round-trips are lossless (`FfiError::from(core_err)` preserves all fields). |
 | `crates/emend-ffi/src/panic.rs` | Panic containment is the boundary between crashing FFI panics and recoverable Rust errors. `contain_panic` wraps spawned tasks; missing it → process abort. | Every `tokio::spawn` body must be wrapped. Add a comment: `// SAFETY: panic contained by contain_panic(…)` over the spawn call. Code review gate: verify no bare `spawn()` calls exist. |
+| `crates/emend-core/src/parse/preview.rs` | Comrak HTML escaping is the trust boundary for untrusted user markdown. If escaping is disabled (e.g., `unsafe_ = true`) or comrak is replaced, raw HTML could be injected. | Code review gate: any change to `build_options()` must justify the change and document the security implication. Test that malicious markdown (e.g., `<script>alert(1)</script>`) renders as escaped text, not executable. |
+| `app/Emend/Emend/Preview/PreviewWebView.swift` | Three-layer isolation (CSP + nonPersistent + navigation delegate) must be kept in sync. A bug in any layer could regress the privacy model. | Code review: verify CSP header is always present in template.html. Verify `config.websiteDataStore = .nonPersistent()` is never removed. Verify navigation delegate allows only `file:` + `about:`. If any of these change, update the SECURITY.md documentation. |
+| `app/Emend/Emend/Preview/PDFExport.swift` | Off-screen WebView lifecycle and timeout logic are error-prone. A bug could cause WebViews to leak or fail silently. | Code review: verify `defer { cleanup() }` is present. Verify timeouts (20 s template, 30 s print) are reasonable for the largest expected document. Test that watchdog timeout firing (e.g., with a stalled template) results in an error, not a hang. |
 | `app/Emend/Platform/SecurityScopedBookmarks.swift` | Scope lifecycle (start/stop balance) is error-prone. Unbalanced calls leak scopes; missing calls allow unauthorized file access. | Code review: every `startAccessingSecurityScopedResource` must have a corresponding `stopAccessing…` in the same scope (defer or try-finally). Add a test that simulates an unbalanced call and asserts it fails gracefully. |
 | `app/Emend/Sidebar/WorkspaceModel.swift` (US2 Phase 4) | Bookmark persistence, stale-bookmark refresh, scope lifecycle, and app-state duplication are intertwined. Unbalanced scope calls or losing UserDefaults state could break file access or lose favorites. | Code review: verify all `startAccessing` / `stopAccessing` calls are balanced. Verify bookmark persistence is replayed correctly on launch (test with simulator state wipe). Verify app-state setters are called synchronously after toggling favorites/pins. |
 | `app/Emend/Shell/MainWindow.swift` (US1 Phase 3) | Autosave coordination + conflict detection + external file monitoring create a complex state machine. A bug cascades: stale file opened → edits trigger reload → potential data loss. | Review autosave + file-change integration together. Add integration tests: autosave while external tool modifies file → conflict resolution works, no data loss. Test plan from TD-004 / SEC-004. |
 | `crates/emend-core/src/parse.rs` (Phase 1 T072) | tree-sitter incremental reparse and comrak HTML generation are two separate engines. A mismatch in Markdown interpretation could render one way in editor, another in preview. | Keep parity tests: parse the same doc in both engines, render to strings, assert visually equivalent. Don't unify the engines (Constitution principle); maintain two tests. |
+| `app/Emend/Emend/Preview/PreviewWebView.swift` + `app/Emend/Emend/Preview/ScrollSync.swift` (US4) | Scroll-sync message passing (preview page posts line number to Swift, Swift scrolls editor) is functional but untested. A bug could cause editor and preview to scroll out of sync. | Manual UI testing required (Phase 1 T086). Edge cases: collapsed code blocks, nested lists, long fenced blocks. Verify line-number mapping is correct across complex document structures. |
 
 ---
 
@@ -217,9 +254,10 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 |----------|------|----------|---------|--------|
 | Phase 1 (T110) | Implement `crates/emend-core/tests/ai_privacy.rs`: verify no network when AI unconfigured, key never in logs | High | T110 | Deferred |
 | Phase 1 (T112) | Implement `crates/emend-core/src/ai.rs`: reqwest SSE, redacting key, timeout, max-input guard | High | T112 | Deferred |
-| Phase 1 (T083) | Implement `crates/emend-core/tests/preview_offline.rs`: WKWebView zero network access | High | T083 | Deferred |
+| Phase 1 (T083) | Implement `crates/emend-core/tests/preview_offline.rs`: core rendering is offline (DONE); runtime WebView CSP + nonPersistent test deferred | High | T083 | Partial (core done, runtime deferred) |
+| Phase 1 (T086) | Implement scroll-sync integration tests: editor↔preview scroll coordination on real documents | Medium | T086 | Deferred |
 | Phase 1 (T065–T067) | Implement `crates/emend-core/src/watcher.rs` integration tests: file watching, debounce, self-write suppression, rename correlation, conflict handling | High | T065–T067 | Logic complete; integration tests deferred |
-| Phase 1 (T072–T073) | Implement `crates/emend-core/src/parse.rs`: tree-sitter + comrak integration | High | T072–T073 | Deferred |
+| Phase 1 (T072–T073) | Implement `crates/emend-core/src/parse.rs`: tree-sitter + comrak integration | High | T072–T073 | Comrak done (US4); tree-sitter editor highlight deferred |
 | Phase 1 (T074–T076) | Implement `crates/emend-core/src/index.rs`: Quick Open, wiki-link resolution | High | T074–T076 | Deferred |
 | Phase 3 (T035) | Wire Swift editor (keystroke deltas) → Rust core (push_edit) with UTF-16 ranges | High | T035 | In progress (US1) |
 | Phase 3 (T131) | Viewport windowing + incremental reparse for large documents | Medium | T131 | Deferred (polish) |
@@ -238,7 +276,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | `thiserror` | ✅ Active | 2026-06-17 | 2.x stable (v1 frozen); modern error-handling standard |
 | `tree-sitter` | ✅ Maintained (Zed) | 2026-06-17 | 0.26.x active; incremental parse API stable; unify with tree-sitter-md |
 | `tree-sitter-md` | ✅ Maintained | 2026-06-17 | 0.5.x (requires tree-sitter 0.26); parser feature required |
-| `comrak` | ✅ Active | 2026-06-17 | 0.52.x; CommonMark spec tracking; watch for breaking spec changes |
+| `comrak` | ✅ Active | 2026-06-17 | 0.52.x; CommonMark spec tracking; **HTML escaping is critical security boundary (US4)** |
 | `syntect` | ✅ Maintained (burntsushi) | 2026-06-17 | 5.3.x stable; theme/syntax set discovery is slow; see research §B6 binary dump approach |
 | `nucleo` | ✅ Active (helix contributor) | 2026-06-17 | 0.5.x; published crate is stable; prefer vendoring if CI concerns arise |
 | `notify` + `notify-debouncer-full` | ✅ Maintained | 2026-06-17 | 8.2.x + 0.7.x stable; 9.0 RC available but stay on 8.x until stabilized |
@@ -259,6 +297,8 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Test coverage for watcher** | Pure logic tested; real OSEvents untested | Add integration tests for file-change coalescing, self-write suppression, rename correlation (TD-004, TD-005, SEC-004) | Confidence in production file handling | Medium |
 | **Incremental parse benchmark** | Manual performance measurement only | Criterion bench in CI with baseline tracking | Detect perf regressions before merge (TD-002) | Medium |
 | **Move-folder re-pathing** | App state paths not updated when folder moved | Walk descendants and update app-state paths on move | Favorites/pins/icons persist after folder move (RUNTIME-005) | Low |
+| **Scroll-sync integration testing** | Manual UI testing only | Formal integration tests in Phase 1 (T086) | Confidence in preview↔editor sync on real documents | Medium |
+| **Preview CSP runtime validation** | Assumed working; manual testing only | Add runtime test that verifies WKWebView CSP blocks remote loads (low-level, may be difficult in CI) | Confidence that privacy layer is enforced | Medium |
 
 ---
 
@@ -269,8 +309,9 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Dependency audits** | No automated `cargo audit` in CI | Could ship with known CVEs | Pre-release gate |
 | **Build reproducibility** | No lock file; transitive deps not pinned (TD-009) | Nondeterministic builds across machines | Phase 1 |
 | **Performance regression detection** | Benches exist but aren't tracked over time (no baseline comparison) | Slow builds/edits merge without notice | Phase 3 Polish (T138) |
-| **Integration test coverage** | Watcher, conflict, bookmark lifecycle untested with real macOS events | Hard to debug file-handling bugs in field | Phase 1 (T065–T067) |
+| **Integration test coverage** | Watcher, conflict, bookmark lifecycle untested with real macOS events; scroll-sync integration untested | Hard to debug file-handling bugs in field | Phase 1 (T065–T067, T086) |
 | **Error telemetry** | App records errors locally but doesn't report them (by design—offline-first) | Hard to detect widespread bugs in field | Post-v1 (intentional design) |
+| **Preview CSP enforcement** | Assumed enforced; no runtime verification in CI | Could regress silently if template is edited | Pre-release gate (manual testing) |
 
 ---
 
@@ -280,7 +321,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 |-------|------------|----------------|----------|
 | **Critical** | Production impact, security breach, data loss | Immediate (block merge) | Panic in FFI, atomic write bug, key leak |
 | **High** | Degraded functionality, security risk, test gap for security features | Before Phase 1 merge | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, TD-001, TD-002, TD-004 |
-| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints) |
+| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints), SEC-006 (scroll-sync) |
 | **Low** | Nice to have, cosmetic, post-v1 enhancement | Backlog | TD-011–TD-014, localization, observability |
 
 ---

@@ -177,7 +177,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T077 [GIT] Commit: Quick Open overlay
 - [x] T078 [US3] [test] `app/Emend/EmendTests/QuickOpenTests.swift`: ⌘P → query → open result (headless app-hosted; XCUITest can't bootstrap under CODE_SIGNING_ALLOWED=NO)
 - [x] T079 [US3] Run `/sdd:map incremental`; review `retro/P5.md` → CLAUDE.md; [GIT] commit
-- [ ] T080 [GIT] Push; PR "US3: Quick Open"; verify CI green; report PR ready status
+- [x] T080 [GIT] Push; PR "US3: Quick Open"; verify CI green; report PR ready status (merged as #5)
 
 **Checkpoint**: Quick Open works across the workspace.
 
@@ -189,19 +189,19 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Doc with code/table/Mermaid/math renders; scroll sync both ways; export → multi-page PDF matching the preview.
 
-- [ ] T081 [US4] Create `retro/P6.md`; [GIT] commit
-- [ ] T082 [P] [US4] [test] `crates/emend-core/tests/preview_render.rs`: comrak HTML has `data-line` anchors + syntect classed code; tables render (use devs:rust-dev agent)
-- [ ] T083 [P] [US4] [test] `crates/emend-core/tests/preview_offline.rs`: rendering performs zero network access (SC-008) (use devs:rust-dev agent)
-- [ ] T083a [US4] Generate & vendor the binary syntect `SyntaxSet`/`ThemeSet` dump for the 30-language v1 set (research §D) into `crates/emend-core/assets/`; assert lazy load ≤23ms at startup, never raw-YAML on the hot path (research §B6) (use devs:rust-dev agent)
-- [ ] T084 [US4] Implement `crates/emend-core/src/parse/preview.rs` (comrak + line anchors) and `crates/emend-core/src/parse/code_highlight.rs` (syntect classed HTML, lazy binary-dump load from T083a) (research §B1/§B6) (use devs:rust-dev agent)
-- [ ] T085 [US4] Export `render_preview_html`/`preview_assets_dir` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
-- [ ] T086 [GIT] Commit: core preview rendering + FFI
-- [ ] T087 [US4] Implement `app/Emend/Emend/Preview/PreviewWebView.swift` (WKWebView, offline CSP, nonPersistent store, navigation-blocking delegate, Mermaid/KaTeX) (research §C2)
-- [ ] T088 [P] [US4] Implement `app/Emend/Emend/Preview/ScrollSync.swift` (bidirectional `data-line` anchor sync, feedback-loop guard) (research §C3)
-- [ ] T089 [US4] Implement `app/Emend/Emend/Preview/PDFExport.swift` via `NSPrintOperation` on an offscreen WKWebView (paginated, `@media print`) (research §C4)
-- [ ] T090 [GIT] Commit: preview WebView, scroll sync, PDF export
-- [ ] T091 [US4] [test] `app/Emend/EmendUITests/PreviewExportTests.swift`: render sample doc, export, assert multi-page PDF
-- [ ] T092 [US4] Run `/sdd:map incremental`; review `retro/P6.md` → CLAUDE.md; [GIT] commit
+- [x] T081 [US4] Create `retro/P6.md`; [GIT] commit
+- [x] T082 [P] [US4] [test] `crates/emend-core/tests/preview_render.rs`: comrak HTML has `data-line` anchors + syntect classed code; tables render (use devs:rust-dev agent)
+- [x] T083 [P] [US4] [test] `crates/emend-core/tests/preview_offline.rs`: rendering performs zero network access (SC-008) (use devs:rust-dev agent)
+- [x] T083a [US4] Generate & vendor the binary syntect `SyntaxSet`/`ThemeSet` dump for the 30-language v1 set (research §D) into `crates/emend-core/assets/`; assert lazy load ≤23ms at startup, never raw-YAML on the hot path (research §B6) (use devs:rust-dev agent)
+- [x] T084 [US4] Implement `crates/emend-core/src/parse/preview.rs` (comrak + line anchors) and `crates/emend-core/src/parse/code_highlight.rs` (syntect classed HTML, lazy binary-dump load from T083a) (research §B1/§B6) (use devs:rust-dev agent)
+- [x] T085 [US4] Export `render_preview_html`/`preview_assets_dir` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
+- [x] T086 [GIT] Commit: core preview rendering + FFI
+- [x] T087 [US4] Implement `app/Emend/Emend/Preview/PreviewWebView.swift` (WKWebView, offline CSP, nonPersistent store, navigation-blocking delegate, Mermaid/KaTeX) (research §C2)
+- [x] T088 [P] [US4] Implement `app/Emend/Emend/Preview/ScrollSync.swift` (bidirectional `data-line` anchor sync, feedback-loop guard) (research §C3)
+- [x] T089 [US4] Implement `app/Emend/Emend/Preview/PDFExport.swift` via `NSPrintOperation` on an offscreen WKWebView (paginated, `@media print`) (research §C4) — uses async `runModal(for:…)` (synchronous `run()` deadlocks the main run loop with WebKit IPC)
+- [x] T090 [GIT] Commit: preview WebView, scroll sync, PDF export
+- [x] T091 [US4] [test] `app/Emend/EmendTests/PreviewExportTests.swift`: render sample doc, export, assert multi-page PDF (app-hosted/headless, not XCUITest — same rationale as other flows; the `EmendUITests` target doesn't exist by design)
+- [x] T092 [US4] Run `/sdd:map incremental`; review `retro/P6.md` → CLAUDE.md; [GIT] commit
 - [ ] T093 [GIT] Push; PR "US4: preview + PDF"; verify CI green; report PR ready status
 
 **Checkpoint**: Preview + PDF export work.

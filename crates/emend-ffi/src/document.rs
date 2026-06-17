@@ -19,7 +19,10 @@
 //!    gives the `&mut` for edits.
 //!
 //! 3. **Exports** `open_document` / `push_edit` / `highlight_spans` / `flush` /
-//!    `close` matching the contract's names and threading rules.
+//!    `close` matching the contract's names and threading rules, plus the US4
+//!    preview exports `render_preview_html` (a method on the handle) and the
+//!    free `preview_theme_css` (the core-owned syntect theme CSS — see its docs
+//!    for how it resolves the contract's ambiguous `preview_assets_dir`).
 //!
 //! ## Design choices (documented per the task brief)
 //!
@@ -312,6 +315,42 @@ impl OpenDocHandle {
         Ok(())
     }
 
+    /// Render the document's **current buffer** to preview HTML (FFI contract §6,
+    /// US4 · FR-023..028).
+    ///
+    /// Snapshots the buffer ([`Document::text`]) under the lock and renders it
+    /// with the **authoritative** comrak engine
+    /// ([`emend_core::parse::preview::render_preview_html`]) — CommonMark + GFM +
+    /// the native `[[wikilink]]` / `==highlight==` extensions, with `data-line`
+    /// scroll-sync anchors (research §C3) and syntect-coloured code blocks
+    /// (research §B6). This is a separate engine from the editor highlighter
+    /// reached by [`Self::highlight_spans`] — they are never unified (Constitution).
+    ///
+    /// Not the hot path: the preview is debounced off the keystroke path
+    /// (research §B1), so taking the buffer snapshot under the lock is acceptable.
+    /// The render itself is pure CPU/string with **no network access** (SC-008) —
+    /// remote URLs in the source stay literal; the runtime offline guarantee for
+    /// the rendered page is enforced Swift-side by the WKWebView CSP (T087).
+    ///
+    /// `![[embed]]` resolution is deferred to US5 (the linking phase); embeds
+    /// render literally for now (see `emend_core::parse::preview`).
+    ///
+    /// # Errors
+    ///
+    /// - [`FfiError::Internal`] if rendering fails unexpectedly (rendering is pure
+    ///   and does not normally fail), or if the handle is closed / the lock is
+    ///   poisoned.
+    pub fn render_preview_html(&self) -> Result<String, FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        let source = session.doc.text();
+        let html = emend_core::parse::preview::render_preview_html(
+            &source,
+            &emend_core::parse::preview::PreviewOptions::default(),
+        )?;
+        Ok(html)
+    }
+
     /// Explicit close (FFI contract §3 `close_document`). Consumes the inner
     /// session, running [`Document::close`]; the handle is inert afterwards.
     ///
@@ -339,6 +378,35 @@ fn closed_handle() -> FfiError {
     FfiError::Internal {
         detail: "document handle is closed".to_owned(),
     }
+}
+
+/// The syntect theme CSS for the preview's classed code blocks (US4 · research
+/// §B6 / §C2).
+///
+/// ## Contract-ambiguity resolution (`preview_assets_dir`)
+///
+/// The FFI contract (§6) sketches `preview_assets_dir() -> String` as "bundled
+/// Mermaid/KaTeX/theme CSS base". That shape does not fit the Rust core: **Mermaid
+/// and KaTeX are bundled in the SWIFT app** (vendored JS/CSS/fonts loaded via
+/// `loadFileURL`, research §C2) — they are *not* owned by, or knowable to, the
+/// Rust core, and there is no filesystem directory the core could meaningfully
+/// return for them.
+///
+/// What the core *does* own is the **syntect theme CSS** for the classed
+/// `<span class="…">` runs emitted by `render_preview_html` (research §B6). So we
+/// resolve the ambiguous `preview_assets_dir` into a precise, core-owned export:
+/// `preview_theme_css()` returns that stylesheet as a `String`, which Swift
+/// injects into its WebView HTML template alongside the app-bundled Mermaid/KaTeX
+/// assets. This keeps the Rust/Swift ownership split honest (core owns the
+/// highlight theme; the app owns its bundled JS libraries) and gives Swift
+/// exactly the bytes it needs.
+///
+/// Infallible: the CSS is a compiled-in `&'static str` (vendored alongside the
+/// syntax dump), so this cannot fail and is effectively free to call.
+#[uniffi::export]
+#[must_use]
+pub fn preview_theme_css() -> String {
+    emend_core::parse::code_highlight::theme_css().to_owned()
 }
 
 /// Open the note at `path` into an [`OpenDocHandle`] (FFI contract §3).
@@ -385,7 +453,7 @@ mod tests {
         reason = "unit test asserts on its own fixtures"
     )]
 
-    use super::{open_document, StyleClass, U16Range};
+    use super::{open_document, preview_theme_css, StyleClass, U16Range};
     use crate::error::FfiError;
 
     fn u16_len(s: &str) -> u32 {
@@ -578,6 +646,66 @@ mod tests {
         assert!(
             matches!(err, FfiError::NotFound { .. }),
             "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_reflects_current_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A heading plus a fenced rust block exercises both the data-line anchor
+        // path and the syntect classed-code path.
+        let path = write_note(&dir, "note.md", "# Title\n\n```rust\nfn main() {}\n```\n");
+        let handle = open_document(path).expect("open");
+
+        let html = handle.render_preview_html().expect("render preview");
+        assert!(html.contains("<h1"), "heading should render: {html}");
+        assert!(
+            html.contains("data-line=\"1\""),
+            "scroll-sync anchor should be present: {html}"
+        );
+        assert!(
+            html.contains("<span class=\""),
+            "syntect classed code should be present: {html}"
+        );
+
+        // The render must track edits: insert a tasklist line and re-render.
+        let len = u16_len("# Title\n\n```rust\nfn main() {}\n```\n");
+        handle
+            .push_edit(U16Range { start: len, len: 0 }, "\n- [x] done\n".to_owned())
+            .expect("push edit");
+        let html2 = handle.render_preview_html().expect("re-render");
+        assert!(
+            html2.contains("type=\"checkbox\""),
+            "edited-in tasklist should appear in re-render: {html2}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_after_close_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "# Hi\n");
+        let handle = open_document(path).expect("open");
+        handle.close().expect("close");
+
+        let err = handle
+            .render_preview_html()
+            .expect_err("render after close must error");
+        assert!(
+            matches!(err, FfiError::Internal { .. }),
+            "expected Internal for render after close, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn preview_theme_css_is_present_and_classed() {
+        // The core-owned syntect theme CSS (resolves the contract's
+        // `preview_assets_dir` ambiguity — see `preview_theme_css` docs).
+        let css = preview_theme_css();
+        assert!(!css.is_empty(), "theme CSS must be present");
+        assert!(
+            css.contains('.'),
+            "ClassStyle::Spaced theme CSS should contain class selectors: {}",
+            &css[..css.len().min(120)]
         );
     }
 }

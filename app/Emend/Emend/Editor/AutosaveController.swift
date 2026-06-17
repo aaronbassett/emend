@@ -24,6 +24,11 @@ final class AutosaveController {
     /// written) so the watcher's self-write suppression can be primed (FR-006a).
     var onFlush: (@Sendable () -> Void)?
 
+    /// Invoked (on the autosave queue) on each edit, before the debounce — lets the
+    /// live preview schedule its own (separately debounced) re-render off the same
+    /// universal edit signal every change already flows through (US4, research §B1).
+    var onEdit: (@Sendable () -> Void)?
+
     private var idleItem: DispatchWorkItem?
     private var hardCapItem: DispatchWorkItem?
     private var discarded = false
@@ -39,6 +44,7 @@ final class AutosaveController {
     func noteEdit() {
         queue.async { [weak self] in
             guard let self else { return }
+            onEdit?()
             idleItem?.cancel()
             let idle = DispatchWorkItem { [weak self] in self?.fire() }
             idleItem = idle

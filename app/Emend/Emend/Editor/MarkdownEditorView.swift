@@ -16,6 +16,11 @@ struct MarkdownEditorView: NSViewRepresentable {
     let initialText: String
     let isReadOnly: Bool
     let autosave: AutosaveController
+    /// The live preview's scroll-sync hub (US4). `nil` when no preview is wired.
+    var scrollSync: ScrollSync?
+    /// Whether this editor backs the active tab — only the active editor registers
+    /// as the scroll-sync source/target.
+    var isActive = true
 
     func makeCoordinator() -> EditorCoordinator {
         EditorCoordinator(handle: handle, autosave: autosave, isReadOnly: isReadOnly)
@@ -37,13 +42,27 @@ struct MarkdownEditorView: NSViewRepresentable {
         )
         textView.textStorage?.delegate = context.coordinator
         context.coordinator.attach(textView)
+        context.coordinator.scrollSync = scrollSync
+        context.coordinator.observeScrolling(in: scrollView)
         context.coordinator.reattribute()
 
         scrollView.documentView = textView
         return scrollView
     }
 
-    func updateNSView(_: NSScrollView, context _: Context) {}
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.scrollSync = scrollSync
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        // Register only the active tab's editor as the scroll-sync source/target,
+        // and explicitly detach when it goes inactive so a tab switch can't leave
+        // the hub pointing at the previously-active editor (SwiftUI doesn't order
+        // the old/new editors' updateNSView calls).
+        if isActive {
+            scrollSync?.attachEditor(scrollView: scrollView, textView: textView)
+        } else {
+            scrollSync?.detachEditor(textView)
+        }
+    }
 
     /// Build a TextKit 2 `MarkdownTextView` (research §C1): an explicit
     /// `NSTextContentStorage`/`NSTextLayoutManager` stack keeps incremental layout
@@ -187,6 +206,9 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
     private let isReadOnly: Bool
     private weak var textView: NSTextView?
 
+    /// The live preview's scroll-sync hub (US4); `nil` when no preview is wired.
+    var scrollSync: ScrollSync?
+
     /// Guards re-entrancy: our own attribute writes also fire `didProcessEditing`.
     private var isApplyingAttributes = false
     private var reattributeScheduled = false
@@ -197,8 +219,32 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
         self.isReadOnly = isReadOnly
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     func attach(_ textView: NSTextView) {
         self.textView = textView
+    }
+
+    /// Observe the scroll view's clip bounds so editor scrolls drive the preview
+    /// (US4 · research §C3). The clip view posts on the main thread during scroll.
+    func observeScrolling(in scrollView: NSScrollView) {
+        let clip = scrollView.contentView
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(viewportDidScroll),
+            name: NSView.boundsDidChangeNotification,
+            object: clip
+        )
+    }
+
+    /// Clip bounds moved (a scroll): forward the editor's top line to the preview.
+    /// Posted on the main thread during scrolling.
+    @objc private func viewportDidScroll() {
+        guard let textView else { return }
+        scrollSync?.editorScrolled(from: textView)
     }
 
     /// NSTextStorageDelegate is not @MainActor in the SDK, but its callbacks always

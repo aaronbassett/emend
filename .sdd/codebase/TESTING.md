@@ -103,7 +103,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
 | `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
-#### Test Files (Comprehensive, US3)
+#### Test Files (Comprehensive, US4)
 
 | Path | Purpose | Test Type |
 |------|---------|-----------|
@@ -117,6 +117,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `app/Emend/EmendTests/EditorPersistenceTests.swift` | End-to-end persistence: `EditorCoordinator` + `AutosaveController` + disk round-trip (T049, headless integration) | Integration |
 | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | End-to-end workspace: add folder → list tree → open tab → move/rename (T067, US2 Phase 4) | Integration |
 | `app/Emend/EmendTests/QuickOpenTests.swift` | End-to-end Quick Open: seed index → query streams results → Return opens file (T078, US3) | Integration |
+| `app/Emend/EmendTests/PreviewExportTests.swift` | PDF export: render long doc → paginate off-screen → verify multi-page PDF (T091, US4 · FR-026/SC-010) | Integration |
 
 #### Test Pattern (XCTest)
 
@@ -257,6 +258,46 @@ final class QuickOpenTests: XCTestCase {
 ```
 
 This drives the real `WorkspaceHandle` + `QuickOpenModel` end-to-end, exercising the full streaming path from Rust search worker through the `QuickOpenSink` bridge to SwiftUI state updates.
+
+**Example: PreviewExportTests (T091, US4)**
+```swift
+@MainActor
+final class PreviewExportTests: XCTestCase {
+    func testExportProducesMultiPagePDF() async throws {
+        // Arrange: a document long enough to span several Letter/A4 pages
+        let markdown = Self.longDocument(sections: 60)
+        let source = try writeTempNote(markdown)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let handle = try openDocument(path: source.path)
+        defer { try? handle.close() }
+        
+        // Act: render the preview HTML via the core's comrak + syntect renderer
+        let html = try handle.renderPreviewHtml()
+        XCTAssertTrue(html.contains("Section 1"), "core rendered the document body")
+
+        // Export off-screen via PDFExport (async NSPrintOperation.runModal)
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("emend-export-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: output) }
+
+        try await PDFExport.export(html: html, css: previewThemeCss(), to: output)
+
+        // Assert: PDF exists and is multi-page (SC-010)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: output.path),
+            "the PDF was written to disk"
+        )
+        let pdf = try XCTUnwrap(PDFDocument(url: output), "the output is a readable PDF")
+        XCTAssertGreaterThan(
+            pdf.pageCount, 1,
+            "a long document paginates into multiple pages (SC-010), not one tall page"
+        )
+    }
+}
+```
+
+This drives the real `PDFExport` off-screen render→print pipeline without launching the app, verifying multi-page pagination. The async `NSPrintOperation.runModal(for:…)` is tested with `withCheckedThrowingContinuation` to bridge the selector-based `didRun` callback to async/await.
 
 ## Test Patterns
 
@@ -494,6 +535,7 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 - Real file I/O via `FileManager` to verify end-to-end persistence
 - Real Rust workspace handle + SwiftUI model instances for integration tests
 - Temp workspace with pre-seeded notes for Quick Open tests
+- Long markdown fixture + temp PDF file for export tests (US4)
 
 ## Benchmarking
 
@@ -604,6 +646,7 @@ Full-feature tests exercising public APIs and boundaries:
 | Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
 | Workspace flow | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | Add folder → tree → open tab → move/rename (T067, US2) | Yes (workspace UX) |
 | Quick Open flow | `app/Emend/EmendTests/QuickOpenTests.swift` | Seed index → query streams results → Return opens file (T078, US3) | Yes (Quick Open UX, FR-017/FR-018) |
+| PDF export | `app/Emend/EmendTests/PreviewExportTests.swift` | Render long doc → off-screen paginate → verify multi-page PDF (T091, US4) | Yes (FR-026/SC-010) |
 
 ## CI Integration
 
@@ -683,10 +726,10 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
 - ✅ Pure transform tests (headless, isolated unit tests for editor behavior)
-- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end)
+- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export)
 - ⏳ Full-app behavior tests deferred until features land (Phase 2+)
 
-**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, and the live-refresh runtime remain manual-verification (Constitution VII).
+**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, and on-screen preview rendering remain manual-verification (Constitution VII).
 
 ### Benchmark Philosophy
 

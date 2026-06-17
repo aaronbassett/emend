@@ -27,12 +27,14 @@
   <script src="katex/katex.min.js"></script>
   <script src="mermaid.min.js"></script>
   <script>
-    // Mermaid + KaTeX run locally only. Diagram/math rendering and bidirectional
-    // scroll-sync anchors are wired in Phase 6 (T087/T088); here we only set a
-    // conservative, no-auto-run baseline.
+    // Mermaid + KaTeX run locally only. The WKWebView host injects rendered
+    // content via window.__emendRender and drives/receives scroll-sync line
+    // anchors via window.__emendScrollToLine + the "emendScroll" handler
+    // (defined in bridge.js).
     if (window.mermaid) {
       window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
     }
   </script>
+  <script src="bridge.js"></script>
 </body>
 </html>
