@@ -43,6 +43,9 @@ final class WorkspaceModel: ObservableObject {
     private let defaults: UserDefaults
     private let bookmarksKey = "com.aaronbassett.Emend.locationBookmarks"
     private let appStateKey = "com.aaronbassett.Emend.appState"
+    /// Directory-depth bound for Quick Open index seeding (FR-017a). Deep enough
+    /// for realistic note trees without unbounded recursion on a pathological one.
+    private static let indexMaxDepth: UInt32 = 32
     /// Per-location: the bookmark (for persistence) and the held security scope.
     private var bookmarks: [UInt64: Data] = [:]
     private var heldScopes: [UInt64: URL] = [:]
@@ -130,6 +133,7 @@ final class WorkspaceModel: ObservableObject {
     func addLocation() {
         guard let bookmark = try? SecurityScopedBookmarks.promptForFolder() else { return }
         try? register(bookmark: bookmark, persist: true)
+        reindexInBackground() // seed the new location's files for Quick Open (FR-017a)
     }
 
     func removeLocation(_ node: WorkspaceNode) {
@@ -143,6 +147,7 @@ final class WorkspaceModel: ObservableObject {
         roots.removeAll { $0 === node }
         persistBookmarks()
         revision += 1
+        reindexInBackground() // drop the removed location's files from the index
     }
 
     /// Lazily-listed children for `node`, cached on the node. The Favorites group
@@ -307,6 +312,19 @@ private extension WorkspaceModel {
         }
         persistBookmarks() // capture any stale-bookmark refreshes
         replayAppStateToCore()
+        reindexInBackground() // seed Quick Open from the restored locations (FR-017a)
+    }
+
+    /// Seed/rebuild the Quick Open index off the main thread (NFR-001): walk the
+    /// current locations' files and rebuild the core index. A full rebuild is
+    /// acceptable here because location add/remove/launch are rare; per-file edits
+    /// keep the index current incrementally through the file-op methods.
+    func reindexInBackground() {
+        let workspace = workspace
+        let depth = Self.indexMaxDepth
+        Task.detached(priority: .utility) {
+            _ = try? workspace.reindexAll(maxDepth: depth)
+        }
     }
 
     private func persistBookmarks() {

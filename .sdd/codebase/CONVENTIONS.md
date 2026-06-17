@@ -93,7 +93,7 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 - **Public types/functions**: Full doc comment with examples where non-obvious
 - **Module root (`lib.rs`)**: Summary of the module's purpose and public surface
 - **Complex invariants**: Annotate in doc comments (e.g., UTF-16↔char conversions in `document.rs`)
-- **Test files (`tests/*.rs`)**: Module-level doc comment (prefixed `//!`) explaining the test scope
+- **Test files (`tests/*.rs`)**: Module-level doc comment (prefixed `//!`) explaining the test scope and test obligations
 
 **Example** (from `tests/document.rs`):
 ```rust
@@ -101,6 +101,16 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 //!
 //! These tests pin down the **UTF-16 boundary** that the per-keystroke hot path
 //! depends on (research §A2/§A3, FFI contract §3).
+```
+
+**Example** (from `tests/search_supersede.rs`, US3):
+```rust
+//! T072 — failing-first integration tests for the **cancellable** Quick Open
+//! search driver (`emend_core::search`), the pure layer behind the streaming FFI
+//! `quick_open_query` (US3 · FR-017, FR-018/SC-004, NFR-002; research §B2/§B7).
+//!
+//! The driver's whole reason to exist as a *separate* module from
+//! [`emend_core::index`] is the **supersede/cancel** behaviour NFR-002 demands...
 ```
 
 ## Swift Code Style
@@ -206,6 +216,7 @@ extension WorkspaceModel {
 | Utility extensions | PascalCase + descriptive | `SecurityScopedBookmarks.swift` |
 | Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift` |
 | Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `WorkspaceOutlineView+Coordinator.swift` |
+| Sink bridges (FFI callbacks) | PascalCase + `Sink` suffix | `QuickOpenSink.swift`, `FsObserver.swift` |
 | Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift` |
 
 #### Code Element Naming (Swift)
@@ -296,12 +307,12 @@ final class TextStorageObserver: NSTextStorageDelegate {
 }
 ```
 
-### Cross-Thread Callbacks: Sendable Closures
+### Cross-Thread Callbacks: Sendable Closures (US2, Phase 4 & US3)
 
-When Rust watcher events arrive on a background thread (e.g., `notify` FSEvents thread), bridge to the main actor via a `@Sendable` closure in a final-class holder:
+When Rust callbacks arrive on a background thread (e.g., `notify` FSEvents thread or search worker thread), bridge to the main actor via a `@Sendable` closure in a final-class holder. This pattern **holds only immutable closures** and is itself `Sendable`:
 
 ```swift
-// FsObserver bridges background-thread Rust callbacks to main actor
+// FsObserver bridges background-thread Rust watcher callbacks to main actor
 final class FsObserver: DocObserver, Sendable {
     private let onChange: @Sendable (ChangeEvent) -> Void
     
@@ -320,7 +331,48 @@ private lazy var fsObserver = FsObserver { [weak self] change in
 }
 ```
 
-**Rationale**: The `@Sendable` closure can safely cross threads. The `Task { @MainActor }` hop ensures model mutations stay on the main thread where SwiftUI expects them.
+**US3 example** (`QuickOpenSink` bridges streaming search results):
+```swift
+/// Bridges the core's SearchSink callbacks (on a background search worker)
+/// to @Sendable closures. Holds only immutable closures, so it is safely Sendable
+/// (mirrors FsObserver).
+final class QuickOpenSink: SearchSink, Sendable {
+    private let batchHandler: @Sendable ([SearchHit]) -> Void
+    private let doneHandler: @Sendable () -> Void
+
+    init(
+        onBatch: @escaping @Sendable ([SearchHit]) -> Void,
+        onDone: @escaping @Sendable () -> Void
+    ) {
+        batchHandler = onBatch
+        doneHandler = onDone
+    }
+
+    func onResults(batch: [SearchHit]) {
+        batchHandler(batch)  // Executes on search worker thread
+    }
+
+    func onDone() {
+        doneHandler()
+    }
+}
+
+// QuickOpenModel uses it:
+let sink = QuickOpenSink(
+    onBatch: { [weak self] batch in
+        Task { @MainActor in self?.apply(batch: batch, generation: gen) }
+    },
+    onDone: {}
+)
+```
+
+**Key pattern**:
+1. Sink class is `final` and `Sendable`
+2. Holds only `@Sendable` closures (immutable, can cross threads)
+3. Callback is invoked directly (on the calling thread)
+4. Caller wraps the closure with `Task { @MainActor in … }` to hop to main thread
+
+This avoids `@MainActor` annotation on the sink itself (which would require the calls *from* Rust to be on the main thread — they're not), while still ensuring SwiftUI mutations happen on main.
 
 ## Common Patterns
 
@@ -346,6 +398,40 @@ Cross-FFI types use UniFFI-compatible primitives:
 - Struct/enum fields restricted to the above (see `error.rs` for constraints)
 
 **UTF-16 Code Units**: All text ranges crossing FFI are expressed as `U16Range { start: u32, len: u32 }` (UTF-16 code units) to map 1:1 onto `NSRange` in Swift.
+
+### Rust: Pure Search Driver (US3)
+
+The search module (`emend_core::search`) is a **pure, tokio-free** driver that ranks and streams results:
+
+```rust
+/// Rank `query` over the index in batches of `batch_size`, emitting via `sink`.
+/// Returns whether the full set was streamed (true) or was superseded (false).
+pub fn quick_open(
+    index: &Index,
+    query: &str,
+    limit: usize,
+    batch_size: usize,
+    cancel: &Cancel,
+    mut sink: impl FnMut(Vec<SearchHit>),
+) -> bool {
+    // Rank the query (synchronous, fast)
+    let ranked = index.query(query, limit);
+    // Stream batches, checking cancel flag between batches
+    for batch in ranked.chunks(batch_size) {
+        if cancel.is_cancelled() {
+            return false;  // Superseded; worker stops emitting
+        }
+        sink(batch.to_vec());
+    }
+    true  // Completed; FFI fires terminal on_done
+}
+```
+
+**Rationale** (Constitution V — decision logic in core):
+- Ranking happens once, synchronously
+- Batching logic is deterministic (no async, no timing-dependent decisions)
+- Cancellation is a simple `&Cancel` flag, not tokio-dependent
+- FFI layer (`emend_ffi/src/search.rs`) bridges the `Cancel` to `CancellationToken` and handles panic containment, but delegates ranking/emission to this pure driver
 
 ### Swift: AsyncStream Adapters
 
@@ -432,7 +518,7 @@ Enforced at commit time by `lefthook` hook (see `lefthook.yml` commit-msg sectio
 - `chore` — Maintenance / tooling
 - `revert` — Revert a prior commit
 
-**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`.
+**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`.
 
 **Breaking change** (optional): Suffix `!` before `:` (e.g., `feat(ffi)!: new ABI version`).
 
@@ -442,6 +528,7 @@ feat(document): add line-column tracking
 fix(fs): tolerate CRLF in file reads
 docs: update UTF-16 boundary documentation
 test(document): add astral-char UTF-16 tests
+feat(search): add cancellable quick-open query (US3)
 ci: enforce MSRV 1.85
 ```
 
@@ -473,8 +560,13 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`crates/emend-core/src/error.rs`**: `EmendError` enum and Display/Error impls
 - **`crates/emend-core/src/document.rs`**: Open-document model (shadow rope + UTF-16 indexing)
 - **`crates/emend-core/src/fs.rs`**: Atomic+durable file I/O
+- **`crates/emend-core/src/workspace.rs`**: Workspace file operations, collision-safe create/rename/move
+- **`crates/emend-core/src/watcher.rs`**: Filesystem watching, debounce, rename correlation, self-write suppression
+- **`crates/emend-core/src/index.rs`**: Incremental search index (nucleo-based fuzzy ranking, wiki-link O(1) lookup)
+- **`crates/emend-core/src/search.rs`**: Pure, cancellable quick-open search driver (ranks and streams in batches)
 - **`crates/emend-core/tests/`**: Integration tests (see [Testing](#testing))
 - **`crates/emend-ffi/src/lib.rs`**: UniFFI `#[uniffi::export]` shim + panic containment
+- **`crates/emend-ffi/src/search.rs`**: FFI projection of streaming search (bridges cancellation, spawns worker, panic containment)
 - **`crates/emend-bench/benches/`**: Criterion micro-benchmarks
 
 ### Swift Module Structure
@@ -485,7 +577,8 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`app/Emend/Emend/`**: SwiftUI app (views, state, utilities, pure transforms)
   - **`Sidebar/`**: Workspace tree model, `NSOutlineView` coordination, drag-drop logic
   - **`Tabs/`**: Tab management, open-document state
-  - **`Editor/`**: Editor view, syntax highlighting, text storage delegates
+  - **`Editor/`**: Editor view, syntax highlighting, text storage delegates, pure transforms (`SmartLists`, `FormattingCommands`)
+  - **`QuickOpen/`**: Quick Open palette model + sink bridge (US3)
 - **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
 
 ### Editor Transform Organization
@@ -496,6 +589,16 @@ Pure, testable transforms are organized by feature:
 - **`app/Emend/Emend/Editor/SyntaxAttributing.swift`** — Highlight synthesis from tree-sitter (T047)
 
 Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
+
+### Quick Open Organization (US3)
+
+- **`crates/emend-core/src/index.rs`**: `Index` type and ranking logic (fuzzy match, basename boost, wiki-link O(1) lookup)
+- **`crates/emend-core/src/search.rs`**: Pure `quick_open` driver (ranks, batches, cancels)
+- **`crates/emend-ffi/src/search.rs`**: FFI projection (`SearchHandle`, async worker, panic containment)
+- **`app/Emend/Emend/QuickOpen/QuickOpenModel.swift`**: SwiftUI state, sink attachment, generation-guarded batch apply
+- **`app/Emend/Emend/QuickOpen/QuickOpenSink.swift`**: Sink bridge (holds `@Sendable` closures, hops to `@MainActor`)
+- **`crates/emend-core/tests/search_supersede.rs`**: Supersede/cancel semantics (T072, pure tokio-free determinism)
+- **`crates/emend-bench/benches/quick_open.rs`**: Perf budget 100 ms p95 warm over 10k index (T071, SC-004)
 
 ## Import Ordering
 

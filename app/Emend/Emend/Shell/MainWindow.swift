@@ -13,6 +13,7 @@ struct MainWindow: View {
     @StateObject private var workspace = WorkspaceModel()
     @StateObject private var tabs = TabModel()
     @StateObject private var conflict = ConflictController()
+    @StateObject private var quickOpen = QuickOpenModel()
 
     var body: some View {
         NavigationSplitView {
@@ -31,11 +32,35 @@ struct MainWindow: View {
                 Button("Add Location", systemImage: "folder.badge.plus") { workspace.addLocation() }
             }
         }
+        // ⌘P opens Quick Open (US3, FR-017). A hidden button registers the
+        // shortcut window-wide without occupying the toolbar.
+        .background {
+            Button("Quick Open", action: quickOpen.present)
+                .keyboardShortcut("p", modifiers: .command)
+                .hidden()
+        }
+        .overlay { quickOpenOverlay }
         // Durability (FR-009/FR-009a): flush all open tabs before the app quits or
         // the window closes, since autosave is otherwise only debounced.
         .onReceive(willTerminatePublisher) { _ in tabs.flushAll() }
         .onReceive(willClosePublisher) { _ in tabs.flushAll() }
-        .task { conflict.attach(tabs: tabs, workspace: workspace) }
+        .task {
+            conflict.attach(tabs: tabs, workspace: workspace)
+            quickOpen.attach(workspace: workspace.workspace) { url in tabs.open(url: url) }
+        }
+    }
+
+    @ViewBuilder private var quickOpenOverlay: some View {
+        if quickOpen.isPresented {
+            ZStack(alignment: .top) {
+                Rectangle()
+                    .fill(.black.opacity(0.08))
+                    .ignoresSafeArea()
+                    .onTapGesture { quickOpen.dismiss() }
+                QuickOpenView(model: quickOpen)
+                    .padding(.top, 90)
+            }
+        }
     }
 
     private var willTerminatePublisher: NotificationCenter.Publisher {

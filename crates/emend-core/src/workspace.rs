@@ -132,6 +132,16 @@ impl Workspace {
     /// [`Location`]. The display name defaults to the folder's basename; `order`
     /// is assigned as the next slot after the existing locations.
     ///
+    /// The stored [`Location::path`] is the **canonical** (symlink- and
+    /// `..`-resolved) absolute path — the same [`Workspace::canonical_id`] identity
+    /// [`Workspace::collect_files`] returns (NFR-007). This is load-bearing: index
+    /// seeding walks `collect_files` (canonical), so a verbatim location root would
+    /// not prefix-match those canonical file paths, breaking relative-path
+    /// breadcrumbs/fuzzy matching (FR-017) and letting the incremental file ops
+    /// key the index under a *different* path form than seeding used (a stale/ghost
+    /// entry on delete/rename). Canonicalizing the root once here makes canonical
+    /// the single path identity for the whole location subtree.
+    ///
     /// # Errors
     ///
     /// [`EmendError::NotFound`] if the path does not exist, or
@@ -146,15 +156,24 @@ impl Workspace {
             });
         }
 
+        // Store the canonical root as the location's identity (NFR-007 / see the
+        // doc comment). `metadata` above already followed the path, so the dir
+        // exists and is readable; `canonical_id` keeps the NotFound/permission/IO
+        // error posture for the race where it vanishes between the two calls.
+        let canonical = self.canonical_id(folder_path)?;
+        let canonical_path = canonical.to_string_lossy().into_owned();
+
         let id = LocationId(self.next_location_id);
         self.next_location_id += 1;
-        let display_name = basename(path).unwrap_or_else(|| folder_path.to_owned());
+        // Display name defaults to the *requested* path's basename so a symlinked
+        // root keeps its user-facing spelling (`Notes`), not the canonical target.
+        let display_name = basename(path).unwrap_or_else(|| canonical_path.clone());
         let order = u32::try_from(self.locations.len()).unwrap_or(u32::MAX);
 
         let location = Location {
             id,
             display_name,
-            path: folder_path.to_owned(),
+            path: canonical_path,
             order,
         };
         self.locations.insert(id, location.clone());

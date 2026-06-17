@@ -155,7 +155,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T066 [GIT] Commit: sidebar, icons, drag-drop, tabs, live refresh
 - [x] T067 [US2] [test] `app/Emend/EmendUITests/WorkspaceFlowTests.swift`: add folder → tree → open tab → rename
 - [x] T068 [US2] Run `/sdd:map incremental`; review `retro/P4.md` → CLAUDE.md; [GIT] commit
-- [ ] T069 [GIT] Push; PR "US2: workspace"; verify CI green; report PR ready status
+- [x] T069 [GIT] Push; PR "US2: workspace"; verify CI green; report PR ready status
 
 **Checkpoint**: US1 + US2 work independently — full editing + browsing.
 
@@ -167,16 +167,16 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: In a large workspace, ⌘P + fuzzy query → ranked results with paths → open top hit.
 
-- [ ] T070 [US3] Create `retro/P5.md`; [GIT] commit
-- [ ] T071 [P] [US3] [test] `crates/emend-bench/benches/quick_open.rs`: p95 ≤100ms over 10k entries (warm) (SC-004) (use devs:rust-dev agent)
-- [ ] T072 [P] [US3] [test] `crates/emend-core/tests/search_supersede.rs`: superseding a query cancels prior emission (NFR-002) (use devs:rust-dev agent)
-- [ ] T073 [US3] Implement `crates/emend-core/src/search.rs` + `quick_open_query` streaming via `SearchSink`, supersede/cancel (use devs:rust-dev agent)
-- [ ] T074 [US3] Export `quick_open_query`/`SearchHandle` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
-- [ ] T075 [GIT] Commit: core Quick Open search + FFI
-- [ ] T076 [US3] Implement `app/Emend/Emend/QuickOpen/QuickOpenView.swift` (⌘P overlay, ranked rows + breadcrumb, Return-to-open, supersede on keystroke)
-- [ ] T077 [GIT] Commit: Quick Open overlay
-- [ ] T078 [US3] [test] `app/Emend/EmendUITests/QuickOpenTests.swift`: ⌘P → query → open result
-- [ ] T079 [US3] Run `/sdd:map incremental`; review `retro/P5.md` → CLAUDE.md; [GIT] commit
+- [x] T070 [US3] Create `retro/P5.md`; [GIT] commit
+- [x] T071 [P] [US3] [test] `crates/emend-bench/benches/quick_open.rs`: p95 ≤100ms over 10k entries (warm) (SC-004) (use devs:rust-dev agent)
+- [x] T072 [P] [US3] [test] `crates/emend-core/tests/search_supersede.rs`: superseding a query cancels prior emission (NFR-002) (use devs:rust-dev agent)
+- [x] T073 [US3] Implement `crates/emend-core/src/search.rs` + `quick_open_query` streaming via `SearchSink`, supersede/cancel (use devs:rust-dev agent)
+- [x] T074 [US3] Export `quick_open_query`/`SearchHandle` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
+- [x] T075 [GIT] Commit: core Quick Open search + FFI
+- [x] T076 [US3] Implement `app/Emend/Emend/QuickOpen/QuickOpenView.swift` (⌘P overlay, ranked rows + breadcrumb, Return-to-open, supersede on keystroke)
+- [x] T077 [GIT] Commit: Quick Open overlay
+- [x] T078 [US3] [test] `app/Emend/EmendTests/QuickOpenTests.swift`: ⌘P → query → open result (headless app-hosted; XCUITest can't bootstrap under CODE_SIGNING_ALLOWED=NO)
+- [x] T079 [US3] Run `/sdd:map incremental`; review `retro/P5.md` → CLAUDE.md; [GIT] commit
 - [ ] T080 [GIT] Push; PR "US3: Quick Open"; verify CI green; report PR ready status
 
 **Checkpoint**: Quick Open works across the workspace.

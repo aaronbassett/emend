@@ -19,7 +19,9 @@ final class WorkspaceFlowTests: XCTestCase {
         let workspace = newWorkspace()
 
         let location = try workspace.addLocation(folderPath: dir.path, bookmark: Data())
-        XCTAssertEqual(location.path, dir.path)
+        // `add_location` stores the *canonical* root (US3 path-identity fix), so a
+        // non-canonical temp path (/var → /private/var) comes back resolved.
+        XCTAssertEqual(location.path, canonicalPath(dir.path))
         XCTAssertTrue(try workspace.listLocations().contains { $0.id == location.id })
 
         let names = try Set(workspace.listChildren(folderPath: dir.path).map(\.name))
@@ -127,5 +129,15 @@ final class WorkspaceFlowTests: XCTestCase {
 
     private func isolatedDefaults() -> UserDefaults {
         UserDefaults(suiteName: "emend.test.\(UUID().uuidString)") ?? .standard
+    }
+
+    /// The canonical (symlink-resolved) path, matching Rust's `std::fs::canonicalize`
+    /// / `realpath(3)` that `add_location` now applies. Foundation's
+    /// `resolvingSymlinksInPath` deliberately avoids the `/private` prefix on macOS
+    /// (`/var` stays `/var`), so it can't reproduce the core's identity here.
+    private func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 }

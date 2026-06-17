@@ -27,5 +27,12 @@ harness = false
 name = "highlight"
 harness = false
 
+# Quick Open search perf (T071, SC-004): rank + stream a query over a 10k-entry
+# index, p95 ≤ 100 ms warm. Tracked, non-blocking (perf budgets are tracked per
+# the constitution).
+[[bench]]
+name = "quick_open"
+harness = false
+
 [lints]
 workspace = true

@@ -39,7 +39,8 @@
 //! handle converts at the one call site.
 
 use crate::error::FfiError;
-use crate::handles::SearchHit;
+use crate::handles::{SearchHit, SearchSink};
+use crate::search::{start_query, SearchHandle, SharedIndex};
 use emend_core::index::Index;
 use emend_core::workspace::{
     FsNode as CoreFsNode, Location as CoreLocation, LocationId, NodeKind as CoreNodeKind, Workspace,
@@ -147,18 +148,49 @@ fn search_hit(core: emend_core::index::SearchHit) -> SearchHit {
 }
 
 /// The workspace + its derived index, co-located so file ops keep the index in
-/// lock-step (FR-017a). Behind the [`WorkspaceHandle`]'s `Mutex`.
+/// lock-step (FR-017a). Behind the [`WorkspaceHandle`]'s `Mutex<Inner>`.
+///
+/// The index is itself behind an [`Arc<Mutex<Index>>`](SharedIndex) so a spawned
+/// Quick Open worker can lock *only the index* for its synchronous rank+stream
+/// without holding `Inner` (which would block file ops for the search duration —
+/// see `crate::search`'s "Concurrency" note). File-op methods take `Inner` then
+/// lock the index to maintain it incrementally (FR-017a).
 struct Inner {
     workspace: Workspace,
-    index: Index,
+    index: SharedIndex,
+    /// The in-flight Quick Open query, if any. A new `quick_open_query` cancels
+    /// this (supersede, NFR-002) before installing its own handle.
+    current_search: Option<Arc<SearchHandle>>,
 }
 
 impl Inner {
     fn new() -> Self {
         Self {
             workspace: Workspace::new(),
-            index: Index::new(),
+            index: Arc::new(Mutex::new(Index::new())),
+            current_search: None,
         }
+    }
+
+    /// Lock the shared index, mapping poisoning to [`FfiError::Internal`] (parity
+    /// with the handle's `lock`). Used by file-op methods to maintain the index.
+    fn lock_index(&self) -> Result<std::sync::MutexGuard<'_, Index>, FfiError> {
+        self.index.lock().map_err(|_| FfiError::Internal {
+            detail: "search index lock poisoned".to_owned(),
+        })
+    }
+
+    /// The **canonical** index key for `path` — the same `canonical_id` identity
+    /// `reindex_all`'s `collect_files` seeds with (NFR-007), so incremental
+    /// inserts/renames/removes hit the seeded keys instead of leaving ghost
+    /// entries. The caller must canonicalize a path *while it still exists*
+    /// (before a delete, after a create); on a canonicalization race (the path
+    /// vanished) this degrades to the given `path` rather than failing the op —
+    /// the index is best-effort derived state, not a ledger.
+    fn index_key(&self, path: &str) -> String {
+        self.workspace
+            .canonical_id(path)
+            .map_or_else(|_| path.to_owned(), |p| p.to_string_lossy().into_owned())
     }
 
     /// Best-effort location-relative path for `abs_path`, used as the index's
@@ -403,10 +435,14 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] / [`FfiError::PermissionDenied`] /
     /// [`FfiError::IoFailure`] if `parent` is missing or the write fails.
     pub fn create_note(&self, parent: String, name: String) -> Result<String, FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         let new_path = guard.workspace.create_note(&parent, &name)?;
-        let rel = guard.rel_for(&new_path);
-        guard.index.insert(&new_path, &rel);
+        // The note now exists, so canonicalize it for the index key (matching the
+        // canonical seeding identity). `new_path` is still returned to the caller
+        // verbatim — only the index key is canonicalized.
+        let key = guard.index_key(&new_path);
+        let rel = guard.rel_for(&key);
+        guard.lock_index()?.insert(&key, &rel);
         Ok(new_path)
     }
 
@@ -434,11 +470,16 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] if `path` does not exist;
     /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] on failure.
     pub fn rename(&self, path: String, new_name: String) -> Result<String, FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
+        // Canonicalize the OLD key while the source still exists, before the fs
+        // rename moves it (canonicalize fails on a vanished path).
+        let old_key = guard.index_key(&path);
         let new_path = guard.workspace.rename(&path, &new_name)?;
         if new_path != path {
-            let rel = guard.rel_for(&new_path);
-            guard.index.rename(&path, &new_path, &rel);
+            // The destination now exists, so canonicalize it for the NEW key.
+            let new_key = guard.index_key(&new_path);
+            let rel = guard.rel_for(&new_key);
+            guard.lock_index()?.rename(&old_key, &new_key, &rel);
         }
         Ok(new_path)
     }
@@ -452,10 +493,16 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] if `path` or `new_parent` is missing;
     /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] on failure.
     pub fn move_node(&self, path: String, new_parent: String) -> Result<String, FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
+        // Canonicalize the OLD key while the source still exists, before the fs
+        // move relocates it (canonicalize fails on a vanished path).
+        let old_key = guard.index_key(&path);
         let new_path = guard.workspace.move_node(&path, &new_parent)?;
-        let rel = guard.rel_for(&new_path);
-        guard.index.rename(&path, &new_path, &rel);
+        // The moved node now exists at the destination, so canonicalize it for the
+        // NEW key. `new_path` is still returned to the caller verbatim.
+        let new_key = guard.index_key(&new_path);
+        let rel = guard.rel_for(&new_key);
+        guard.lock_index()?.rename(&old_key, &new_key, &rel);
         Ok(new_path)
     }
 
@@ -471,9 +518,14 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] if `path` does not exist;
     /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] on failure.
     pub fn delete(&self, path: String) -> Result<(), FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
+        // Canonicalize the key BEFORE removing the file — canonicalize requires the
+        // target to exist, so it must run while the path is still on disk. This is
+        // the same canonical identity `reindex_all` seeded with, so the entry is
+        // actually found and dropped (no stale/ghost Quick Open hit).
+        let key = guard.index_key(&path);
         guard.workspace.delete(&path)?;
-        guard.index.remove(&path);
+        guard.lock_index()?.remove(&key);
         Ok(())
     }
 
@@ -491,11 +543,66 @@ impl WorkspaceHandle {
     ///
     /// [`FfiError::Internal`] if the lock is poisoned.
     pub fn rebuild_index(&self, items: Vec<IndexEntry>) -> Result<(), FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         guard
-            .index
+            .lock_index()?
             .rebuild(items.into_iter().map(|e| (e.abs_path, e.rel_path)));
         Ok(())
+    }
+
+    /// Seed/rebuild the Quick Open search index from every file currently on disk
+    /// under the workspace's locations (FR-017a, FR-017), returning the number of
+    /// entries indexed.
+    ///
+    /// This is the startup seeding path the manual [`WorkspaceHandle::rebuild_index`]
+    /// only described: it walks each location with the core
+    /// [`Workspace::collect_files`](emend_core::workspace::Workspace::collect_files)
+    /// (canonical, cycle-safe, depth-bounded), maps every absolute file path to its
+    /// location-relative path via the same `rel_for` the file-op methods use, and
+    /// `rebuild`s the index in one shot — so a freshly launched workspace has a
+    /// populated haystack rather than the empty index that left Quick Open with no
+    /// results. Everyday changes still flow through the incremental file-op methods
+    /// (`create_note`/`rename`/`move_node`/`delete`), never this full rebuild.
+    ///
+    /// `max_depth` bounds the directory recursion (`root` itself is depth 0), passed
+    /// straight to `collect_files`.
+    ///
+    /// A location whose walk fails (unreadable/vanished root) is **skipped** rather
+    /// than aborting the whole reindex, so one bad root cannot leave Quick Open
+    /// empty for every other location (best-effort seeding, mirroring the index's
+    /// own "derived state, not a ledger" posture).
+    ///
+    /// Scope: `collect_files` returns **files only**, so the index seeds files only;
+    /// folder-in-results (FR-017) is deferred — Quick Open opens results into editor
+    /// tabs (only files are openable) and the testable criteria (SC-004) are
+    /// file-centric.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub fn reindex_all(&self, max_depth: u32) -> Result<u32, FfiError> {
+        let guard = self.lock()?;
+
+        // Collect every (abs_path, rel_path) pair into owned data BEFORE locking
+        // the index: `collect_files`/`rel_for` borrow `guard` immutably and
+        // `lock_index` borrows it too, so finishing all walk + rel work first
+        // avoids overlapping borrows.
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for loc in guard.workspace.list_locations() {
+            // Best-effort: a single unreadable/missing root is skipped so it can't
+            // break Quick Open for the rest of the workspace.
+            let Ok(files) = guard.workspace.collect_files(&loc.path, max_depth) else {
+                continue;
+            };
+            for abs in files {
+                let rel = guard.rel_for(&abs);
+                pairs.push((abs, rel));
+            }
+        }
+
+        let count = u32::try_from(pairs.len()).unwrap_or(u32::MAX);
+        guard.lock_index()?.rebuild(pairs);
+        Ok(count)
     }
 
     /// Return up to `limit` ranked [`SearchHit`]s for `query`, best first (FFI
@@ -507,7 +614,7 @@ impl WorkspaceHandle {
     /// [`FfiError::Internal`] if the lock is poisoned.
     pub fn query(&self, query: String, limit: u32) -> Result<Vec<SearchHit>, FfiError> {
         let guard = self.lock()?;
-        let hits = guard.index.query(&query, limit as usize);
+        let hits = guard.lock_index()?.query(&query, limit as usize);
         Ok(hits.into_iter().map(search_hit).collect())
     }
 
@@ -522,7 +629,47 @@ impl WorkspaceHandle {
     /// [`FfiError::Internal`] if the lock is poisoned.
     pub fn resolve_name(&self, name: String) -> Result<Vec<String>, FfiError> {
         let guard = self.lock()?;
-        Ok(guard.index.resolve_name(&name))
+        let resolved = guard.lock_index()?.resolve_name(&name);
+        Ok(resolved)
+    }
+
+    /// Start a streaming, **supersedable** Quick Open query (FFI contract §5
+    /// `quick_open_query`; FR-017, FR-018/SC-004, NFR-002).
+    ///
+    /// Ranked [`SearchHit`]s are streamed to `sink` in batches via
+    /// [`SearchSink::on_results`], terminated by exactly one
+    /// [`SearchSink::on_done`] when the query completes. The returned
+    /// [`SearchHandle`] lets Swift `cancel()` the query explicitly.
+    ///
+    /// **Supersede (NFR-002):** each call first cancels the previous in-flight
+    /// query (if any) — its worker stops emitting and fires no terminal — then
+    /// installs and spawns this one. So fast keystrokes never interleave stale
+    /// results from an older query. The spawned worker locks only the shared
+    /// index for its synchronous rank+stream, not this `Inner`, so it does not
+    /// block concurrent file ops (see `crate::search`'s "Concurrency" note).
+    ///
+    /// Infallible at the boundary (returns the handle directly, not a `Result`):
+    /// the contract gives Quick Open no error terminal (§5), and a runtime/lock
+    /// failure degrades to an empty, completed stream rather than a thrown error.
+    /// A poisoned `Inner` lock is the one exception handled internally — it
+    /// returns a fresh, already-cancellable handle and skips spawning.
+    #[must_use]
+    pub fn quick_open_query(&self, query: String, sink: Arc<dyn SearchSink>) -> Arc<SearchHandle> {
+        // Supersede the prior query and install the new handle under the lock so
+        // two rapid keystrokes can't both think they're current. If the lock is
+        // poisoned (unreachable under the no-panic posture) we still hand back a
+        // valid handle and an empty completed stream rather than panicking.
+        let Ok(mut guard) = self.inner.lock() else {
+            let handle = start_query(Arc::new(Mutex::new(Index::new())), query, sink);
+            return handle;
+        };
+        if let Some(prev) = guard.current_search.take() {
+            prev.cancel();
+        }
+        let index = Arc::clone(&guard.index);
+        let handle = start_query(index, query, sink);
+        guard.current_search = Some(Arc::clone(&handle));
+        handle
     }
 }
 
@@ -623,13 +770,24 @@ mod tests {
         let note = ws
             .create_note(root.clone(), "Meeting Notes".to_owned())
             .expect("create note");
+        // External behavior unchanged: the returned path keeps its requested
+        // basename and is whatever `create_note` returns (not canonicalized).
         assert!(note.ends_with("Meeting Notes.md"));
 
-        // The new note is in the index (incrementally inserted by create_note).
+        // The new note is in the index (incrementally inserted by create_note),
+        // keyed under its CANONICAL identity (the same form `reindex_all` seeds
+        // with, NFR-007) — so on a non-canonical root (macOS `/var` ->
+        // `/private/var`) the hit path is the canonical path, not the verbatim
+        // return. Compare against the canonical form rather than the raw return.
+        let canonical_note = std::fs::canonicalize(&note)
+            .expect("canonicalize note")
+            .to_string_lossy()
+            .into_owned();
         let hits = ws.query("meeting".to_owned(), 10).expect("query");
         assert!(
-            hits.iter().any(|h| h.path == note),
-            "create_note must index the note so query finds it: {hits:?}"
+            hits.iter().any(|h| h.path == canonical_note),
+            "create_note must index the note under its canonical key so query \
+             finds it: {hits:?}"
         );
     }
 
@@ -650,8 +808,16 @@ mod tests {
             .resolve_name("draft".to_owned())
             .expect("resolve")
             .is_empty());
+        // The index re-keys under the CANONICAL destination identity (NFR-007), so
+        // `resolve_name` returns the canonical path, not the verbatim `rename`
+        // return. Compare against the canonical form (idempotent where the root was
+        // already canonical; on macOS `/var` -> `/private/var`).
+        let canonical_renamed = std::fs::canonicalize(&renamed)
+            .expect("canonicalize renamed")
+            .to_string_lossy()
+            .into_owned();
         let resolved = ws.resolve_name("final".to_owned()).expect("resolve");
-        assert_eq!(resolved, vec![renamed]);
+        assert_eq!(resolved, vec![canonical_renamed]);
     }
 
     #[test]
@@ -728,5 +894,119 @@ mod tests {
         );
         // The breadcrumb is the relative path.
         assert_eq!(hits[0].breadcrumb, "notes/beta.md");
+    }
+
+    #[test]
+    fn reindex_all_seeds_from_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `add_location` now canonicalizes the root internally (NFR-007), so `rel_for`
+        // prefix-matches `collect_files`' canonical paths regardless of the root's
+        // form. We pass an already-canonical root here (canonicalization is then
+        // idempotent); `reindex_all_handles_non_canonical_root` covers the
+        // non-canonical case the production gap was about.
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let nested = root.join("notes").join("sub");
+        std::fs::create_dir_all(&nested).expect("create nested dirs");
+        std::fs::write(root.join("alpha.md"), b"# alpha").expect("write alpha");
+        std::fs::write(nested.join("beta.md"), b"# beta").expect("write beta");
+
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+
+        // Reindex from disk: both files are picked up.
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 2);
+
+        // A query for a file stem returns the expected hit with a sensible
+        // breadcrumb (the location-relative path).
+        let hits = ws.query("beta".to_owned(), 10).expect("query");
+        let beta_abs = nested.join("beta.md").to_string_lossy().into_owned();
+        assert_eq!(
+            hits.first().map(|h| h.path.as_str()),
+            Some(beta_abs.as_str())
+        );
+        assert_eq!(hits[0].breadcrumb, "notes/sub/beta.md");
+    }
+
+    /// End-to-end regression for the path-identity bug (NFR-007): a location whose
+    /// root is **not** canonical must still seed, query, breadcrumb, and delete
+    /// without leaving a stale/ghost index entry.
+    ///
+    /// The root here is a **symlink** to the real temp dir, so it is deliberately
+    /// non-canonical (NOT pre-canonicalized — that pre-canonicalization is exactly
+    /// the production gap, since the Swift app hands Rust the raw resolved path).
+    /// Before the fix:
+    ///   * `add_location` stored the symlink root verbatim, so `rel_for`'s
+    ///     `starts_with(loc.path)` failed against `collect_files`' canonical paths
+    ///     and fell back to the bare basename (wrong breadcrumb); and
+    ///   * `delete` keyed the index by the symlink-rooted path while `reindex_all`
+    ///     had seeded the canonical key, so the entry was never found and a ghost
+    ///     hit lingered.
+    ///
+    /// After the fix (`add_location` canonicalizes the root, the file ops key the
+    /// index canonically) both are correct.
+    #[test]
+    fn reindex_all_handles_non_canonical_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The real tree lives under the canonical temp dir.
+        let real_root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let nested = real_root.join("notes").join("sub");
+        std::fs::create_dir_all(&nested).expect("create nested dirs");
+        std::fs::write(nested.join("beta.md"), b"# beta").expect("write beta");
+
+        // A symlink to the real root: a deliberately NON-canonical path to the same
+        // physical directory. This is what `add_location` receives.
+        let link_root = dir.path().join("link_root");
+        symlink(&real_root, &link_root).expect("symlink to root");
+        let non_canonical_root = link_root.to_string_lossy().into_owned();
+        // Sanity: the root we add is genuinely not its own canonical form.
+        assert_ne!(
+            std::fs::canonicalize(&link_root).expect("canonicalize link"),
+            link_root,
+            "the test root must be non-canonical for this regression to bite"
+        );
+
+        let ws = new_workspace();
+        ws.add_location(non_canonical_root.clone(), Vec::new())
+            .expect("add location");
+
+        // Seed the index from disk and confirm the note is found.
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 1, "the single note is seeded");
+
+        let hits = ws.query("beta".to_owned(), 10).expect("query");
+        let hit = hits.first().expect("beta is a hit");
+
+        // The seeded hit's path is the canonical note path...
+        let beta_canonical = nested.join("beta.md").to_string_lossy().into_owned();
+        assert_eq!(hit.path, beta_canonical);
+        // ...and the breadcrumb is the LOCATION-RELATIVE path, not the bare
+        // basename (the basename fallback was the symptom of the prefix mismatch).
+        assert_eq!(hit.breadcrumb, "notes/sub/beta.md");
+        assert_ne!(
+            hit.breadcrumb, "beta.md",
+            "breadcrumb must be the relative path, not the basename fallback"
+        );
+
+        // Delete the note through the workspace using a path derived from the
+        // non-canonical root (as the sidebar would) and confirm NO ghost lingers.
+        let note_via_link = link_root.join("notes").join("sub").join("beta.md");
+        ws.delete(note_via_link.to_string_lossy().into_owned())
+            .expect("delete");
+
+        // The index must no longer return it — neither by fuzzy query nor by name.
+        assert!(
+            ws.query("beta".to_owned(), 10).expect("query").is_empty(),
+            "a deleted note must not leave a ghost Quick Open hit"
+        );
+        assert!(
+            ws.resolve_name("beta".to_owned())
+                .expect("resolve")
+                .is_empty(),
+            "a deleted note must not leave a ghost wiki-link target"
+        );
     }
 }

@@ -47,6 +47,17 @@ pub mod workspace;
 /// `SearchHit` later.
 pub mod index;
 
+/// The streaming, **cancellable** Quick Open search driver (US3): ranks a query
+/// over the [`index`] and emits ranked [`index::SearchHit`]s in batches via a
+/// caller-supplied callback, stopping the instant the query is superseded
+/// (FR-017, FR-018/SC-004, NFR-002; research §B2/§B7). Pure and **tokio-free** —
+/// cancellation is a tiny [`search::Cancel`] (`AtomicBool`), so the supersede
+/// behaviour is testable with plain `cargo test`; the FFI Quick Open driver
+/// (T074) runs [`search::quick_open`] inside a `tokio` task and forwards each
+/// batch to the foreign `SearchSink`. **No FFI, no async runtime** (Constitution
+/// V).
+pub mod search;
+
 /// Live external-change detection + the conflict model (US2): a thin
 /// `notify` + `notify-debouncer-full` wrapper ([`watcher::FsWatcher`]) over a
 /// **pure, deterministically-tested** classification core — move correlation

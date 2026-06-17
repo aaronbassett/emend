@@ -2,7 +2,7 @@
 
 > **Purpose**: Document directory layout, module boundaries, and where to add new code.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (incremental: US3 Quick Open merged)
 
 ## Directory Layout
 
@@ -18,12 +18,13 @@ emend/
 │   │   │   ├── document.rs          # Shadow rope + UTF-16/line indices
 │   │   │   ├── workspace.rs         # File-based workspace model (US2)
 │   │   │   ├── index.rs             # Incremental search index (US2)
+│   │   │   ├── search.rs            # Streaming Quick Open driver (US3 · T073)
 │   │   │   ├── watcher.rs           # File watching + conflict model (US2)
 │   │   │   ├── parse.rs             # tree-sitter + comrak parsing
 │   │   │   ├── parse/highlight.rs   # Incremental highlight (tree-sitter)
-│   │   │   ├── search.rs            # Fuzzy search (placeholder)
 │   │   │   └── ai.rs                # OpenAI-compatible client (placeholder)
 │   │   └── tests/                   # Integration tests (cargo test)
+│   │       └── search_supersede.rs  # Quick Open batching + supersede (US3)
 │   │
 │   ├── emend-ffi/                   # UniFFI shim (thin projection of core)
 │   │   ├── Cargo.toml
@@ -32,13 +33,15 @@ emend/
 │   │       ├── error.rs             # FfiError projection of EmendError
 │   │       ├── panic.rs             # Panic containment hook
 │   │       ├── document.rs          # OpenDocHandle + document ops (T039)
-│   │       ├── workspace.rs         # WorkspaceHandle + file ops (T059)
+│   │       ├── workspace.rs         # WorkspaceHandle + file ops (T059); holds SharedIndex
+│   │       ├── search.rs            # SearchHandle + quick_open_query (US3 · T074)
 │   │       ├── watcher.rs           # WatchHandle + conflict model (T059)
 │   │       └── handles.rs           # Async runtime + cancellation tokens
 │   │
 │   └── emend-bench/                 # Criterion benchmarks
 │       ├── Cargo.toml
 │       ├── benches/
+│       │   └── quick_open.rs        # Quick Open performance (US3 · SC-004)
 │       └── src/
 │
 ├── swift/                           # Swift/SwiftUI code
@@ -60,7 +63,7 @@ emend/
 │       ├── Emend/                   # App sources
 │       │   ├── EmendApp.swift       # @main entry point
 │       │   ├── Shell/
-│       │   │   └── MainWindow.swift # Three-pane layout (US1+)
+│       │   │   └── MainWindow.swift # Three-pane layout (US1+); ⌘P Quick Open button (US3)
 │       │   ├── Platform/
 │       │   │   ├── SecurityScopedBookmarks.swift
 │       │   │   └── FsObserver.swift # FS event → @MainActor callback bridge
@@ -73,6 +76,9 @@ emend/
 │       │   ├── Tabs/
 │       │   │   ├── TabModel.swift            # @MainActor: open documents
 │       │   │   └── TabBarView.swift          # Tab bar UI
+│       │   ├── QuickOpen/                    # Quick Open palette (US3)
+│       │   │   ├── QuickOpenModel.swift      # @MainActor: search state + batching guard
+│       │   │   └── QuickOpenView.swift       # ⌘P overlay palette UI
 │       │   ├── Editor/              # Editor pane (US1)
 │       │   │   ├── MarkdownEditorView.swift     # NSViewRepresentable over TextKit 2
 │       │   │   ├── MarkdownTextView.swift       # NSTextView subclass + list/format keys
@@ -105,7 +111,7 @@ emend/
 │       ├── research.md              # Architecture rationale (read-first)
 │       ├── data-model.md            # Document/state schema
 │       ├── contracts/
-│       │   └── ffi-interface.md     # UniFFI export signatures
+│       │   └── ffi-interface.md     # UniFFI export signatures (§5: Quick Open)
 │       ├── checklists/              # Phase-by-phase acceptance criteria
 │       └── retro/                   # Phase retrospectives
 │
@@ -146,10 +152,10 @@ emend/
 | `document.rs` | Shadow rope, UTF-16/char/line indices | `Document`, `Document::push_edit()`, `highlight_spans()` |
 | `workspace.rs` | File-based workspace model (US2) | `Workspace`, `Location`, `FsNode`, `free_name()` |
 | `index.rs` | Path/name indexing, quick-open ranking | `Index`, `SearchHit`, `Index::query()`, `Index::resolve_name()` |
+| `search.rs` | **Pure streaming search driver (US3 · T073)** | **`Cancel` (Arc-backed flag), `quick_open()` (tokio-free)** |
 | `watcher.rs` | File watching + self-write suppression + conflict model | `FsWatcher`, `ChangeEvent`, `ConflictState`, `ConflictChoice` |
 | `parse.rs` | tree-sitter highlight + comrak preview | `Highlighter`, `preview_html()` |
 | `parse/highlight.rs` | Incremental tree-sitter highlighting | `highlight_range()` |
-| `search.rs` (placeholder) | Fuzzy search + nucleo ranking | (to be implemented) |
 | `ai.rs` (placeholder) | OpenAI-compatible SSE streaming client | (to be implemented) |
 
 **Naming conventions**:
@@ -159,6 +165,12 @@ emend/
 - **Functions**: snake_case (e.g., `read_tolerant`, `push_edit`, `free_name`)
 - **Constants**: UPPER_CASE (e.g., `MAX_NOTE_BYTES`, `UTF8_BOM`)
 
+### `crates/emend-core/tests/` — Core Integration Tests
+
+| File | Purpose |
+|---|---|
+| `search_supersede.rs` | **US3: Quick Open batching + cancel flag behavior (T073)** |
+
 ### `crates/emend-ffi/src/` — FFI Projection
 
 | File | Purpose | Key Types/Functions |
@@ -167,11 +179,18 @@ emend/
 | `error.rs` | `#[derive(uniffi::Error)] FfiError` — mirror of `EmendError` | `FfiError` (exhaustive From impls) |
 | `panic.rs` | Custom panic hook for debugging (if needed) | (reserved) |
 | `document.rs` | Document FFI ops: open, close, push_edit, highlight, flush | `OpenDocHandle`, `open_document()`, `push_edit()`, `highlight_spans()`, `flush()` |
-| `workspace.rs` | Workspace + index FFI ops: locations, file ops, search | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()` |
+| `workspace.rs` | Workspace + index FFI ops: locations, file ops, search | `WorkspaceHandle`, `Location`, `FsNode`, `NodeKind`, file-op methods, `query()`, `resolve_name()`, `quick_open_query()` (US3 T074), `reindex_all()` (T078) |
+| `search.rs` | **FFI Quick Open async shim (US3 · T074)** | **`SearchHandle` (Arc<Self>, UniFFI Object), `start_query()`, `SharedIndex` type alias** |
 | `watcher.rs` | Watcher FFI ops: start watching, track self-writes, resolve conflicts | `WatchHandle`, `ChangeEvent`, `ConflictState`, `ConflictChoice`, `start_watching()`, `record_self_write()`, `apply_conflict_choice()` |
 | `handles.rs` | tokio runtime, `CancellationToken`, foreign-trait sinks | `SearchHit`, `DocObserver`, `SearchSink`, `AiSink` foreign traits |
 
 **Rule**: Keep FFI free of business logic. If you're tempted to add logic here, move it to the core instead.
+
+### `crates/emend-bench/benches/` — Benchmarks
+
+| File | Purpose |
+|---|---|
+| `quick_open.rs` | **US3: Quick Open performance (SC-004, <100 ms p95)** |
 
 ### `swift/EmendCore/Sources/` — Swift Package
 
@@ -188,10 +207,11 @@ emend/
 | Directory | Purpose | Key Components |
 |---|---|---|
 | `EmendApp.swift` | App entry point | Struct: `EmendApp: App` |
-| `Shell/` | Window and pane structure | `MainWindow: View` (three-pane layout) |
+| `Shell/` | Window and pane structure | `MainWindow: View` (three-pane layout); ⌘P shortcut button (US3) |
 | `Platform/` | macOS/AppKit integration | `SecurityScopedBookmarks.swift`, `FsObserver.swift` |
 | `Sidebar/` | Workspace outline + navigation | `WorkspaceModel` (@MainActor), `WorkspaceOutlineView` (NSViewRepresentable over NSOutlineView), `WorkspaceNode` (outline item), `OutlineDragDrop`, `FolderIconPicker` |
 | `Tabs/` | Open-document management | `TabModel` (@MainActor), `TabBarView` (tab bar UI) |
+| `QuickOpen/` | **Quick Open palette (US3)** | **`QuickOpenModel` (@MainActor, streaming sink bridge), `QuickOpenView` (⌘P overlay, arrow/Return/Escape handlers)** |
 | `Editor/` | Live editor pane (US1) | `MarkdownEditorView`, `MarkdownTextView`, `EditorCoordinator`, `SyntaxAttributing`, `SmartLists`, `FormattingCommands`, `AutosaveController`, `ConflictController` |
 | `Screens/` (US2+) | Major feature screens | (to be implemented) |
 | `Models/` (US2+) | SwiftUI `@Observable` state | (to be implemented) |
@@ -202,7 +222,7 @@ emend/
 
 **Naming conventions**:
 - **Views**: PascalCase (e.g., `MainWindow`, `EditorPane`, `WorkspaceOutlineView`)
-- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `DocumentModel`)
+- **Models**: PascalCase + `Model` suffix (e.g., `WorkspaceModel`, `TabModel`, `QuickOpenModel`)
 - **Controllers**: PascalCase + `Controller` suffix (e.g., `ConflictController`, `AutosaveController`)
 - **Observers**: PascalCase + `Observer` suffix (e.g., `FsObserver`)
 
@@ -226,6 +246,15 @@ emend/
 | `TabBarView.swift` | Tab bar UI showing open files | `TabBarView: View` |
 
 **Data flow**: `TabModel` owns list of `Tab`s, each with `OpenDocHandle` + `AutosaveController` + initial text. `TabBarView` renders tabs. User clicks tab → `activeID` changes → `MainWindow` swaps editor view.
+
+### `app/Emend/Emend/QuickOpen/` — Quick Open Palette (US3)
+
+| File | Purpose | Key Types |
+|---|---|---|
+| `QuickOpenModel.swift` | **@MainActor: streaming search state + supersede guard** | **`QuickOpenModel: ObservableObject`, `generation: UInt64` (monotonic query ID)** |
+| `QuickOpenView.swift` | **⌘P overlay palette UI** | **`QuickOpenView: View`, renders `SearchHit` list** |
+
+**Data flow**: User presses ⌘P → `present()` shows overlay → keystroke fires `runQuery()` (increments generation, cancels prior `SearchHandle`, starts new query) → `SearchSink` receives batches (generation guard ignores stale) → `QuickOpenView` renders `results` → arrow keys move `selection` → Return opens file via `openSelected()` → Escape or file open calls `dismiss()` (cancels handle, clears results).
 
 ### `app/Emend/Emend/Editor/` — Live Editor Pane (US1)
 
@@ -259,6 +288,8 @@ emend_core::document::Document    // Public
 emend_core::workspace::Workspace  // Public
 emend_core::workspace::Location   // Public
 emend_core::index::Index          // Public
+emend_core::search::quick_open()  // Public (US3 · T073)
+emend_core::search::Cancel        // Public (US3 · T073)
 emend_core::watcher::FsWatcher    // Public
 emend_core::U16Range              // Public (boundary type)
 ```
@@ -276,6 +307,13 @@ pub fn read_file_at(path: String) -> Result<String, FfiError> {
 #[uniffi::export]
 pub fn new_workspace() -> Arc<WorkspaceHandle> {
     Arc::new(WorkspaceHandle::new())
+}
+
+#[uniffi::export]
+impl WorkspaceHandle {
+    pub fn quick_open_query(&self, query: String, sink: Arc<dyn SearchSink>) -> Arc<SearchHandle> {
+        // T074: async shim driving T073
+    }
 }
 ```
 
@@ -296,6 +334,7 @@ Consumers import it as:
 import EmendCore
 let version = EmendCore.abiVersion()
 let workspace = EmendCore.newWorkspace()
+let searchHandle = workspace.quickOpenQuery(query: "foo", sink: mySink)
 ```
 
 ### App Layer
@@ -311,6 +350,14 @@ final class WorkspaceModel: ObservableObject {
     let workspace: EmendCore.WorkspaceHandle
     // ...
 }
+
+// app/Emend/Emend/QuickOpen/QuickOpenModel.swift
+@MainActor
+final class QuickOpenModel: ObservableObject {
+    private var workspace: WorkspaceHandle?
+    private var handle: SearchHandle?  // In-flight query
+    // ...
+}
 ```
 
 **One-way data flow**: Models own Rust handles and publish state → Views read model state (one-way binding via @Published, @State, @Environment).
@@ -321,20 +368,22 @@ final class WorkspaceModel: ObservableObject {
 |---------------------|--------------|---------|
 | **Core business logic** (file I/O, document ops, parsing, search) | `crates/emend-core/src/{module}.rs` | `fs::write_atomic`, `document::Document::push_edit`, `index::Index::query` |
 | **Core error variant** | `crates/emend-core/src/error.rs` (and mirror in `emend-ffi/src/error.rs`) | `#[error("...")] NewVariant { field: Type }` |
+| **Core search logic** | `crates/emend-core/src/search.rs` (pure, tokio-free) | `pub fn quick_open(...)`, extend `pub struct Cancel` |
 | **FFI export** (Rust ↔ Swift boundary function) | `crates/emend-ffi/src/{module}.rs` (as `#[uniffi::export]`) | `#[uniffi::export] pub fn open_document(path: String) -> ...` |
 | **FFI value type projection** | `crates/emend-ffi/src/{module}.rs` (with exhaustive From impl) | `#[derive(uniffi::Record)] pub struct MyRecord { ... }` |
-| **Async scaffolding** (tokio runtime, cancellation, sinks) | `crates/emend-ffi/src/handles.rs` | Extend `struct CancellationHandle`, add foreign traits |
+| **FFI async shim** (tokio, cancellation, streaming) | `crates/emend-ffi/src/search.rs` or `handles.rs` | Extend `pub struct SearchHandle`, foreign-trait sinks |
+| **Core benchmark** | `crates/emend-bench/benches/{name}.rs` | Performance-sensitive paths (e.g., Quick Open SC-004) |
+| **Core integration test** | `crates/emend-core/tests/{name}.rs` | Testable decision logic (e.g., `search_supersede.rs`) |
 | **Swift wrapper** (idiomatic adapters over UniFFI bindings) | `swift/EmendCore/Sources/EmendCore/*.swift` | `extension EmendCore`, `struct AsyncStreamAdapter` |
 | **App-level state model** | `app/Emend/Emend/{Feature}Model.swift` (e.g., Sidebar/WorkspaceModel.swift) | `@MainActor final class WorkspaceModel: ObservableObject` |
 | **App-level controller** | `app/Emend/Emend/Editor/{Feature}Controller.swift` | `@MainActor final class ConflictController: ObservableObject` |
 | **Editor UI view** | `app/Emend/Emend/Editor/{FeatureName}.swift` | `struct EditorPane: View` |
+| **Quick Open UI view** | `app/Emend/Emend/QuickOpen/{FeatureName}.swift` | Views in the Quick Open palette namespace |
 | **Pure transform** (formatting, lists, etc.) | `app/Emend/Emend/Editor/SmartLists.swift` or `FormattingCommands.swift` | `static func indent(in:selection:) -> Edit?` |
 | **Outline view** | `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` | `struct WorkspaceOutlineView: NSViewRepresentable` |
 | **App UI view** | `app/Emend/Emend/Screens/{FeatureName}.swift` | `struct SearchResultsPane: View` (US2+) |
 | **App service** (wrapper over EmendCore) | `app/Emend/Emend/Services/{Feature}Service.swift` | `class EditorService` (US2+) |
 | **App-level test** | `app/Emend/EmendTests/{Feature}Tests.swift` | `final class SmartListsTests` |
-| **Core-level test** | `crates/emend-core/tests/integration.rs` or inline in `src/*.rs` | `#[test] fn ...` or module `#[cfg(test)]` |
-| **Benchmark** | `crates/emend-bench/benches/emend_bench.rs` | `fn criterion_benchmark()` (Criterion) |
 
 ## Import Paths & Visibility
 
@@ -344,11 +393,12 @@ final class WorkspaceModel: ObservableObject {
 // Inside emend-core, import from crate root
 use crate::error::EmendError;
 use crate::workspace::Workspace;
+use crate::search::quick_open;  // US3
 use crate::U16Range;  // Re-exported from lib.rs
 
 // Outside emend-core, import like any Rust crate
 use emend_core::error::EmendError;
-use emend_core::workspace::Workspace;
+use emend_core::search::{quick_open, Cancel};
 ```
 
 ### FFI Imports
@@ -357,11 +407,19 @@ use emend_core::workspace::Workspace;
 // In emend-ffi, import core
 use emend_core::fs;
 use emend_core::error::EmendError;
+use emend_core::search::{quick_open, Cancel};  // US3 · T074
 
 // Export via UniFFI
 #[uniffi::export]
 pub fn read_file_at(path: String) -> Result<String, FfiError> {
     fs::read_tolerant(path).map_err(Into::into)
+}
+
+#[uniffi::export]
+impl WorkspaceHandle {
+    pub fn quick_open_query(&self, query: String, sink: Arc<dyn SearchSink>) -> Arc<SearchHandle> {
+        // T074: async shim
+    }
 }
 ```
 
@@ -373,6 +431,8 @@ import EmendCore
 
 // Never import the generated FFI directly
 // (except inside EmendCore module itself)
+
+let handle: EmendCore.SearchHandle = workspace.quickOpenQuery(query: query, sink: sink)
 ```
 
 ### App Swift Imports
@@ -383,9 +443,11 @@ import EmendCore
 
 // Models own the Rust handles
 let workspace: EmendCore.WorkspaceHandle = EmendCore.newWorkspace()
+let searchHandle: EmendCore.SearchHandle = workspace.quickOpenQuery(query: query, sink: sink)
 
 // Views read model state
 @State var model: WorkspaceModel
+@State var quickOpen: QuickOpenModel
 ```
 
 ## Generated Files
@@ -409,6 +471,7 @@ Files that are auto-generated and should NOT be manually edited:
 | `app/Emend/Emend/Shell/MainWindow.swift` | Main window + three panes | App |
 | `app/Emend/Emend/Sidebar/WorkspaceModel.swift` | Workspace state owner | MainWindow |
 | `app/Emend/Emend/Tabs/TabModel.swift` | Open-document owner | MainWindow |
+| `app/Emend/Emend/QuickOpen/QuickOpenModel.swift` | Quick Open state owner (US3) | MainWindow |
 | `app/Emend/Emend/Editor/MarkdownEditorView.swift` | Live editor pane | MainWindow |
 
 ## Phase Milestones
@@ -418,8 +481,8 @@ Structure changes as phases land:
 | Phase | New Directories | New Rust Modules | New FFI Exports | New App Components |
 |-------|-----------------|------------------|-----------------|-------------------|
 | 0 (complete) | Core, FFI, Swift package, app skeleton | `error`, `fs`, `document` | `core_abi_version`, `read_file_at` | EmendApp, MainWindow shell |
-| 1 (current) | `app/Emend/Editor/`, `Sidebar/`, `Tabs/` | `workspace`, `index`, `watcher`, `parse/highlight` | `open_document`, `push_edit`, `highlight_spans`, `new_workspace`, `start_watching`, file-op methods | MarkdownEditorView, EditorCoordinator, SmartLists, FormattingCommands, AutosaveController, WorkspaceModel, TabModel, WorkspaceOutlineView, ConflictController |
-| 2 (future) | `app/Emend/Screens`, `Models`, `Services` | (none — app wiring) | Search streaming (`SearchHandle`/`SearchSink`), AI streaming (`AiHandle`/`AiSink`) | SearchResultsPane, PreviewPane, model/service layer |
+| 1 (complete) | `app/Emend/Editor/`, `Sidebar/`, `Tabs/` | `workspace`, `index`, `watcher`, `parse/highlight` | `open_document`, `push_edit`, `highlight_spans`, `new_workspace`, `start_watching`, file-op methods | MarkdownEditorView, EditorCoordinator, SmartLists, FormattingCommands, AutosaveController, WorkspaceModel, TabModel, WorkspaceOutlineView, ConflictController |
+| 2 (complete · US3) | **`app/Emend/QuickOpen/`** | **`search` (T073: pure driver)** | **`quick_open_query`, `reindex_all`, `SearchHandle` (T074)** | **`QuickOpenModel`, `QuickOpenView`** |
 | 3+ | As needed | (depends on features) | (depends on features) | Per-feature panes, models, services |
 
 ---
@@ -429,7 +492,7 @@ Structure changes as phases land:
 ```
    App (Swift/SwiftUI)
     ↑
-    ├─ WorkspaceModel, TabModel, ConflictController (@MainActor models)
+    ├─ WorkspaceModel, TabModel, ConflictController, QuickOpenModel (@MainActor models)
     │  ↑
     │  └─ EmendCore (package)
     │     ↑
@@ -438,6 +501,9 @@ Structure changes as phases land:
     │        └─ emend_ffi (FFI shim crate)
     │           ↑
     │           └─ emend_core (core engine)
+    │              ├─ search (T073, tokio-free)
+    │              ├─ index (search index)
+    │              ├─ workspace, watcher, parse, etc.
     │              ↑
     │              └─ std + deps (no back-edges)
     │
