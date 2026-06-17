@@ -16,5 +16,16 @@
 //!
 //! Keeping them separate means the editor can be fast-and-approximate while the
 //! preview stays correct-and-complete, without one compromising the other.
+//!
+//! The preview engine now lives here as two modules (US4, T084):
+//!
+//! - [`preview`] — the comrak Markdown→HTML renderer (CommonMark + GFM + the
+//!   native `[[wikilink]]` / `==highlight==` extensions), with `data-line`
+//!   scroll-sync anchors (research §C3). The authoritative renderer.
+//! - [`code_highlight`] — syntect classed-HTML code colouring for the preview's
+//!   fenced blocks (research §B6), loading a vendored binary syntax/theme dump
+//!   once. Wired into [`preview`] via comrak's code-fence adapter.
 
+pub mod code_highlight;
 pub mod highlight;
+pub mod preview;

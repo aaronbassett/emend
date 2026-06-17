@@ -58,6 +58,32 @@ nucleo-matcher.workspace = true
 # check --all`). Stay on notify 8.x; 9.0 is RC.
 notify.workspace = true
 notify-debouncer-full.workspace = true
+# Preview Markdown→HTML engine (research §B1, FR-023..028) — the AUTHORITATIVE
+# renderer, deliberately SEPARATE from the tree-sitter editor highlighter (never
+# unified; Constitution / project guardrail). Drives `parse::preview`: CommonMark
+# + GFM (tables, tasklist, strikethrough) + the native extensions wikilinks /
+# `==highlight==`→`<mark>`, with `render.sourcepos` → per-block `data-line`
+# anchors for scroll-sync (research §C3). Pure Rust, no FFI/uniffi/tokio dep.
+comrak.workspace = true
+# Code-block syntax highlighting for the preview (research §B6) — drives
+# `parse::code_highlight`: a fenced block's language token + source → syntect
+# CLASSED HTML (`ClassedHTMLGenerator`, `ClassStyle::Spaced`) + the matching
+# theme CSS. Loads the vendored binary `SyntaxSet`/`ThemeSet` dump
+# (`assets/syntaxes-themes.packdump`) exactly once via a `OnceLock`; the hot path
+# never parses raw YAML. `fancy-regex` (pure-Rust) backend — no `onig` C build.
+# Pure Rust, no FFI/uniffi/tokio dep.
+syntect.workspace = true
 
 [lints]
 workspace = true
+
+# Reproducible regenerator for the vendored binary syntect dump
+# (`assets/syntaxes-themes.packdump`). Run:
+#   cargo run --example gen_syntect_dump
+# It loads syntect's default newline-sensitive SyntaxSet + default ThemeSet and
+# serialises them with `dump_to_uncompressed_file` (NO flate2 at load time, so
+# the hot-path `from_uncompressed_data` skips decompression). The dump is a
+# COMMITTED asset (not a build-time artifact); rerun this only to refresh it.
+[[example]]
+name = "gen_syntect_dump"
+path = "examples/gen_syntect_dump.rs"

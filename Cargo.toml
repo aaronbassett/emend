@@ -61,9 +61,58 @@ ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 # MSRV). emend-core enables the `parser` feature on tree-sitter-md below.
 tree-sitter = "0.26"
 tree-sitter-md = { version = "0.5", features = ["parser"] }
-comrak = "0.52"
-# code highlighting
-syntect = "5.3"
+# Preview Markdown→HTML engine (research §B1) — the AUTHORITATIVE renderer, a
+# SEPARATE engine from the tree-sitter editor highlighter (never unified;
+# Constitution / project guardrail). CommonMark + GFM + the native extensions
+# §B1 calls for (wikilinks, ==highlight==→<mark>, tasklist).
+#
+# MSRV (verified 2026-06-17 against the crates.io index, not from memory):
+# comrak 0.52.0 declares `rust-version = "1.85"` — exactly the workspace's pinned
+# rust-version = "1.85" (CI proves it with `cargo +1.85.0 check --all`). 0.52.0 is
+# the only published 0.52.x patch; 0.53+ raise the MSRV above 1.85, so stay on
+# 0.52.x.
+#
+# `default-features = false` is LOAD-BEARING for both MSRV and the onig ban:
+# comrak's `default` feature is `["cli", "syntect", "bon"]`, where
+#   - `cli`     pulls clap → darling/time/plist (all rust-version > 1.85), and
+#   - `syntect` pulls syntect with comrak's `regex-onig` variant (the C `onig`
+#     library) — which would also feature-unify onig into OUR fancy-regex syntect.
+# We need NEITHER: we call comrak as a library and do code highlighting with our
+# OWN syntect (`parse::code_highlight`) wired in via comrak's plugin adapter, so
+# we drop comrak's defaults entirely. This leaves just the CommonMark+GFM core
+# (comrak has no `default`-gated parsing features), which is all `parse::preview`
+# needs.
+comrak = { version = "0.52", default-features = false }
+# Code-block syntax highlighting for the PREVIEW (research §B6): given a fence
+# language token + source, syntect emits CLASSED HTML (`ClassedHTMLGenerator`,
+# `ClassStyle::Spaced`) plus the matching theme CSS, consumed by the WKWebView.
+# A binary `SyntaxSet`/`ThemeSet` dump is vendored under
+# `crates/emend-core/assets/` and lazily loaded ONCE — the hot path never parses
+# raw YAML.
+#
+# Backend = `fancy-regex` (pure Rust), NOT the default `onig` (C library): this
+# avoids a C toolchain/`build.rs` dependency and any `onig` build issues
+# (the task explicitly permits this), and keeps the build portable. Hence
+# `default-features = false` (drops the `regex-onig` default) + an explicit
+# feature list: `parsing` + `html` for `ClassedHTMLGenerator`/CSS, `dump-load`
+# for `from_uncompressed_data` on the hot path, `dump-create` for the vendored-
+# dump generator (`examples/gen_syntect_dump.rs`), `default-syntaxes`/
+# `default-themes` for `load_defaults_newlines`/`ThemeSet::load_defaults`, and
+# `regex-fancy` for the pure-Rust regex engine.
+#
+# MSRV (verified 2026-06-17, not from memory): syntect 5.3.0 declares NO
+# `rust-version`; it is an edition-2021 crate and, with the `fancy-regex`
+# backend, its transitive deps build cleanly under the workspace's pinned
+# rust-version = "1.85" (CI proves it with `cargo +1.85.0 check --all`).
+syntect = { version = "5.3", default-features = false, features = [
+    "parsing",
+    "html",
+    "dump-load",
+    "dump-create",
+    "default-syntaxes",
+    "default-themes",
+    "regex-fancy",
+] }
 # fuzzy search / quick open.
 #
 # `nucleo` (0.5) is the FULL engine: a worker threadpool + lock-free `Injector`
