@@ -34,5 +34,12 @@ harness = false
 name = "quick_open"
 harness = false
 
+# Cold-open perf (T131, SC-002): open + parse a ~1 MB / ~10k-line document so
+# first paint lands within 500 ms p95. Tracked, non-blocking (perf budgets are
+# tracked per the constitution).
+[[bench]]
+name = "open_doc"
+harness = false
+
 [lints]
 workspace = true
