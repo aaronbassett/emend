@@ -377,6 +377,14 @@ impl Workspace {
         self.favorites.contains(path)
     }
 
+    /// The set of favorited paths, in no particular order (FR-007). The caller
+    /// resolves each path's current kind and orders them for display — the
+    /// workspace stores favorites as a set, not an ordered list. Backs the FFI
+    /// contract's `list_favorites` (§1).
+    pub fn favorites(&self) -> impl Iterator<Item = &str> {
+        self.favorites.iter().map(String::as_str)
+    }
+
     /// Pin or unpin `path` for quick access (FR-007).
     pub fn set_pinned(&mut self, path: &str, pinned: bool) {
         if pinned {

@@ -145,8 +145,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T056 [US2] Implement `crates/emend-core/src/workspace.rs`: locations add/remove/list, `list_children`, file ops, favorites/pins/icons/child-order store; canonicalize paths and bound traversal depth for symlink-cycle/case-fold safety (NFR-007) (use devs:rust-dev agent)
 - [x] T057 [US2] Implement `crates/emend-core/src/watcher.rs`: notify + debouncer-full, self-write suppression registry, move detection, conflict state (research §B3) (use devs:rust-dev agent)
 - [x] T058 [US2] Implement `crates/emend-core/src/index.rs`: nucleo haystack + pathMap + nameMap; incremental updates (research §B2) (use devs:rust-dev agent)
-- [ ] T059 [US2] Export workspace/watcher/file-op functions + `DocObserver`/conflict APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
-- [ ] T060 [GIT] Commit: core workspace, watcher, index + FFI
+- [x] T059 [US2] Export workspace/watcher/file-op functions + `DocObserver`/conflict APIs in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
+- [x] T060 [GIT] Commit: core workspace, watcher, index + FFI
 - [ ] T061 [US2] Implement `app/Emend/Emend/Sidebar/WorkspaceOutlineView.swift` (NSOutlineView, targeted `reloadItem`) with add-location via NSOpenPanel (research §C6)
 - [ ] T062 [P] [US2] Implement `app/Emend/Emend/Sidebar/FolderIconPicker.swift` (SF Symbols grid + tint) and favorites/pins rows
 - [ ] T063 [P] [US2] Implement sidebar drag-drop reorganize in `app/Emend/Emend/Sidebar/OutlineDragDrop.swift`
