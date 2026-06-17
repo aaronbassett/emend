@@ -112,8 +112,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T036 [P] [US1] [test] `crates/emend-core/tests/parse_incremental.rs`: tree-sitter `changed_ranges` is edit-local; fence-toggle invalidates the tail (use devs:rust-dev agent)
 - [x] T037 [P] [US1] [test] `crates/emend-bench/benches/highlight.rs`: re-highlight one edited line in a 1MB doc < 5ms (tracked budget, SC-003) (use devs:rust-dev agent)
 - [x] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
-- [ ] T039 [US1] Export `open_document`/`push_edit`/`highlight_spans` in `crates/emend-ffi/src/lib.rs` per the FFI contract (use devs:rust-dev agent)
-- [ ] T040 [GIT] Commit: incremental editor highlighting + FFI exports
+- [x] T039 [US1] Export `open_document`/`push_edit`/`highlight_spans` in `crates/emend-ffi/src/lib.rs` per the FFI contract (use devs:rust-dev agent)
+- [x] T040 [GIT] Commit: incremental editor highlighting + FFI exports
 - [ ] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)
 - [ ] T042 [US1] Implement `app/Emend/Emend/Editor/SyntaxAttributing.swift`: map core spans → display attributes (dim markers, inline bold/italic/heading/quote/list, `==highlight==` background)
 - [ ] T043 [US1] Implement `app/Emend/Emend/Editor/MarkdownEditorView.swift` (NSViewRepresentable over TextKit 2 `NSTextView`); apply attributes via `NSTextContentStorageDelegate` for the viewport range (research §C1)
