@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct MainWindow: View {
     @StateObject private var workspace = WorkspaceModel()
     @StateObject private var tabs = TabModel()
+    @StateObject private var conflict = ConflictController()
 
     var body: some View {
         NavigationSplitView {
@@ -34,6 +35,7 @@ struct MainWindow: View {
         // the window closes, since autosave is otherwise only debounced.
         .onReceive(willTerminatePublisher) { _ in tabs.flushAll() }
         .onReceive(willClosePublisher) { _ in tabs.flushAll() }
+        .task { conflict.attach(tabs: tabs, workspace: workspace) }
     }
 
     private var willTerminatePublisher: NotificationCenter.Publisher {
@@ -61,9 +63,26 @@ struct MainWindow: View {
     private var editorPane: some View {
         VStack(spacing: 0) {
             TabBarView(model: tabs)
+            if let activeID = tabs.activeID, conflict.isConflicted(activeID) {
+                conflictBanner(activeID)
+            }
             editorStack
         }
         .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func conflictBanner(_ id: UUID) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text("This file changed on disk.")
+                .font(.callout)
+            Spacer()
+            Button("Reload") { conflict.resolve(id, choice: .reloadFromDisk) }
+            Button("Keep Mine") { conflict.resolve(id, choice: .keepMine) }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.12))
     }
 
     @ViewBuilder private var editorStack: some View {
@@ -87,7 +106,7 @@ struct MainWindow: View {
                         isReadOnly: tab.isReadOnly,
                         autosave: tab.autosave
                     )
-                    .id(tab.id)
+                    .id("\(tab.id)-\(tab.reloadToken)")
                     .opacity(tab.id == tabs.activeID ? 1 : 0)
                     .allowsHitTesting(tab.id == tabs.activeID)
                 }

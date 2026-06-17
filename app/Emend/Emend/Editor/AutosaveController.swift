@@ -20,6 +20,10 @@ final class AutosaveController {
     /// before touching UI.
     var onError: (@Sendable (FfiError) -> Void)?
 
+    /// Invoked on the autosave queue after a successful flush (the file was just
+    /// written) so the watcher's self-write suppression can be primed (FR-006a).
+    var onFlush: (@Sendable () -> Void)?
+
     private var idleItem: DispatchWorkItem?
     private var hardCapItem: DispatchWorkItem?
 
@@ -51,6 +55,17 @@ final class AutosaveController {
         queue.sync { performFlush() }
     }
 
+    /// Cancel any pending debounced flush WITHOUT writing — used when reloading a
+    /// document from disk (the local buffer is being discarded).
+    func cancel() {
+        queue.async { [weak self] in
+            self?.idleItem?.cancel()
+            self?.idleItem = nil
+            self?.hardCapItem?.cancel()
+            self?.hardCapItem = nil
+        }
+    }
+
     // MARK: - Private (all on `queue`)
 
     private func fire() {
@@ -64,6 +79,7 @@ final class AutosaveController {
         hardCapItem = nil
         do {
             try handle.flush()
+            onFlush?()
         } catch let error as FfiError {
             onError?(error)
         } catch {

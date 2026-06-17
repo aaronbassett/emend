@@ -2,54 +2,6 @@ import Combine
 import EmendCore
 import Foundation
 
-/// One row in the workspace sidebar tree. A reference type because
-/// `NSOutlineView` identifies rows by object identity; children are listed
-/// lazily from the Rust core on expansion (research §C6).
-final class WorkspaceNode {
-    enum Kind: Equatable {
-        case favorites // synthetic "Favorites" group row
-        case location(id: UInt64)
-        case folder
-        case file
-    }
-
-    let url: URL
-    let name: String
-    let kind: Kind
-    /// `nil` until first listed; files never gain children.
-    var children: [WorkspaceNode]?
-
-    init(url: URL, name: String, kind: Kind) {
-        self.url = url
-        self.name = name
-        self.kind = kind
-    }
-
-    var path: String {
-        url.path(percentEncoded: false)
-    }
-
-    var isExpandable: Bool {
-        kind != .file
-    }
-}
-
-/// Bridges the Rust watcher's `DocObserver` callbacks — delivered on a background
-/// thread — to a `@Sendable` closure. Holds only an immutable closure, so it is
-/// safely `Sendable`.
-final class FsObserver: DocObserver {
-    private let onChange: @Sendable (ChangeEvent) -> Void
-
-    init(onChange: @escaping @Sendable (ChangeEvent) -> Void) {
-        self.onChange = onChange
-    }
-
-    func onDerivedChanged() {}
-    func onFsChange(change: ChangeEvent) {
-        onChange(change)
-    }
-}
-
 /// Owns the Rust `WorkspaceHandle` plus the Swift-side concerns the core can't
 /// hold: the security-scoped folder bookmarks (the sandbox scope Rust reads and
 /// watches inside, research §A4) and their persistence across launches. The
@@ -59,6 +11,10 @@ final class FsObserver: DocObserver {
 @MainActor
 final class WorkspaceModel: ObservableObject {
     let workspace: WorkspaceHandle
+
+    /// Invoked (on the main actor) for each external filesystem change after the
+    /// sidebar refreshes — the conflict controller uses it to flag open docs.
+    var onExternalChange: ((ChangeEvent) -> Void)?
 
     /// Sidebar roots (the added locations). `revision` bumps only when this set
     /// changes, so the outline view reloads its top level exactly then (not on
@@ -243,6 +199,20 @@ final class WorkspaceModel: ObservableObject {
         defer { pendingReloads.removeAll() }
         return pendingReloads
     }
+
+    /// Prime the watchers' self-write suppression with the file's current
+    /// (mtime, len) so the app's own autosave doesn't echo as an external change
+    /// (FR-006a). Best-effort: the conflict controller also time-windows saves.
+    func recordSelfWrite(path: String) {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return }
+        let mtimeNs = UInt64(max(0, info.st_mtimespec.tv_sec)) * 1_000_000_000
+            + UInt64(max(0, info.st_mtimespec.tv_nsec))
+        let len = UInt64(max(0, info.st_size))
+        for watcher in watchers.values {
+            try? watcher.recordSelfWrite(path: path, mtimeNs: mtimeNs, len: len)
+        }
+    }
 }
 
 // MARK: - Private helpers (in an extension so the main type stays under the
@@ -273,6 +243,7 @@ private extension WorkspaceModel {
             changed = true
         }
         if changed { fsRefreshTick += 1 }
+        onExternalChange?(change)
     }
 
     /// Carry favorite/pin/icon state across a move/rename of `oldPath`. Descendant
