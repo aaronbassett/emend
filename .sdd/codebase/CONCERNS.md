@@ -2,11 +2,11 @@
 
 > **Purpose**: Document technical debt, known risks, bugs, fragile areas, and improvement opportunities.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US4 Phase 6 complete; preview/PDF security verified; scroll-sync runtime testing deferred)
+> **Last Updated**: 2026-06-17 (US5 Phase 7 complete; embed resolution, links, tasks, attachments; runtime gaps documented)
 
 ## Executive Summary
 
-Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete; US4 preview + PDF export complete). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US4 (Phase 6)** added: offline Markdown preview with bundled Mermaid + KaTeX, three-layer network isolation (CSP + nonPersistent store + navigation delegate), PDF export with identical privacy guarantees, comrak HTML escaping as the trust boundary for untrusted markdown. **Phase 1 in scope**: AI integration (key redaction, privacy tests), scroll-sync runtime validation, and most feature implementations remain. Key risks are around **unimplemented AI key handling** (designed but not coded), **untested self-write suppression + conflict path**, **scroll-sync runtime verification deferred** (core logic tested, runtime integration untested on real macOS events), and **deferred performance regression testing** for incremental Markdown parsing on large documents.
+Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as of 2026-06-17; US2 workspace + conflict handling complete; US4 preview + PDF export complete; US5 embeds + links + attachments complete). The core architecture is sound and security-conscious. **Phase 2 delivered**: UniFFI boundary (panic containment, error model), atomic fs writes, UTF-16 document substrate, three-pane app shell, security-scoped bookmarks, workspace model with bookmark persistence, path identity enforcement, conflict detection + resolution. **US4 (Phase 6)** added: offline Markdown preview with bundled Mermaid + KaTeX, three-layer network isolation (CSP + nonPersistent store + navigation delegate), PDF export with identical privacy guarantees, comrak HTML escaping as the trust boundary for untrusted markdown. **US5 (Phase 7)** added: wiki-link resolution, `![[embed]]` expansion with cycle + depth guards, task list syntax, and attachment storage with collision-safe naming. **Phase 1 in scope**: AI integration (key redaction, privacy tests), scroll-sync runtime validation, editor highlighting, Quick Open index maintenance, and most feature implementations remain. Key risks are around **unimplemented AI key handling** (designed but not coded), **untested self-write suppression + conflict path**, **scroll-sync runtime verification deferred** (core logic tested, runtime integration untested on real macOS events), **deferred performance regression testing** for incremental Markdown parsing on large documents, and **relative image preview not yet implemented** (attachment refs stored but not displayed in preview).
 
 ---
 
@@ -93,6 +93,30 @@ Emend is in **Phase 2 complete, Phase 1 in progress** (Foundational complete as 
 |----|------|-------------|--------|--------|--------|
 | **TD-006** | `crates/emend-core/src/fs.rs::read_tolerant` | To satisfy FR-003a, reads accept UTF-8 BOM, CRLF, and lossy UTF-8 decoding. On round-trip (read → edit → write), the original encoding is lost: BOM is stripped, CRLF is **preserved** (not normalized), invalid UTF-8 is replaced with U+FFFD. Files written by tools with specific encodings may degrade slightly on first save. | Subtle data change on first save after opening; user confusion if encoding was intentional | Low | Post-v1 |
 | **Prevention** | Document the normalization behavior in settings ("Encoding" section). Consider a future "preserve encoding" flag if users request it. CRLF preservation is intentional (research §B4). | | | |
+
+---
+
+## US5 Phase 7 Known Limitations & Testing Gaps
+
+The following are runtime concerns specific to US5 embed, link, task, and attachment functionality:
+
+### US5-001: External-Change Embed Index Maintenance Not Implemented (FR-017a Gap)
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **US5-001** | `crates/emend-core/src/index.rs` + `crates/emend-core/src/parse/embed.rs` | The embed resolver uses the workspace index to look up note names. The index is **seeded** by full reindex (`reindex_all`) on launch/add-location and **maintained incrementally** by internal file ops (`create_note`, `rename`, `delete`, `move_node`). However, **externally-created or externally-deleted files are NOT reflected** in the index until the next full reindex. This means: (1) a note created outside Emend will not resolve in `![[…]]` until manual reindex; (2) Quick Open won't find it either; (3) a note deleted externally will remain in the index with a stale reference. | Embeds and Quick Open miss externally-created files until manual reindex. User frustration if they create a note in another editor and expect `![[NewNote]]` to work immediately. | (1) Workaround: manual reindex via menu (when available). (2) Mitigated in practice: most users create notes in Emend, not externally. | By design (deferred; Phase 1 task T068 proposed to wire `DocObserver.on_fs_change` to `index_insert`/`_remove`/`_rename` FFI methods). |
+
+### US5-002: Relative Image Refs Don't Preview (Attachment Refs)
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **US5-002** | `crates/emend-core/src/fs.rs::store_attachment()` + `crates/emend-core/src/parse/preview.rs` + `app/Emend/Emend/Preview/PreviewWebView.swift` | When a user drops an image into a note, `store_attachment()` returns a relative path like `attachments/photo.png`. This is inserted into the Markdown as `![…](attachments/photo.png)`. comrak renders it as a literal `<img src="attachments/photo.png">`. However, the WebView's `baseURL` is the app bundle (`file:///.../Emend.app/Contents/Resources/preview/template.html`), not the note's folder. So the relative path tries to resolve relative to the bundle, failing silently. **Result**: dropped images don't appear in the preview; external links in the Markdown work (CSP allows `data:` URIs), but local image refs don't. | User drops an image, it's stored, but not visible in preview until they manually type a `file://` absolute path or embed. Looks broken but the file is safe (stored in `attachments/`). | Workaround: manually edit the image link to an absolute `file://` path (developer-facing only; user-facing feature deferred). | By design (Phase 1 follow-up, T089 proposed: construct security-scoped `file://` URLs for dropped attachments, set the WebView's `baseURL` to the note's folder, or post-process relative refs to absolute `file://` URLs). |
+
+### US5-003: Wiki-Link Resolution Ambiguity Not Auto-Resolved on Rename
+
+| ID | Area | Description | Impact | Workaround | Status |
+|----|------|-------------|--------|-----------|--------|
+| **US5-003** | `crates/emend-core/src/index.rs` (wiki-link resolver, Phase 1 T074) | When two notes share a basename (e.g., `notes/a.md` and `archive/a.md`), a `[[a]]` link is resolved deterministically but without user feedback on which one was chosen. Tie-break rule: shortest path wins (so `archive/a.md` loses to `notes/a.md`). If the user renames `notes/a.md` → `b.md`, any link `[[a]]` that pointed to it now points to the runner-up `archive/a.md` (no auto-rewrite). | Silent link target change on rename. Links still resolve, but may point to the "wrong" note if a collision exists and the user doesn't realize it. Confusing UX. | Workaround: (1) Don't have colliding basenames. (2) Use full paths: `[[notes/a]]` is unambiguous. (3) Manual UI link update (not auto-rewrite on rename). | By design (Phase 0); Phase 1 UI enhancement (T074) could show a visual indicator on ambiguous links and offer a "rename to disambiguate" or "link context menu" action. |
 
 ---
 
@@ -232,11 +256,13 @@ The following are **by design** — deferred to Phase 1 or later, but documented
 |------|-------------|------------|
 | `crates/emend-core/src/fs.rs` | Atomic write choreography is critical to Constitution Principle III; any step (temp creation, sync, rename, dir sync) can silently break durability. | Every change must justify its atomicity contract and durability guarantees. Pair code review with `fs.rs` test inspection (lines 186–221). Always verify `File::sync_all()` is present after temp write and after directory rename. |
 | `crates/emend-core/src/watcher.rs` | Pure logic (classify, suppression registry, conflict resolution) is well-tested, but FsWatcher integration with real notify events is untested. Rename correlation (debouncer `Both` mode → single `Renamed` event) is critical to avoid duplicating moves. | Every change to event classification must have corresponding unit test with synthetic `DebouncedEvent` vectors. Rename correlation tests required before Phase 1 merge. Full integration test on real macOS FSEvents strongly recommended. |
+| `crates/emend-core/src/parse/embed.rs` | Embed cycle detection and depth bounding prevent infinite loops, but the resolver closure is external (provided by FFI/preview). If a resolver returns stale or circular data, embeds could expand unexpectedly. | Every change to cycle/depth logic must have unit tests with synthetic resolvers (see `tests/embeds.rs`). The FFI layer's resolver must be robust: `render_preview_html_with_embeds` supplies the resolver, and it must handle file-not-found gracefully. |
 | `crates/emend-core/src/document.rs` | UTF-16 range handling with surrogate-pair validation; off-by-one errors risk silent text corruption. | Every edit operation must use `U16Range` branded newtype, never raw `u32`. Property-based tests required before Phase 3 merge (T035). Code review: check all `try_from` calls are present, never `as` casts for conversions. |
 | `crates/emend-ffi/src/error.rs` | FFI error projection is exhaustive (no wildcard match). Adding a variant to `EmendError` breaks this file at compile time until mirrored. | Always mirror variants exactly. Test that projection round-trips are lossless (`FfiError::from(core_err)` preserves all fields). |
 | `crates/emend-ffi/src/panic.rs` | Panic containment is the boundary between crashing FFI panics and recoverable Rust errors. `contain_panic` wraps spawned tasks; missing it → process abort. | Every `tokio::spawn` body must be wrapped. Add a comment: `// SAFETY: panic contained by contain_panic(…)` over the spawn call. Code review gate: verify no bare `spawn()` calls exist. |
 | `crates/emend-core/src/parse/preview.rs` | Comrak HTML escaping is the trust boundary for untrusted user markdown. If escaping is disabled (e.g., `unsafe_ = true`) or comrak is replaced, raw HTML could be injected. | Code review gate: any change to `build_options()` must justify the change and document the security implication. Test that malicious markdown (e.g., `<script>alert(1)</script>`) renders as escaped text, not executable. |
 | `app/Emend/Emend/Preview/PreviewWebView.swift` | Three-layer isolation (CSP + nonPersistent + navigation delegate) must be kept in sync. A bug in any layer could regress the privacy model. | Code review: verify CSP header is always present in template.html. Verify `config.websiteDataStore = .nonPersistent()` is never removed. Verify navigation delegate allows only `file:` + `about:`. If any of these change, update the SECURITY.md documentation. |
+| `crates/emend-core/src/fs.rs::store_attachment()` | Attachment naming is collision-safe (`free_name`) and path normalization ensures portable Markdown. But attachment directory creation (`create_dir_all`) could race in theory. | Code review: verify `create_dir_all` is idempotent (returns success if dir exists). Verify that `free_name` doesn't allow directory separators in the chosen name (it uses `Path::file_name`, which is safe). Unit tests should cover: empty name fallback, collision detection, extension handling. |
 | `app/Emend/Emend/Preview/PDFExport.swift` | Off-screen WebView lifecycle and timeout logic are error-prone. A bug could cause WebViews to leak or fail silently. | Code review: verify `defer { cleanup() }` is present. Verify timeouts (20 s template, 30 s print) are reasonable for the largest expected document. Test that watchdog timeout firing (e.g., with a stalled template) results in an error, not a hang. |
 | `app/Emend/Platform/SecurityScopedBookmarks.swift` | Scope lifecycle (start/stop balance) is error-prone. Unbalanced calls leak scopes; missing calls allow unauthorized file access. | Code review: every `startAccessingSecurityScopedResource` must have a corresponding `stopAccessing…` in the same scope (defer or try-finally). Add a test that simulates an unbalanced call and asserts it fails gracefully. |
 | `app/Emend/Sidebar/WorkspaceModel.swift` (US2 Phase 4) | Bookmark persistence, stale-bookmark refresh, scope lifecycle, and app-state duplication are intertwined. Unbalanced scope calls or losing UserDefaults state could break file access or lose favorites. | Code review: verify all `startAccessing` / `stopAccessing` calls are balanced. Verify bookmark persistence is replayed correctly on launch (test with simulator state wipe). Verify app-state setters are called synchronously after toggling favorites/pins. |
@@ -252,6 +278,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 
 | Location | TODO | Priority | Task ID | Status |
 |----------|------|----------|---------|--------|
+| Phase 1 (T068) | Implement FFI methods `index_insert`, `index_remove`, `index_rename` and wire `DocObserver.on_fs_change` to them for external-change embed index maintenance | High | T068 | Deferred |
 | Phase 1 (T110) | Implement `crates/emend-core/tests/ai_privacy.rs`: verify no network when AI unconfigured, key never in logs | High | T110 | Deferred |
 | Phase 1 (T112) | Implement `crates/emend-core/src/ai.rs`: reqwest SSE, redacting key, timeout, max-input guard | High | T112 | Deferred |
 | Phase 1 (T083) | Implement `crates/emend-core/tests/preview_offline.rs`: core rendering is offline (DONE); runtime WebView CSP + nonPersistent test deferred | High | T083 | Partial (core done, runtime deferred) |
@@ -259,6 +286,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | Phase 1 (T065–T067) | Implement `crates/emend-core/src/watcher.rs` integration tests: file watching, debounce, self-write suppression, rename correlation, conflict handling | High | T065–T067 | Logic complete; integration tests deferred |
 | Phase 1 (T072–T073) | Implement `crates/emend-core/src/parse.rs`: tree-sitter + comrak integration | High | T072–T073 | Comrak done (US4); tree-sitter editor highlight deferred |
 | Phase 1 (T074–T076) | Implement `crates/emend-core/src/index.rs`: Quick Open, wiki-link resolution | High | T074–T076 | Deferred |
+| Phase 1 (T089) | Implement local-image preview display for dropped attachments: construct security-scoped `file://` URLs or post-process relative refs to absolute paths | Medium | T089 | Deferred |
 | Phase 3 (T035) | Wire Swift editor (keystroke deltas) → Rust core (push_edit) with UTF-16 ranges | High | T035 | In progress (US1) |
 | Phase 3 (T131) | Viewport windowing + incremental reparse for large documents | Medium | T131 | Deferred (polish) |
 | Phase 3 (T138) | Implement performance benchmark suite (`emend-bench/benches/smoke.rs`) | Medium | T138 | Deferred |
@@ -276,7 +304,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | `thiserror` | ✅ Active | 2026-06-17 | 2.x stable (v1 frozen); modern error-handling standard |
 | `tree-sitter` | ✅ Maintained (Zed) | 2026-06-17 | 0.26.x active; incremental parse API stable; unify with tree-sitter-md |
 | `tree-sitter-md` | ✅ Maintained | 2026-06-17 | 0.5.x (requires tree-sitter 0.26); parser feature required |
-| `comrak` | ✅ Active | 2026-06-17 | 0.52.x; CommonMark spec tracking; **HTML escaping is critical security boundary (US4)** |
+| `comrak` | ✅ Active | 2026-06-17 | 0.52.x; CommonMark spec tracking; **HTML escaping is critical security boundary (US4/US5)** |
 | `syntect` | ✅ Maintained (burntsushi) | 2026-06-17 | 5.3.x stable; theme/syntax set discovery is slow; see research §B6 binary dump approach |
 | `nucleo` | ✅ Active (helix contributor) | 2026-06-17 | 0.5.x; published crate is stable; prefer vendoring if CI concerns arise |
 | `notify` + `notify-debouncer-full` | ✅ Maintained | 2026-06-17 | 8.2.x + 0.7.x stable; 9.0 RC available but stay on 8.x until stabilized |
@@ -299,6 +327,8 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Move-folder re-pathing** | App state paths not updated when folder moved | Walk descendants and update app-state paths on move | Favorites/pins/icons persist after folder move (RUNTIME-005) | Low |
 | **Scroll-sync integration testing** | Manual UI testing only | Formal integration tests in Phase 1 (T086) | Confidence in preview↔editor sync on real documents | Medium |
 | **Preview CSP runtime validation** | Assumed working; manual testing only | Add runtime test that verifies WKWebView CSP blocks remote loads (low-level, may be difficult in CI) | Confidence that privacy layer is enforced | Medium |
+| **Local-image preview** | Attachment refs stored but not displayed | Construct security-scoped `file://` URLs for dropped images (T089) | User can see dropped images in preview | Medium |
+| **Embed index maintenance** | Full reindex only; external changes missed | Wire watcher → `index_insert`/`_remove`/`_rename` FFI methods (T068) | Quick Open and embeds find externally-created files immediately | Medium |
 
 ---
 
@@ -312,6 +342,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 | **Integration test coverage** | Watcher, conflict, bookmark lifecycle untested with real macOS events; scroll-sync integration untested | Hard to debug file-handling bugs in field | Phase 1 (T065–T067, T086) |
 | **Error telemetry** | App records errors locally but doesn't report them (by design—offline-first) | Hard to detect widespread bugs in field | Post-v1 (intentional design) |
 | **Preview CSP enforcement** | Assumed enforced; no runtime verification in CI | Could regress silently if template is edited | Pre-release gate (manual testing) |
+| **External index changes** | No tracking of externally-created/deleted files | Embeds + Quick Open miss external changes until reindex | Phase 1 (T068 proposed) |
 
 ---
 
@@ -321,7 +352,7 @@ Active TODO comments or deferred tasks in the codebase (tracked via `/sdd:tasks`
 |-------|------------|----------------|----------|
 | **Critical** | Production impact, security breach, data loss | Immediate (block merge) | Panic in FFI, atomic write bug, key leak |
 | **High** | Degraded functionality, security risk, test gap for security features | Before Phase 1 merge | SEC-001, SEC-002, SEC-003, SEC-004, SEC-005, TD-001, TD-002, TD-004 |
-| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints), SEC-006 (scroll-sync) |
+| **Medium** | Developer experience, correctness edge case, performance concern, runtime limitations | During Phase in progress | TD-003 (perf), TD-005 (testing gap), RUNTIME-* (design constraints), SEC-006 (scroll-sync), US5-001/US5-002/US5-003 (deferred gaps) |
 | **Low** | Nice to have, cosmetic, post-v1 enhancement | Backlog | TD-011–TD-014, localization, observability |
 
 ---

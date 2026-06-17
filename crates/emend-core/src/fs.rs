@@ -54,10 +54,18 @@
 use crate::EmendError;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One leading UTF-8 byte-order mark (`U+FEFF`), as it appears on disk.
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+/// The subdirectory (relative to a note's own folder) where dropped media is
+/// stored (FR-013/FR-013a). Obsidian-style `attachments/` next to the note.
+pub const ATTACHMENTS_DIR: &str = "attachments";
+
+/// The basename stem used when a dropped attachment has no usable name — an empty
+/// or extension-only `suggested_name` (FR-013a "untitled/unsaved" fallback).
+const UNTITLED_STEM: &str = "untitled";
 
 /// Atomically and durably write `contents` to `path`, replacing any existing
 /// file (FR-009a).
@@ -83,6 +91,24 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 /// lacks permission, or any IO step (temp create, write, fsync, rename) fails.
 /// Never panics.
 pub fn write_atomic(path: impl AsRef<Path>, contents: &str) -> Result<(), EmendError> {
+    write_atomic_bytes(path, contents.as_bytes())
+}
+
+/// Atomically and durably write raw `bytes` to `path`, replacing any existing
+/// file. The byte-oriented sibling of [`write_atomic`] (which is just this with a
+/// `&str`'s bytes); used for binary attachments (FR-013a), which are not text.
+///
+/// Identical sequence to [`write_atomic`] — sibling temp file → `sync_all`
+/// (`F_FULLFSYNC` on Apple) → atomic `rename(2)` → directory fsync — so an
+/// external observer never sees a half-written file.
+///
+/// # Errors
+///
+/// Returns [`EmendError::NotFound`] / [`EmendError::PermissionDenied`] /
+/// [`EmendError::IoFailure`] if the parent directory is missing, the process
+/// lacks permission, or any IO step (temp create, write, fsync, rename) fails.
+/// Never panics.
+pub fn write_atomic_bytes(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), EmendError> {
     let path = path.as_ref();
 
     // The temp file MUST live in the same directory as the target so that
@@ -96,9 +122,8 @@ pub fn write_atomic(path: impl AsRef<Path>, contents: &str) -> Result<(), EmendE
         .tempfile_in(dir)
         .map_err(|e| map_io(path, &e))?;
 
-    // Write + flush the user bytes into the temp file.
-    temp.write_all(contents.as_bytes())
-        .map_err(|e| map_io(path, &e))?;
+    // Write + flush the bytes into the temp file.
+    temp.write_all(bytes).map_err(|e| map_io(path, &e))?;
     temp.flush().map_err(|e| map_io(path, &e))?;
 
     // Durability: on Apple this is `fcntl(F_FULLFSYNC)` (see module docs) — the
@@ -113,6 +138,146 @@ pub fn write_atomic(path: impl AsRef<Path>, contents: &str) -> Result<(), EmendE
     sync_dir(dir)?;
 
     Ok(())
+}
+
+/// Store a dropped media attachment beside a note, returning the **note-relative**
+/// reference to insert into the Markdown (FR-013/FR-013a).
+///
+/// `note_path` is the note the media was dropped into. `bytes` is the media
+/// payload; `suggested_name` is the dropped file's name (used for the basename +
+/// extension).
+///
+/// ## `note_path == None` is unsupported in v1
+///
+/// An attachment is stored in an `attachments/` directory *beside its note*, so
+/// it needs a saved note to anchor on. When `note_path` is `None` (the note is
+/// still untitled/unsaved) there is no such anchor, and this returns
+/// [`EmendError::InvalidConfig`] rather than degrading. (The previous behaviour
+/// fell back to the process's current working directory — which is `/` for a
+/// sandboxed app, yielding an opaque `PermissionDenied`, and is process-global
+/// mutable state besides.) The Swift caller already guards against this by
+/// requiring the note to be saved first, so the `None` case is never hit on the
+/// happy path; v1 simply makes the unsupported case an explicit, descriptive
+/// error instead of a misleading IO failure.
+///
+/// ## Where it lands
+///
+/// The attachment is written into an [`ATTACHMENTS_DIR`] (`attachments/`)
+/// subdirectory of the note's own folder, created if absent.
+///
+/// ## Collision-safe naming (FR-013a)
+///
+/// The filename is made collision-safe the same way the workspace's file ops are:
+/// if `suggested_name` is taken in the attachments dir, a ` 2`, ` 3`, … suffix is
+/// inserted before the extension (`image.png` → `image 2.png`). An empty or
+/// extension-only `suggested_name` falls back to an [`UNTITLED_STEM`] basename
+/// (`untitled`, `untitled.png`).
+///
+/// ## Return value
+///
+/// The returned string is the path to insert into the note as a relative-path
+/// Markdown image — `attachments/<chosen-name>` — using forward slashes
+/// (Markdown/portable), regardless of the host separator.
+///
+/// # Errors
+///
+/// [`EmendError::InvalidConfig`] if `note_path` is `None` (an attachment requires
+/// a saved note in v1; see above). [`EmendError::PermissionDenied`] /
+/// [`EmendError::IoFailure`] if the attachments directory cannot be created or the
+/// atomic write fails. Never panics.
+pub fn store_attachment(
+    note_path: Option<&str>,
+    bytes: &[u8],
+    suggested_name: &str,
+) -> Result<String, EmendError> {
+    // An attachment lands beside its note, so it needs a saved note to anchor on.
+    // An untitled/unsaved note (`note_path == None`) is unsupported in v1: rather
+    // than writing into the process CWD (which is `/` under the app sandbox, and
+    // is process-global mutable state regardless), return a clear error. The Swift
+    // caller guards against this, so it is never reached on the happy path.
+    let Some(note_path) = note_path else {
+        return Err(EmendError::InvalidConfig {
+            detail: "cannot store an attachment for an unsaved note: save the note first"
+                .to_owned(),
+        });
+    };
+
+    // The note's own folder (its parent dir).
+    let note_dir: PathBuf = Path::new(note_path)
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+
+    let attach_dir = note_dir.join(ATTACHMENTS_DIR);
+    std::fs::create_dir_all(&attach_dir).map_err(|e| map_io(&attach_dir, &e))?;
+
+    let desired = sanitize_attachment_name(suggested_name);
+    let chosen = free_name(&attach_dir, &desired);
+    let target = attach_dir.join(&chosen);
+
+    write_atomic_bytes(&target, bytes)?;
+
+    // Return the note-relative reference with forward slashes (portable Markdown).
+    Ok(format!("{ATTACHMENTS_DIR}/{chosen}"))
+}
+
+/// Reduce a dropped file's name to a safe attachment basename (FR-013a):
+/// take only the final path component (drop any directory parts a drag-source
+/// might include), and substitute the [`UNTITLED_STEM`] when the result is empty
+/// or extension-only (`.png` → `untitled.png`, `""` → `untitled`).
+fn sanitize_attachment_name(suggested: &str) -> String {
+    // Final path component only — never let a drop name escape the attachments dir.
+    let base = Path::new(suggested)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let base = base.trim();
+
+    if base.is_empty() {
+        return UNTITLED_STEM.to_owned();
+    }
+    // Extension-only (a leading dot with no stem, e.g. ".png"): prepend the
+    // untitled stem so the file has a name, keeping the extension.
+    if base.starts_with('.') && !base[1..].contains('.') {
+        return format!("{UNTITLED_STEM}{base}");
+    }
+    base.to_owned()
+}
+
+/// Pick a non-colliding basename for `desired` inside `dir` (FR-013a). If
+/// `dir/desired` is free, returns `desired`; else appends a space and the lowest
+/// integer ≥ 2 that frees the name, inserting it **before the final extension**
+/// (`image.png` → `image 2.png`).
+///
+/// Mirrors `workspace::free_name` deliberately (the attachments dir wants the same
+/// Finder-style "name 2" convention) but is kept private to `fs` so this module
+/// has no dependency on `workspace`.
+fn free_name(dir: &Path, desired: &str) -> String {
+    if !dir.join(desired).exists() {
+        return desired.to_owned();
+    }
+
+    // Split on the LAST dot so multi-dot names keep only their final extension;
+    // a leading-dot name (`.env`) has no stem before the dot → whole-name stem.
+    let (stem, ext) = match desired.rfind('.') {
+        Some(0) | None => (desired, ""),
+        Some(idx) => (&desired[..idx], &desired[idx + 1..]),
+    };
+
+    let mut n: u32 = 2;
+    loop {
+        let candidate = if ext.is_empty() {
+            format!("{stem} {n}")
+        } else {
+            format!("{stem} {n}.{ext}")
+        };
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+        n = match n.checked_add(1) {
+            Some(next) => next,
+            None => return candidate,
+        };
+    }
 }
 
 /// Read `path` into a [`String`], tolerating files written by other tools
@@ -188,7 +353,9 @@ mod tests {
     // in library code, so scope the allowance to this test module.
     #![allow(clippy::unwrap_used, reason = "unit test asserts on its own fixtures")]
 
-    use super::{read_tolerant, write_atomic};
+    use super::{
+        read_tolerant, sanitize_attachment_name, store_attachment, write_atomic, ATTACHMENTS_DIR,
+    };
     use crate::EmendError;
 
     #[test]
@@ -197,6 +364,67 @@ mod tests {
         let path = dir.path().join("n.md");
         write_atomic(&path, "hello\n").unwrap();
         assert_eq!(read_tolerant(&path).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn sanitize_attachment_name_falls_back_to_untitled() {
+        assert_eq!(sanitize_attachment_name(""), "untitled");
+        assert_eq!(sanitize_attachment_name("   "), "untitled");
+        // Extension-only → untitled keeps the extension.
+        assert_eq!(sanitize_attachment_name(".png"), "untitled.png");
+        // A normal name is kept; directory parts are stripped.
+        assert_eq!(sanitize_attachment_name("photo.jpg"), "photo.jpg");
+        assert_eq!(sanitize_attachment_name("/a/b/photo.jpg"), "photo.jpg");
+    }
+
+    #[test]
+    fn store_attachment_writes_beside_note_and_returns_rel_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, "# hi").unwrap();
+
+        let rel = store_attachment(
+            Some(note.to_str().unwrap()),
+            b"\x89PNG fake bytes",
+            "image.png",
+        )
+        .unwrap();
+        assert_eq!(rel, "attachments/image.png");
+
+        // The bytes landed in the note's own attachments/ dir.
+        let stored = dir.path().join(ATTACHMENTS_DIR).join("image.png");
+        assert_eq!(std::fs::read(stored).unwrap(), b"\x89PNG fake bytes");
+    }
+
+    #[test]
+    fn store_attachment_is_collision_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, "# hi").unwrap();
+        let note_str = note.to_str().unwrap();
+
+        let first = store_attachment(Some(note_str), b"one", "img.png").unwrap();
+        let second = store_attachment(Some(note_str), b"two", "img.png").unwrap();
+        assert_eq!(first, "attachments/img.png");
+        assert_eq!(second, "attachments/img 2.png");
+        // Both files exist with their own bytes (no overwrite, FR-013a).
+        let a = dir.path().join(ATTACHMENTS_DIR).join("img.png");
+        let b = dir.path().join(ATTACHMENTS_DIR).join("img 2.png");
+        assert_eq!(std::fs::read(a).unwrap(), b"one");
+        assert_eq!(std::fs::read(b).unwrap(), b"two");
+    }
+
+    #[test]
+    fn store_attachment_untitled_note_is_unsupported() {
+        // No note path → unsupported in v1 (M2): an attachment needs a saved note
+        // to anchor on. The previous behaviour wrote into the process CWD (which is
+        // `/` under the app sandbox); now it returns a clear error and never
+        // touches the filesystem or process-global CWD.
+        let err = store_attachment(None, b"data", "drop.bin").unwrap_err();
+        assert!(
+            matches!(err, EmendError::InvalidConfig { .. }),
+            "expected InvalidConfig for an unsaved note, got {err:?}"
+        );
     }
 
     #[test]

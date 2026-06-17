@@ -251,6 +251,70 @@ impl WorkspaceHandle {
             detail: "workspace handle lock poisoned".to_owned(),
         })
     }
+
+    /// Resolve an embed target to that note's **source text and its resolved
+    /// path**, for the embed expander wired by
+    /// [`OpenDocHandle::render_preview_html_resolving`](crate::document::OpenDocHandle::render_preview_html_resolving)
+    /// (US5 · FR-021/021a, FR-019a). Returns `Some((source, resolved_path))` when
+    /// `raw_target` resolves to a note that reads successfully, or `None` when it
+    /// is unresolved (so the expander degrades to a visible placeholder, FR-022).
+    ///
+    /// The `resolved_path` is returned alongside the source because the expander
+    /// uses it as the `from_note` for the embedded note's **own** nested embeds —
+    /// so a `![[…]]` inside the embedded note resolves relative to the embedded
+    /// note's directory, not the top document's (FR-019a per-parent anchoring; see
+    /// [`emend_core::parse::embed`]). `from_note` here is the path of the note the
+    /// *current* embed was written in (the FR-019a anchor for this resolution).
+    ///
+    /// Not `#[uniffi::export]`ed (it lives in the private `impl` block beside
+    /// [`Self::lock`]) — it is an internal building block the resolving-preview
+    /// method calls once per embed target. It deliberately resolves the path
+    /// **under the index lock, then drops the lock before the on-disk read**, so
+    /// the comrak render pass that drives the expander never holds the index
+    /// `Mutex` (and a slow/blocking read can never stall concurrent file ops or
+    /// Quick Open against the same index). Resolution is the deterministic FR-019a
+    /// policy ([`emend_core::derived::resolve_wikilink`]); the read is the tolerant
+    /// reader ([`emend_core::fs::read_tolerant`], BOM/CRLF/non-UTF-8 safe, FR-003a)
+    /// — the same gateway [`crate::document::open_document`] uses.
+    ///
+    /// An unresolved target, or a target that resolves to a path that cannot be
+    /// read (deleted between resolve and read, permissions), both degrade to `None`
+    /// rather than an error: an embed is a reading aid, and the expander shows the
+    /// placeholder. Lock poisoning is the one hard failure (mapped to
+    /// [`FfiError::Internal`]), surfaced so a corrupt-state render fails loudly
+    /// rather than silently dropping every embed.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub(crate) fn resolve_embed_source(
+        &self,
+        from_note: &str,
+        raw_target: &str,
+    ) -> Result<Option<(String, String)>, FfiError> {
+        // Resolve the target to an absolute path UNDER the lock, then release it
+        // before reading from disk — the render/expand pass must never hold the
+        // index mutex across IO (or across the whole comrak render).
+        let resolved_path = {
+            let guard = self.lock()?;
+            let index = guard.lock_index()?;
+            emend_core::derived::resolve_wikilink(&index, from_note, raw_target)
+            // `index` and `guard` drop here, releasing both locks before the read.
+        };
+
+        let Some(path) = resolved_path else {
+            return Ok(None);
+        };
+
+        // Tolerant read off-lock. A read failure (vanished/forbidden) degrades to
+        // `None` (visible placeholder) rather than failing the whole preview — the
+        // embed is a reading aid, not load-bearing. On success, return the source
+        // PAIRED with its resolved path so the expander can anchor the embedded
+        // note's own nested embeds on the embedded note's directory (FR-019a).
+        Ok(emend_core::fs::read_tolerant(&path)
+            .ok()
+            .map(|source| (source, path)))
+    }
 }
 
 #[uniffi::export]
@@ -633,6 +697,52 @@ impl WorkspaceHandle {
         Ok(resolved)
     }
 
+    /// Resolve a `[[wiki link]]` to a single absolute note path using the
+    /// **deterministic** FR-019a policy (FFI contract §5 `resolve_wikilink`).
+    ///
+    /// `from_note` is the path of the note containing the link (used for the
+    /// same-directory tie-break); `raw_target` is the link target as typed.
+    /// Delegates to [`emend_core::derived::resolve_wikilink`], which ranks the
+    /// index's candidate set by: same directory as the source → shallowest path →
+    /// lexicographically smallest path. Returns `None` when the target resolves to
+    /// no note — including the v1 case where the target was renamed (links are not
+    /// auto-rewritten, so a stale name is unresolved, never mis-pointed).
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub fn resolve_wikilink(
+        &self,
+        from_note: String,
+        raw_target: String,
+    ) -> Result<Option<String>, FfiError> {
+        let guard = self.lock()?;
+        let index = guard.lock_index()?;
+        Ok(emend_core::derived::resolve_wikilink(
+            &index,
+            &from_note,
+            &raw_target,
+        ))
+    }
+
+    /// Autocomplete suggestions for a `[[` prefix (FFI contract §5
+    /// `wikilink_suggestions`; FR-020): up to `limit` ranked [`SearchHit`]s over
+    /// the index's note names/paths (same ranking as Quick Open).
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub fn wikilink_suggestions(
+        &self,
+        prefix: String,
+        limit: u32,
+    ) -> Result<Vec<SearchHit>, FfiError> {
+        let guard = self.lock()?;
+        let index = guard.lock_index()?;
+        let hits = emend_core::derived::wikilink_suggestions(&index, &prefix, limit as usize);
+        Ok(hits.into_iter().map(search_hit).collect())
+    }
+
     /// Start a streaming, **supersedable** Quick Open query (FFI contract §5
     /// `quick_open_query`; FR-017, FR-018/SC-004, NFR-002).
     ///
@@ -714,6 +824,35 @@ pub fn new_workspace() -> Arc<WorkspaceHandle> {
     Arc::new(WorkspaceHandle::default())
 }
 
+/// Store a dropped media attachment and return the **note-relative** Markdown
+/// reference to insert (FFI contract §2 `store_attachment`; FR-013/FR-013a).
+///
+/// A free function (not a [`WorkspaceHandle`] method): the core
+/// [`emend_core::fs::store_attachment`] keys entirely off the note's path on
+/// disk, needing none of the workspace's in-memory state. `note_path` is the
+/// target note; it **must** be a saved note in v1. `None` (an untitled/unsaved
+/// note) is **unsupported** and returns [`FfiError::InvalidConfig`] — an
+/// attachment lands in an `attachments/` directory beside its note, so it needs a
+/// saved note to anchor on (the Swift caller guards by requiring a save first).
+/// On success the attachment is written atomically + durably (an observer never
+/// sees a partial file, FR-009a) into that `attachments/` subdirectory beside the
+/// note, with a collision-safe name (`img.png` → `img 2.png`).
+///
+/// # Errors
+///
+/// [`FfiError::InvalidConfig`] if `note_path` is `None` (unsupported in v1).
+/// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] if the attachments
+/// directory cannot be created or the write fails.
+#[uniffi::export]
+pub fn store_attachment(
+    note_path: Option<String>,
+    bytes: Vec<u8>,
+    suggested_name: String,
+) -> Result<String, FfiError> {
+    emend_core::fs::store_attachment(note_path.as_deref(), &bytes, &suggested_name)
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -723,7 +862,7 @@ mod tests {
         reason = "unit test asserts on its own fixtures"
     )]
 
-    use super::{new_workspace, NodeKind};
+    use super::{new_workspace, store_attachment, NodeKind};
     use crate::error::FfiError;
 
     #[test]
@@ -870,6 +1009,82 @@ mod tests {
         // A favorited-then-deleted path is skipped, not surfaced as a broken row.
         ws.delete(note).expect("delete");
         assert!(ws.list_favorites().expect("list").is_empty());
+    }
+
+    #[test]
+    fn resolve_wikilink_and_suggestions_over_the_index() {
+        let ws = new_workspace();
+        ws.rebuild_index(vec![
+            super::IndexEntry {
+                abs_path: "/root/launch-plan.md".to_owned(),
+                rel_path: "launch-plan.md".to_owned(),
+            },
+            super::IndexEntry {
+                abs_path: "/root/launch-post.md".to_owned(),
+                rel_path: "launch-post.md".to_owned(),
+            },
+        ])
+        .expect("rebuild");
+
+        // Exact name resolves to the one note.
+        let resolved = ws
+            .resolve_wikilink("/root/from.md".to_owned(), "launch-plan".to_owned())
+            .expect("resolve");
+        assert_eq!(resolved.as_deref(), Some("/root/launch-plan.md"));
+
+        // A missing target is unresolved (None), never mis-pointed.
+        assert_eq!(
+            ws.resolve_wikilink("/root/from.md".to_owned(), "missing".to_owned())
+                .expect("resolve"),
+            None
+        );
+
+        // Autocomplete suggests both launch-* notes for the `laun` prefix.
+        let hits = ws
+            .wikilink_suggestions("laun".to_owned(), 10)
+            .expect("suggestions");
+        assert!(hits.len() >= 2, "both launch-* notes: {hits:?}");
+        assert!(hits.iter().all(|h| h.name.contains("launch")));
+    }
+
+    #[test]
+    fn store_attachment_writes_and_returns_rel_ref() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, b"# hi").expect("write note");
+
+        let rel = store_attachment(
+            Some(note.to_string_lossy().into_owned()),
+            b"\x89PNG bytes".to_vec(),
+            "image.png".to_owned(),
+        )
+        .expect("store");
+        assert_eq!(rel, "attachments/image.png");
+
+        let stored = dir.path().join("attachments").join("image.png");
+        assert_eq!(std::fs::read(stored).expect("read"), b"\x89PNG bytes");
+
+        // A second drop of the same name is collision-safe.
+        let rel2 = store_attachment(
+            Some(note.to_string_lossy().into_owned()),
+            b"second".to_vec(),
+            "image.png".to_owned(),
+        )
+        .expect("store 2");
+        assert_eq!(rel2, "attachments/image 2.png");
+    }
+
+    #[test]
+    fn store_attachment_unsaved_note_maps_to_invalid_config() {
+        // M2: `note_path == None` (an unsaved note) is unsupported in v1 and must
+        // surface as a clear `FfiError::InvalidConfig` at the boundary, not write
+        // to the process CWD. Confirms the `EmendError -> FfiError` mapping too.
+        let err = store_attachment(None, b"data".to_vec(), "drop.bin".to_owned())
+            .expect_err("an unsaved note must not store an attachment");
+        assert!(
+            matches!(err, FfiError::InvalidConfig { .. }),
+            "expected InvalidConfig for an unsaved note, got {err:?}"
+        );
     }
 
     #[test]

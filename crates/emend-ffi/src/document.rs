@@ -50,6 +50,10 @@
 //!   [`FfiError::Internal`] rather than panicking.
 
 use crate::error::FfiError;
+use crate::workspace::WorkspaceHandle;
+use emend_core::derived::{
+    extract_links, toggle_task, LinkKind as CoreLinkKind, LinkRef as CoreLinkRef,
+};
 use emend_core::document::Document;
 use emend_core::parse::highlight::{
     Highlighter, StyleClass as CoreStyleClass, StyleSpan as CoreStyleSpan,
@@ -164,6 +168,60 @@ impl From<CoreStyleSpan> for StyleSpan {
         Self {
             range: range.into(),
             class: class.into(),
+        }
+    }
+}
+
+/// Whether a [`LinkRef`] is a navigable link (`[[…]]`) or an inline embed
+/// (`![[…]]`) — the FFI mirror of [`emend_core::derived::LinkKind`] (US5 ·
+/// FR-019/021). The [`From`] is exhaustive (no wildcard), so a new core variant
+/// breaks compilation here until mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LinkKind {
+    /// A `[[wiki link]]` — clickable, navigates to the target note (FR-019).
+    Link,
+    /// A `![[embed]]` — inlines the target's content in the preview (FR-021).
+    Embed,
+}
+
+impl From<CoreLinkKind> for LinkKind {
+    /// Exhaustive projection — no wildcard arm.
+    fn from(kind: CoreLinkKind) -> Self {
+        match kind {
+            CoreLinkKind::Link => Self::Link,
+            CoreLinkKind::Embed => Self::Embed,
+        }
+    }
+}
+
+/// A wiki link / embed found in a document (FFI contract §4 `links`). The FFI
+/// mirror of [`emend_core::derived::LinkRef`].
+///
+/// `range` is UTF-16 (FFI contract §4/§5) so it maps onto `NSRange` for
+/// click/navigation; `raw_target` is the target as typed (before any `|` alias),
+/// which Swift resolves via [`crate::workspace::WorkspaceHandle::resolve_wikilink`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LinkRef {
+    /// Link vs embed.
+    pub kind: LinkKind,
+    /// The target as typed (before any `|` alias), e.g. `Launch Plan`.
+    pub raw_target: String,
+    /// The full `[[…]]` / `![[…]]` token's source range in UTF-16 code units.
+    pub range: U16Range,
+}
+
+impl From<CoreLinkRef> for LinkRef {
+    fn from(link: CoreLinkRef) -> Self {
+        // Destructure exhaustively so a new core field forces a compile error.
+        let CoreLinkRef {
+            kind,
+            raw_target,
+            range,
+        } = link;
+        Self {
+            kind: kind.into(),
+            raw_target,
+            range: range.into(),
         }
     }
 }
@@ -332,8 +390,12 @@ impl OpenDocHandle {
     /// remote URLs in the source stay literal; the runtime offline guarantee for
     /// the rendered page is enforced Swift-side by the WKWebView CSP (T087).
     ///
-    /// `![[embed]]` resolution is deferred to US5 (the linking phase); embeds
-    /// render literally for now (see `emend_core::parse::preview`).
+    /// `![[embed]]` tokens render **literally** here — this variant has no
+    /// workspace to resolve them against. Callers that want embeds inlined use
+    /// [`Self::render_preview_html_resolving`] (US5), which passes a
+    /// [`WorkspaceHandle`] resolver to the embed-aware core renderer. This plain
+    /// variant stays for resolver-less callers (a standalone snippet render with no
+    /// workspace).
     ///
     /// # Errors
     ///
@@ -349,6 +411,165 @@ impl OpenDocHandle {
             &emend_core::parse::preview::PreviewOptions::default(),
         )?;
         Ok(html)
+    }
+
+    /// Render the document's current buffer to preview HTML **with `![[embed]]`
+    /// resolution** against `workspace` (FFI contract §6, US5 · FR-021/021a).
+    ///
+    /// The embed-aware sibling of [`Self::render_preview_html`]. Both remain: the
+    /// plain method stays for resolver-less callers (a standalone snippet render
+    /// with no workspace), and this one inlines embedded notes' content for the
+    /// live preview. `workspace` is the [`WorkspaceHandle`] that owns the search
+    /// index `resolve_wikilink` consults — passed as an `Arc<WorkspaceHandle>`
+    /// object handle across the boundary (UniFFI 0.31 supports object-handle
+    /// arguments; this is the first such method in the shim, verified to generate
+    /// cleanly).
+    ///
+    /// It snapshots the buffer **and the note's own path** under the lock, then
+    /// **releases the lock before rendering** (the comrak/expand pass below runs
+    /// off-lock — neither this handle's `Mutex` nor the workspace's index `Mutex`
+    /// is held across the render). The resolver closure maps each embed target
+    /// *plus the path of the note it was written in* to the resolved note's source
+    /// **and resolved path** via
+    /// [`WorkspaceHandle::resolve_embed_source`](crate::workspace::WorkspaceHandle)
+    /// — which resolves under the index lock then reads off-lock (so the recursive
+    /// expander never serializes file ops / Quick Open against the index). The
+    /// note's own path is the `from_note` for the deterministic same-directory
+    /// tie-break (FR-019a). Crucially the expander threads each embedded note's
+    /// *returned resolved path* as the `from_note` for ITS nested embeds, so a
+    /// `![[C]]` inside an embedded note B resolves relative to **B's** directory,
+    /// not the top document's (FR-019a per-parent anchoring). An unresolved /
+    /// cyclic / too-deep embed degrades to a visible placeholder (FR-021a/FR-022) —
+    /// the expander owns those guards (`MAX_EMBED_DEPTH = 8`), so this call always
+    /// terminates.
+    ///
+    /// A resolver lock-poisoning is recorded and surfaced as [`FfiError::Internal`]
+    /// after the render (rather than panicking inside the `FnMut` closure, which
+    /// cannot itself return a `Result`), so a corrupt-state render fails loudly
+    /// instead of silently dropping every embed.
+    ///
+    /// Not the hot path: like [`Self::render_preview_html`] the preview is
+    /// debounced off the keystroke path (research §B1). No network access (SC-008)
+    /// — the render is pure; the only IO is the tolerant per-embed source read,
+    /// which never dereferences a URL.
+    ///
+    /// # Errors
+    ///
+    /// - [`FfiError::Internal`] if the handle is closed, this handle's lock is
+    ///   poisoned, the workspace's index lock is poisoned during resolution, or
+    ///   rendering fails unexpectedly (rendering is pure and does not normally
+    ///   fail).
+    pub fn render_preview_html_resolving(
+        &self,
+        workspace: Arc<WorkspaceHandle>,
+    ) -> Result<String, FfiError> {
+        // Snapshot the buffer AND the note's own path under the lock, then drop the
+        // guard so the (off-hot-path) render below holds neither this handle's lock
+        // nor — via the resolver — the workspace index lock across the comrak pass.
+        let (source, from_note) = {
+            let guard = self.lock()?;
+            let session = guard.as_ref().ok_or_else(closed_handle)?;
+            (
+                session.doc.text(),
+                session.path.to_string_lossy().into_owned(),
+            )
+            // `guard` drops here, releasing this handle's lock before rendering.
+        };
+
+        // The `FnMut` resolver cannot return a `Result`, so capture any
+        // lock-poisoning that surfaces during resolution and re-raise it after the
+        // render rather than swallowing it (a corrupt index lock must fail loudly,
+        // not silently drop every embed). The expander supplies the path of the
+        // note each embed was written in as `embed_from`, so nested embeds anchor
+        // on their immediate parent (FR-019a); we forward it to `resolve_embed_source`.
+        let mut resolve_error: Option<FfiError> = None;
+        let mut resolve = |raw_target: &str, embed_from: &str| -> Option<(String, String)> {
+            match workspace.resolve_embed_source(embed_from, raw_target) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    // Keep the first error; a `None` here just renders this one
+                    // embed as a placeholder, and the error is surfaced below.
+                    resolve_error.get_or_insert(err);
+                    None
+                }
+            }
+        };
+
+        let html = emend_core::parse::preview::render_preview_html_with_embeds(
+            &source,
+            &from_note,
+            &emend_core::parse::preview::PreviewOptions::default(),
+            &mut resolve,
+        )?;
+
+        if let Some(err) = resolve_error {
+            return Err(err);
+        }
+        Ok(html)
+    }
+
+    /// The `[[wiki links]]` and `![[embeds]]` in the current buffer, each with
+    /// its UTF-16 source range (FFI contract §4 `links`; FR-019..022).
+    ///
+    /// Snapshots the buffer ([`Document::text`]) under the lock and scans it with
+    /// [`emend_core::derived::extract_links`]. The `raw_target` of each is resolved
+    /// to a note path Swift-side via
+    /// [`crate::workspace::WorkspaceHandle::resolve_wikilink`] (the index lives in
+    /// the workspace handle, not the document) — this method only *extracts* the
+    /// references and their ranges.
+    ///
+    /// Not the hot path (the info-sidebar/derived layer pulls these debounced,
+    /// FR-031a), so the buffer snapshot under the lock is acceptable.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the handle is closed or the lock is poisoned.
+    pub fn links(&self) -> Result<Vec<LinkRef>, FfiError> {
+        let guard = self.lock()?;
+        let session = guard.as_ref().ok_or_else(closed_handle)?;
+        let source = session.doc.text();
+        Ok(extract_links(&source)
+            .into_iter()
+            .map(LinkRef::from)
+            .collect())
+    }
+
+    /// Toggle the task checkbox on the line containing the UTF-16 offset `at`
+    /// (FFI contract §3 `toggle_task`; FR-014 clickable checkbox).
+    ///
+    /// Computes the new line text with [`emend_core::derived::toggle_task`]
+    /// (flipping `[ ]`↔`[x]`) and applies the change as a single `push_edit`
+    /// delta over the toggled line, so the shadow [`Document`] **and** the
+    /// [`Highlighter`] stay in lock-step (same path as typing) and a later
+    /// [`flush`](Self::flush) writes the toggled Markdown to disk.
+    ///
+    /// The contract takes a `U16Range`; we use its `start` as the click offset
+    /// (the click is a caret position, not a selection). A click that is not on a
+    /// task line surfaces an error rather than silently no-op'ing.
+    ///
+    /// # Errors
+    ///
+    /// - [`FfiError::InvalidConfig`] if `at` is past EOF or its line is not a task
+    ///   checkbox (propagated from the core toggle).
+    /// - [`FfiError::Internal`] if the handle is closed, the lock is poisoned, or
+    ///   the computed edit is rejected (unreachable — the new text differs only in
+    ///   one checkbox char).
+    pub fn toggle_task(&self, at: U16Range) -> Result<(), FfiError> {
+        let mut guard = self.lock()?;
+        let session = guard.as_mut().ok_or_else(closed_handle)?;
+
+        let old_text = session.doc.text();
+        let new_text = toggle_task(&old_text, at.start)?;
+
+        // Apply the change as a whole-document replacement delta so the Document
+        // and Highlighter both track it (the toggle changes exactly one char, but
+        // computing a minimal delta here would duplicate the core's line-finding;
+        // a whole-doc replace is correct and the toggle is not the hot path).
+        let full_len = session.doc.len_utf16();
+        let whole = CoreU16Range::new(0, full_len);
+        session.doc.push_edit(whole, &new_text)?;
+        session.highlighter.apply_edit(whole, &new_text)?;
+        Ok(())
     }
 
     /// Explicit close (FFI contract §3 `close_document`). Consumes the inner
@@ -453,8 +674,9 @@ mod tests {
         reason = "unit test asserts on its own fixtures"
     )]
 
-    use super::{open_document, preview_theme_css, StyleClass, U16Range};
+    use super::{open_document, preview_theme_css, LinkKind, StyleClass, U16Range};
     use crate::error::FfiError;
+    use crate::workspace::new_workspace;
 
     fn u16_len(s: &str) -> u32 {
         u32::try_from(s.encode_utf16().count()).expect("fits in u32")
@@ -694,6 +916,238 @@ mod tests {
             matches!(err, FfiError::Internal { .. }),
             "expected Internal for render after close, got {err:?}"
         );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_inlines_embedded_note() {
+        // Two notes: A embeds B (`![[B]]`); B has body text. Rendering A *through
+        // the workspace resolver* must inline B's body into A's HTML (proving the
+        // FFI embed path resolves a target to real content). The plain
+        // `render_preview_html` (no resolver) must NOT inline it — embeds stay
+        // literal there.
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Canonicalize the root so `add_location`/`collect_files`'/the resolver's
+        // canonical identity all agree (NFR-007 — macOS `/var` -> `/private/var`).
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+
+        let note_a = root.join("A.md");
+        let note_b = root.join("B.md");
+        std::fs::write(&note_a, "Intro paragraph.\n\n![[B]]\n").expect("write A");
+        std::fs::write(&note_b, "## Bravo Heading\n\nThe body of note B.\n").expect("write B");
+
+        // A workspace whose index knows both notes (seed from disk).
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 2, "both notes are seeded into the index");
+
+        // Open note A and render WITH embed resolution against the workspace.
+        let handle = open_document(note_a.to_string_lossy().into_owned()).expect("open A");
+        let resolved = handle
+            .render_preview_html_resolving(ws)
+            .expect("render A with embeds");
+
+        // B's body and heading are inlined into A's preview HTML.
+        assert!(
+            resolved.contains("The body of note B."),
+            "embed must inline B's body: {resolved}"
+        );
+        assert!(
+            resolved.contains("Bravo Heading"),
+            "embed must inline B's heading: {resolved}"
+        );
+        assert!(
+            resolved.contains("<h2"),
+            "B's heading should render as an <h2> in A's context: {resolved}"
+        );
+        // A's own content is still there.
+        assert!(resolved.contains("Intro paragraph."), "{resolved}");
+        // The raw embed token is gone (it was inlined, not left literal).
+        assert!(
+            !resolved.contains("![[B]]"),
+            "raw embed token must be replaced: {resolved}"
+        );
+
+        // Contrast: the plain (resolver-less) render leaves the embed unexpanded —
+        // B's body must NOT appear.
+        let plain = handle.render_preview_html().expect("plain render");
+        assert!(
+            !plain.contains("The body of note B."),
+            "plain render must not inline embedded content: {plain}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_nested_embed_anchors_on_immediate_parent() {
+        // FR-019a per-parent anchoring through the full FFI resolver wiring (M1).
+        //
+        // Layout (two sibling dirs, each with a note named `C` but distinct bodies):
+        //   dir1/A.md   embeds  ![[B]]
+        //   dir2/B.md   embeds  ![[C]]
+        //   dir1/C.md   body: "C lives in dir1"
+        //   dir2/C.md   body: "C lives in dir2"
+        //
+        // The `![[C]]` is written inside B (in dir2), so the FR-019a same-directory
+        // tie-break must pick B's sibling dir2/C — NOT A's sibling dir1/C. This is
+        // only correct if the expander threads B's resolved path as the `from_note`
+        // for B's own embeds. Before the M1 fix it anchored every nested embed on
+        // the TOP document A, so it would have inlined "C lives in dir1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let dir1 = root.join("dir1");
+        let dir2 = root.join("dir2");
+        std::fs::create_dir_all(&dir1).expect("mkdir dir1");
+        std::fs::create_dir_all(&dir2).expect("mkdir dir2");
+
+        let note_a = dir1.join("A.md");
+        let note_b = dir2.join("B.md");
+        std::fs::write(&note_a, "Intro of A.\n\n![[B]]\n").expect("write A");
+        std::fs::write(&note_b, "Body of B.\n\n![[C]]\n").expect("write B");
+        // Two duplicate-basename C notes, one per directory, with distinct bodies.
+        std::fs::write(dir1.join("C.md"), "C lives in dir1\n").expect("write dir1/C");
+        std::fs::write(dir2.join("C.md"), "C lives in dir2\n").expect("write dir2/C");
+
+        // A workspace whose index knows every note (seed from disk).
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 4, "all four notes are seeded into the index");
+
+        // Open A (in dir1) and render WITH embed resolution.
+        let handle = open_document(note_a.to_string_lossy().into_owned()).expect("open A");
+        let resolved = handle
+            .render_preview_html_resolving(ws)
+            .expect("render A with nested embeds");
+
+        // B was inlined, and B's nested `![[C]]` resolved to B's SIBLING (dir2/C),
+        // proving nested resolution anchored on the immediate parent B's directory.
+        assert!(
+            resolved.contains("Body of B."),
+            "B should inline: {resolved}"
+        );
+        assert!(
+            resolved.contains("C lives in dir2"),
+            "nested embed must resolve to B's sibling (dir2/C): {resolved}"
+        );
+        assert!(
+            !resolved.contains("C lives in dir1"),
+            "nested embed must NOT anchor on the top document A's directory (dir1/C): {resolved}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_unresolved_embed_degrades() {
+        // An embed whose target is not in the workspace renders a visible
+        // placeholder, not an error, and the rest of the document still renders.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let note_a = root.join("A.md");
+        std::fs::write(&note_a, "Kept text.\n\n![[Missing]]\n").expect("write A");
+
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+        ws.reindex_all(16).expect("reindex");
+
+        let handle = open_document(note_a.to_string_lossy().into_owned()).expect("open A");
+        let html = handle
+            .render_preview_html_resolving(ws)
+            .expect("render with an unresolved embed must still succeed");
+
+        assert!(
+            html.contains("Kept text."),
+            "surrounding content renders: {html}"
+        );
+        assert!(
+            html.contains("unresolved embed"),
+            "an unresolved embed degrades to a visible placeholder: {html}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_after_close_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "# Hi\n");
+        let handle = open_document(path).expect("open");
+        let ws = new_workspace();
+        handle.close().expect("close");
+
+        let err = handle
+            .render_preview_html_resolving(ws)
+            .expect_err("resolving render after close must error");
+        assert!(
+            matches!(err, FfiError::Internal { .. }),
+            "expected Internal for resolving render after close, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn links_extracts_wiki_links_and_embeds() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "See [[Target]] and ![[Embed]] here.\n");
+        let handle = open_document(path).expect("open");
+
+        let links = handle.links().expect("links");
+        assert_eq!(links.len(), 2, "one link + one embed: {links:?}");
+        assert_eq!(links[0].kind, LinkKind::Link);
+        assert_eq!(links[0].raw_target, "Target");
+        assert_eq!(links[1].kind, LinkKind::Embed);
+        assert_eq!(links[1].raw_target, "Embed");
+    }
+
+    #[test]
+    fn toggle_task_flips_checkbox_and_persists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "- [ ] task\n");
+        let handle = open_document(path.clone()).expect("open");
+
+        // Toggle at offset 0 (anywhere on the line works).
+        handle
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect("toggle");
+        handle.flush().expect("flush");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(on_disk, "- [x] task\n");
+
+        // Toggling again flips it back, proving the doc tracked the edit.
+        handle
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect("toggle back");
+        handle.flush().expect("flush");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "- [ ] task\n"
+        );
+    }
+
+    #[test]
+    fn toggle_task_on_non_task_line_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "just text\n");
+        let handle = open_document(path).expect("open");
+
+        let err = handle
+            .toggle_task(U16Range { start: 0, len: 0 })
+            .expect_err("toggling a non-task line must error");
+        assert!(
+            matches!(err, FfiError::InvalidConfig { .. }),
+            "expected InvalidConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn links_after_close_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "[[x]]\n");
+        let handle = open_document(path).expect("open");
+        handle.close().expect("close");
+        assert!(matches!(
+            handle.links().expect_err("links after close"),
+            FfiError::Internal { .. }
+        ));
     }
 
     #[test]

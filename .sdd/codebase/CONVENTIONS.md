@@ -2,7 +2,7 @@
 
 > **Purpose**: Document code style, naming conventions, error handling, and common patterns.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (US5 Phase 7)
 
 ## Overview
 
@@ -83,7 +83,7 @@ All fallible operations return `Result<_, EmendError>` using the `thiserror` cra
 | Constants | SCREAMING_SNAKE_CASE | `MAX_NOTE_SIZE`, `DEFAULT_BUFFER_SIZE` |
 | Functions | snake_case, verb-prefix when changing state | `open_document()`, `push_edit()`, `len_utf16()` |
 | Structs | PascalCase | `Document`, `EmendError`, `U16Range` |
-| Enums | PascalCase, singular variant names | `LineCol`, `FileWatchEvent` |
+| Enums | PascalCase, singular variant names | `LineCol`, `FileWatchEvent`, `LinkKind` |
 | Trait names | PascalCase, often verb adjectives | `AiSink`, `SearchSink` |
 
 #### Documentation
@@ -103,14 +103,22 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 //! depends on (research §A2/§A3, FFI contract §3).
 ```
 
-**Example** (from `tests/search_supersede.rs`, US3):
+**Example** (from `tests/links.rs`, US5):
 ```rust
-//! T072 — failing-first integration tests for the **cancellable** Quick Open
-//! search driver (`emend_core::search`), the pure layer behind the streaming FFI
-//! `quick_open_query` (US3 · FR-017, FR-018/SC-004, NFR-002; research §B2/§B7).
+//! T095 — wiki-link & task extraction + resolution (US5 · FR-019/019a, FR-014).
 //!
-//! The driver's whole reason to exist as a *separate* module from
-//! [`emend_core::index`] is the **supersede/cancel** behaviour NFR-002 demands...
+//! These integration tests pin two behaviours the spec calls load-bearing:
+//! 1. **Deterministic resolution for duplicate basenames (FR-019a).**
+//! 2. **A rename leaves old links unresolved (FR-019a, v1).**
+```
+
+**Example** (from `tests/embeds.rs`, US5):
+```rust
+//! T096 — embed resolution with cycle + depth guards (US5 · FR-021/021a).
+//!
+//! `![[embed]]` inlines another note's content into the preview. Two hazards:
+//! 1. **Cycles must terminate.** Guard via tracking visited paths.
+//! 2. **Depth is bounded.** MAX_EMBED_DEPTH=8 (research §D).
 ```
 
 ## Swift Code Style
@@ -164,19 +172,20 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 
 **Known conflict**: When SwiftFormat wraps a long multi-line `if`/`guard` condition to stay within 100 chars, it places the opening brace `{` on its own line. SwiftLint's `opening_brace` rule then rejects this (expects brace on same line as `if`/`else`).
 
-**Resolution**: Precompute a boolean `let` to keep conditions within one line, or use `guard … else { return }` where the brace follows `else` (exempt from the conflict):
+**Resolution** (US5 pattern): Precompute a boolean `let` to keep conditions within one line, or use `guard … else { continue }` where the brace follows `else` (exempt from the conflict). Alternatively, extract bracket-pair checks into single-expression helpers:
 
 ```swift
-// ✓ Preferred: condition on one line
-let isValid = (longConditionPart1 && longConditionPart2 && longConditionPart3)
-if isValid {
-    // ...
+// ✓ Preferred: condition on one line via helper
+private func doubledStartingAt(_ pos: Int, in text: NSString) -> Bool {
+    pos + 1 < text.length && text.character(at: pos) == 91 && text.character(at: pos + 1) == 91
 }
 
-// ✓ Also acceptable: guard … else { return }
+if doubledStartingAt(caret - 2, in: text) { /* ... */ }
+
+// ✓ Also acceptable: guard … else { continue }
 guard let value = optionalValue,
       value > threshold else {
-    return
+    continue
 }
 ```
 
@@ -184,7 +193,7 @@ guard let value = optionalValue,
 
 SwiftLint's `nesting` rule (severity: warning) allows types nested **at most 1 level deep**. When UIKit models or types exceed this, split them into separate files:
 
-**Example**: `WorkspaceModel.swift` (primary) + `WorkspaceNode.swift` (nested `Kind` enum stays internal; tree nodes live in their own file to keep file_length under 400 lines).
+**Example** (US5): `EditorCoordinator` grew past the 400-line `file_length` limit once the wiki-link/checkbox/drag-drop overrides landed, so it was split into its own file (`EditorCoordinator.swift`).
 
 ### File and Type Length Limits
 
@@ -196,14 +205,14 @@ SwiftLint enforces:
 **Pattern**: When a file exceeds length, extract helper methods to a same-file `extension` block:
 
 ```swift
-// WorkspaceModel.swift (primary responsibilities)
+// EditorCoordinator.swift (primary responsibilities)
 @MainActor
-final class WorkspaceModel: ObservableObject {
-    // Main model responsibilities
+final class EditorCoordinator: NSObject {
+    // Main coordinator responsibilities
 }
 
-// WorkspaceModel+Helpers.swift or WorkspaceModel+Private.swift
-extension WorkspaceModel {
+// EditorCoordinator+Private.swift or EditorCoordinator+Helpers.swift
+extension EditorCoordinator {
     // Private helper methods, keeping the primary file lean
 }
 ```
@@ -218,10 +227,11 @@ extension WorkspaceModel {
 | SwiftUI view components | PascalCase | `EditorPane.swift` |
 | Utility extensions | PascalCase + descriptive | `SecurityScopedBookmarks.swift` |
 | Model classes | PascalCase + `Model` suffix | `WorkspaceModel.swift`, `TabModel.swift` |
-| Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `WorkspaceOutlineView+Coordinator.swift` |
+| Coordinators (AppKit integration) | PascalCase + `Coordinator` suffix | `EditorCoordinator.swift`, `WorkspaceOutlineView+Coordinator.swift` |
 | Sink bridges (FFI callbacks) | PascalCase + `Sink` suffix | `QuickOpenSink.swift`, `FsObserver.swift` |
+| Link/task helpers (US5) | PascalCase + descriptive | `WikiLink.swift`, `TaskCheckbox.swift`, `ImageDrop.swift` |
 | Export/utility enums | PascalCase | `PDFExport.swift` |
-| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `PreviewExportTests.swift` |
+| Test files | `Test.swift` or `Tests.swift` suffix | `BookmarkResolutionTests.swift`, `LinkHelpersTests.swift`, `LinksFlowTests.swift` |
 
 #### Code Element Naming (Swift)
 
@@ -229,7 +239,7 @@ extension WorkspaceModel {
 |------|------------|---------|
 | Variables | camelCase | `selectedLocation`, `isVisible`, `bookmarkData` |
 | Constants (static) | camelCase (or SCREAMING_SNAKE_CASE for compile-time constants) | `defaultFolderSize` |
-| Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `SearchStreamAdapter` |
+| Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `WikiLink` |
 | Functions/methods | camelCase, verb-prefix for state change | `addLocation()`, `openDocument()`, `onToken(_:)` |
 | Properties | camelCase | `locations`, `selection`, `abiVersion` |
 | Boolean properties | `is`/`has` prefix when non-obvious | `isVisible`, `hasError` |
@@ -468,6 +478,114 @@ private func paginate(_ webView: WKWebView, with printInfo: NSPrintInfo) async t
 - Watchdog timeout (30s) guards against stalled WebKit processes
 - Both `loadTemplate` and `paginate` steps use `withCheckedThrowingContinuation` to bridge callback-based APIs to async/await
 
+## Link & Task Patterns (US5)
+
+### Pure Wiki-Link & Task Helpers
+
+Link resolution, task toggles, and image drops are **pure functions** over `(text: NSString, range/selection: NSRange) → range/edit?`:
+
+```swift
+// Deterministic wiki-link resolution (T095, FR-019a)
+enum WikiLink {
+    struct Hit {
+        let raw: String  // The target name from [[…]]
+        let range: NSRange  // The [[…]] span for click hit-testing
+        let span: NSRange  // Full [[…]] including brackets
+    }
+    
+    /// Return the open [[word if editing inside one, e.g., "[[Foo" at caret.
+    static func partialRange(in text: NSString, caret: Int) -> NSRange? { … }
+    
+    /// Return the [[Target]] at a click position, or nil.
+    static func enclosingLink(in text: NSString, at position: Int) -> Hit? { … }
+    
+    /// All [[…]] and ![[…]] links in the text.
+    static func allLinks(in text: NSString) -> [Hit] { … }
+}
+
+// Task checkbox toggle (T095, FR-014)
+enum TaskCheckbox {
+    struct Edit: Equatable {
+        let range: NSRange
+        let replacement: String
+    }
+    
+    /// Detect a checkbox ([ ] or [x]) on the line containing offset.
+    static func checkboxRange(in text: NSString, atLineContaining offset: Int) -> NSRange? { … }
+    
+    /// Return the edit to flip [ ] → [x] or vice versa.
+    static func toggleEdit(in text: NSString, atLineContaining offset: Int) -> Edit? { … }
+}
+```
+
+These **headless transforms are unit-tested without a window** (per Constitution VII). The editor applies returned ranges/edits through normal text-delegate and autocomplete paths. See `LinkHelpersTests` for exhaustive coverage; end-to-end resolution + embedding tested in `LinksFlowTests`.
+
+### Checkbox Toggle is a Swift Edit, Not Core Mutation
+
+Checkbox toggling flips the bracket `[ ]` ↔ `[x]` via the **Swift Edit path** (same as `SmartLists`/`FormattingCommands`), NOT the core `toggle_task` FFI. Reason: Swift owns the `NSTextStorage` buffer; a core-side mutation would desync the display.
+
+```swift
+// In editor coordinator, respond to a click inside a checkbox:
+let edit = TaskCheckbox.toggleEdit(in: text as NSString, atLineContaining: offset)
+if let e = edit {
+    editor.apply(edit: e)  // Applies via shouldChangeText/didChangeText path; registers undo
+}
+```
+
+The core `toggle_task` FFI is left available for non-editor surfaces (e.g., an info pane that previews tasks).
+
+### Wiki-Link Autocomplete Inserts the Stem
+
+NSTextView's native completion (via `rangeForUserCompletion` + `completions(forPartialWordRange:…)`) is wired to fetch wiki-link targets. **Autocomplete must insert the stem** (`name.deletingPathExtension`), not the full file name:
+
+**Problem**: `SearchHit.name` carries the file extension (`Beta.md`), but wiki-link resolution matches on the stem (`Beta`). Inserting `[[Beta.md]]` fails to resolve.
+
+**Solution** (US5, caught by flow test): Strip the extension before insertion:
+
+```swift
+// In MarkdownEditorView's completion handler
+let hit = suggestion  // a SearchHit from the index
+let target = (hit.name as NSString).deletingPathExtension  // "Beta"
+let completion = target  // Insert as [[Beta]]
+```
+
+See `LinksFlowTests.testCoordinatorLinkServices` for the full end-to-end verification.
+
+### Embed Resolution with Cycle & Depth Guards
+
+`![[embed]]` inlines another note's rendered content. The core expander (`expand_embeds` in `crates/emend-core/src/parse/embed.rs`) **owns the cycle + depth logic**:
+
+```rust
+/// Expand ![[…]] embeds in Markdown text. The resolver is called for each
+/// target and returns the note's source text (or None if unresolved).
+/// Cycles and deep chains terminate gracefully via MAX_EMBED_DEPTH (8).
+pub fn expand_embeds(
+    text: &str,
+    opts: &EmbedOptions,
+    resolver: &mut dyn FnMut(&str) -> Option<String>,
+) -> String { … }
+```
+
+The FFI bridges this to Swift via a resolver closure that snapshots the document under the lock, releases it, then resolves each target via the workspace index (lock NOT held during on-disk reads). See `embeds.rs` integration tests (T096) for cycle/depth correctness.
+
+### Attachment Storage is Collision-Safe
+
+`store_attachment` writes binary data to a collision-safe location (using the same `note 2.md` suffix scheme as file ops). It returns a relative ref for markdown embedding:
+
+```swift
+// In editor, when a user drags an image:
+let ref = try storeAttachment(
+    notePath: currentNote.path,
+    bytes: imageData,
+    suggestedName: "screenshot.png"
+)
+// ref is e.g., "attachments/screenshot.png" (relative to note folder)
+
+// Insert into the markdown:
+let mdText = ImageDrop.markdown(forImageRef: ref)  // "![](attachments/screenshot.png)"
+let edit = SmartLists.Edit(range: ..., replacement: mdText, selectionAfter: ...)
+```
+
 ## Common Patterns
 
 ### Rust: Error Propagation
@@ -527,6 +645,27 @@ pub fn quick_open(
 - Cancellation is a simple `&Cancel` flag, not tokio-dependent
 - FFI layer (`emend_ffi/src/search.rs`) bridges the `Cancel` to `CancellationToken` and handles panic containment, but delegates ranking/emission to this pure driver
 
+### Rust: Deterministic Wiki-Link Resolution (US5)
+
+The core `resolve_wikilink` function (`crates/emend-core/src/derived.rs`) implements **deterministic** resolution for duplicate basenames (FR-019a):
+
+```rust
+/// Resolve a wiki-link target (the stem, e.g., "Beta" from [[Beta]]) to an
+/// absolute path. Returns None if no match found.
+/// When multiple notes have the same stem (T095 edge case), the tie-break is:
+/// 1. a candidate in the **same directory as source_note** wins;
+/// 2. else the **shallowest** path (fewest separators) wins;
+/// 3. else the **lexicographically smallest** path string wins.
+/// Order is total and reproducible across runs (no HashMap-iteration leak).
+pub fn resolve_wikilink(
+    index: &Index,
+    source_note: &str,  // absolute path
+    raw_target: &str,   // stem, e.g., "Beta"
+) -> Option<String> { … }
+```
+
+The order is **total and deterministic** — see T095 in `crates/emend-core/tests/links.rs` for exhaustive tests of the tie-break logic.
+
 ### Swift: AsyncStream Adapters
 
 The `Streaming.swift` module bridges UniFFI foreign-trait callbacks to Swift `AsyncStream`s:
@@ -553,7 +692,7 @@ Call sites wire an `onTerminate` hook to cancel the Rust work when the stream is
 
 ### Swift: Pure Transform Functions
 
-Editor behavior transforms (e.g., `SmartLists`, `FormattingCommands`) are pure functions over `(text: String, selection: NSRange) -> Edit?`:
+Editor behavior transforms (e.g., `SmartLists`, `FormattingCommands`, `WikiLink`, `TaskCheckbox`) are pure functions over `(text: String, selection: NSRange) -> Edit?`:
 
 ```swift
 enum SmartLists {
@@ -612,7 +751,7 @@ Enforced at commit time by `lefthook` hook (see `lefthook.yml` commit-msg sectio
 - `chore` — Maintenance / tooling
 - `revert` — Revert a prior commit
 
-**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`.
+**Scope** (optional): Lowercase, hyphenated, e.g., `(editor)`, `(ffi-boundary)`, `(swift)`, `(search)`, `(preview)`, `(links)` (US5).
 
 **Breaking change** (optional): Suffix `!` before `:` (e.g., `feat(ffi)!: new ABI version`).
 
@@ -624,6 +763,7 @@ docs: update UTF-16 boundary documentation
 test(document): add astral-char UTF-16 tests
 feat(search): add cancellable quick-open query (US3)
 feat(preview): add PDF export via NSPrintOperation (US4)
+feat(links): add wiki-link resolution + embed inlining (US5)
 ci: enforce MSRV 1.85
 ```
 
@@ -660,6 +800,8 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`crates/emend-core/src/index.rs`**: Incremental search index (nucleo-based fuzzy ranking, wiki-link O(1) lookup)
 - **`crates/emend-core/src/search.rs`**: Pure, cancellable quick-open search driver (ranks and streams in batches)
 - **`crates/emend-core/src/preview.rs`**: Live Markdown preview (comrak HTML + syntect code highlighting)
+- **`crates/emend-core/src/derived.rs`**: Link extraction, resolution, and task detection (US5 · T095/T096)
+- **`crates/emend-core/src/parse/embed.rs`**: Embed expander with cycle + depth guards (US5 · T096)
 - **`crates/emend-core/tests/`**: Integration tests (see [Testing](#testing))
 - **`crates/emend-ffi/src/lib.rs`**: UniFFI `#[uniffi::export]` shim + panic containment
 - **`crates/emend-ffi/src/search.rs`**: FFI projection of streaming search (bridges cancellation, spawns worker, panic containment)
@@ -673,9 +815,10 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`app/Emend/Emend/`**: SwiftUI app (views, state, utilities, pure transforms)
   - **`Sidebar/`**: Workspace tree model, `NSOutlineView` coordination, drag-drop logic
   - **`Tabs/`**: Tab management, open-document state
-  - **`Editor/`**: Editor view, syntax highlighting, text storage delegates, pure transforms (`SmartLists`, `FormattingCommands`)
+  - **`Editor/`**: Editor view, syntax highlighting, text storage delegates, pure transforms (`SmartLists`, `FormattingCommands`, `WikiLink`, `TaskCheckbox`, `ImageDrop`)
   - **`Preview/`**: Live preview model, off-screen WebView render, PDF export (`PDFExport.swift`, US4)
   - **`QuickOpen/`**: Quick Open palette model + sink bridge (US3)
+  - **`EditorCoordinator.swift`**: Coordinator for `NSTextView` / editor text handling (US5 split to own file for file_length)
 - **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
 
 ### Editor Transform Organization
@@ -684,6 +827,9 @@ Pure, testable transforms are organized by feature:
 - **`app/Emend/Emend/Editor/SmartLists.swift`** — List continuation + termination logic (T045)
 - **`app/Emend/Emend/Editor/FormattingCommands.swift`** — Bold, italic, code formatting (T046)
 - **`app/Emend/Emend/Editor/SyntaxAttributing.swift`** — Highlight synthesis from tree-sitter (T047)
+- **`app/Emend/Emend/Editor/WikiLink.swift`** — Wiki-link extraction + resolution (US5 · T095)
+- **`app/Emend/Emend/Editor/TaskCheckbox.swift`** — Task checkbox toggle (US5 · T095)
+- **`app/Emend/Emend/Editor/ImageDrop.swift`** — Drag-drop image attachment (US5 · T102)
 
 Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 
@@ -696,6 +842,18 @@ Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 - **`app/Emend/Emend/QuickOpen/QuickOpenSink.swift`**: Sink bridge (holds `@Sendable` closures, hops to `@MainActor`)
 - **`crates/emend-core/tests/search_supersede.rs`**: Supersede/cancel semantics (T072, pure tokio-free determinism)
 - **`crates/emend-bench/benches/quick_open.rs`**: Perf budget 100 ms p95 warm over 10k index (T071, SC-004)
+
+### Links, Embeds & Attachments Organization (US5)
+
+- **`crates/emend-core/src/derived.rs`**: Link extraction, deterministic resolution, task detection (T095)
+- **`crates/emend-core/src/parse/embed.rs`**: Embed expander with cycle + depth guards (T096, MAX_EMBED_DEPTH=8)
+- **`app/Emend/Emend/Editor/WikiLink.swift`**: Pure wiki-link range/hit detection (T095)
+- **`app/Emend/Emend/Editor/TaskCheckbox.swift`**: Pure checkbox toggle transforms (T095)
+- **`app/Emend/Emend/Editor/ImageDrop.swift`**: Attachment storage + markdown refs (T102)
+- **`app/Emend/EmendTests/LinkHelpersTests.swift`**: Headless unit tests for pure transforms (T103)
+- **`app/Emend/EmendTests/LinksFlowTests.swift`**: End-to-end resolution + embedding + attachment storage (T104)
+- **`crates/emend-core/tests/links.rs`**: Core resolution + extraction determinism (T095)
+- **`crates/emend-core/tests/embeds.rs`**: Core embed expansion + cycle/depth guards (T096)
 
 ### Preview & Export Organization (US4)
 

@@ -38,6 +38,14 @@ pub mod parse;
 /// shaped to project onto the FFI contract's §1/§2 later.
 pub mod workspace;
 
+/// Derived link & task data over a document's Markdown source (US5 · FR-014,
+/// FR-019/019a, FR-020): `[[wiki link]]` / `![[embed]]` extraction with UTF-16
+/// source ranges, the **deterministic** wiki-link resolution policy on top of
+/// the [`index`]'s name map (same-directory → shallowest → lexicographic
+/// tie-break), `[[` autocomplete, and the clickable-checkbox `toggle_task`
+/// transform. Pure `std` + [`index`]; **no FFI, no async** (Constitution V).
+pub mod derived;
+
 /// The workspace search index (US2): the derived, in-memory haystack behind
 /// Quick Open (fuzzy name/path ranking, FR-017) and wiki-link resolution (O(1)
 /// name map, FR-019a). Maintained **incrementally** — a single create/rename/

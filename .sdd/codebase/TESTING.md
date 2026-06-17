@@ -2,7 +2,7 @@
 
 > **Purpose**: Document test frameworks, patterns, organization, and coverage requirements.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17
+> **Last Updated**: 2026-06-17 (US5 Phase 7)
 
 ## Overview
 
@@ -60,6 +60,8 @@ Tests are **co-located with source code** in two forms:
      - `crates/emend-core/tests/search_supersede.rs` — Cancellable search driver (T072, US3)
      - `crates/emend-core/tests/path_identity.rs` — Path canonicalization, symlink handling (NFR-007, US2)
      - `crates/emend-core/tests/concurrency.rs` — Workspace concurrent access (US2)
+     - `crates/emend-core/tests/links.rs` — Wiki-link deterministic resolution (T095, US5)
+     - `crates/emend-core/tests/embeds.rs` — Embed expansion + cycle/depth guards (T096, US5)
      - `crates/emend-ffi/tests/panic_containment.rs` — Panic capture across FFI (T015)
 
 #### Test Files
@@ -75,6 +77,8 @@ Tests are **co-located with source code** in two forms:
 | `crates/emend-core/tests/search_supersede.rs` | Cancellation flag stops emission at batch boundary, pre-cancelled query emits nothing, un-superseded completes, ranking preserved | Quick Open supersede semantics (T072, FR-017/FR-018/SC-004, NFR-002, US3) |
 | `crates/emend-core/tests/path_identity.rs` | Path canonicalization, symlink handling, bounded traversal | Path safety (NFR-007, US2) |
 | `crates/emend-core/tests/concurrency.rs` | Workspace concurrent access, edit conflicts, multi-thread safety | Concurrent workspace ops (US2) |
+| `crates/emend-core/tests/links.rs` | Deterministic resolution for duplicate basenames, rename leaves old links unresolved, extraction + suggestions | Wiki-link resolution (T095, FR-019/FR-019a, US5) |
+| `crates/emend-core/tests/embeds.rs` | Simple embeds inline, unresolved degrade gracefully, cycles terminate, depth bounded at MAX_EMBED_DEPTH | Embed expansion (T096, FR-021/FR-021a, US5) |
 | `crates/emend-ffi/tests/panic_containment.rs` | Panics routed through `contain_panic` surface as `EmendError::Internal` | FFI boundary safety (NFR-003, research §B7) |
 
 #### Lint Exceptions in Tests
@@ -103,7 +107,7 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
 | `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
-#### Test Files (Comprehensive, US4)
+#### Test Files (Comprehensive, US5)
 
 | Path | Purpose | Test Type |
 |------|---------|-----------|
@@ -118,6 +122,8 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | End-to-end workspace: add folder → list tree → open tab → move/rename (T067, US2 Phase 4) | Integration |
 | `app/Emend/EmendTests/QuickOpenTests.swift` | End-to-end Quick Open: seed index → query streams results → Return opens file (T078, US3) | Integration |
 | `app/Emend/EmendTests/PreviewExportTests.swift` | PDF export: render long doc → paginate off-screen → verify multi-page PDF (T091, US4 · FR-026/SC-010) | Integration |
+| `app/Emend/EmendTests/LinkHelpersTests.swift` | Pure transforms: wiki-link range detection, task checkbox toggle, image drop markdown (T103, US5, headless) | Unit |
+| `app/Emend/EmendTests/LinksFlowTests.swift` | End-to-end links: resolve + suggest wiki-links, embed inlines, store attachments (T104, US5) | Integration |
 
 #### Test Pattern (XCTest)
 
@@ -299,6 +305,96 @@ final class PreviewExportTests: XCTestCase {
 
 This drives the real `PDFExport` off-screen render→print pipeline without launching the app, verifying multi-page pagination. The async `NSPrintOperation.runModal(for:…)` is tested with `withCheckedThrowingContinuation` to bridge the selector-based `didRun` callback to async/await.
 
+**Example: LinkHelpersTests (T103, US5) — Pure Transforms**
+```swift
+@MainActor
+final class LinkHelpersTests: XCTestCase {
+    // Headless, no window, no document — just pure logic
+    
+    func testPartialRangeInsideOpenLink() {
+        let text = "see [[Foo" as NSString
+        let range = WikiLink.partialRange(in: text, caret: text.length)
+        XCTAssertEqual(range, NSRange(location: 6, length: 3)) // "Foo"
+    }
+    
+    func testCheckboxRangeDetectsUncheckedItem() {
+        let text = "- [ ] todo" as NSString
+        XCTAssertEqual(
+            TaskCheckbox.checkboxRange(in: text, atLineContaining: 8),
+            NSRange(location: 2, length: 3)
+        )
+    }
+    
+    func testToggleEditFlipsBothWays() throws {
+        let unchecked = "  - [ ] a" as NSString
+        let on = try XCTUnwrap(TaskCheckbox.toggleEdit(in: unchecked, atLineContaining: 0))
+        XCTAssertEqual(on.replacement, "x")
+    }
+}
+```
+
+**Example: LinksFlowTests (T104, US5) — End-to-End with Real Components**
+```swift
+@MainActor
+final class LinksFlowTests: XCTestCase {
+    func testResolveAndSuggestWikilinks() throws {
+        let fixture = try makeWorkspace()  // Temp workspace with Beta.md
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // Resolve a wiki-link target
+        XCTAssertEqual(
+            try fixture.workspace.resolveWikilink(fromNote: fixture.noteA, rawTarget: "Beta"),
+            fixture.noteB
+        )
+        
+        // Unresolved target returns nil
+        XCTAssertNil(try fixture.workspace.resolveWikilink(
+            fromNote: fixture.noteA,
+            rawTarget: "Nope"
+        ))
+
+        // Suggestions via Quick Open's SearchHit (carries file extension)
+        let suggestions = try fixture.workspace.wikilinkSuggestions(prefix: "Bet", limit: 10)
+        XCTAssertTrue(
+            suggestions.contains { $0.name == "Beta.md" },
+            "Beta is suggested for prefix 'Bet'"
+        )
+    }
+    
+    func testEmbedResolvesIntoPreviewHTML() throws {
+        let fixture = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let handle = try openDocument(path: fixture.noteA)
+        defer { try? handle.close() }
+
+        // With the workspace, ![[Beta]] inlines Beta's content; without it, literal.
+        let resolved = try handle.renderPreviewHtmlResolving(workspace: fixture.workspace)
+        XCTAssertTrue(resolved.contains("beta body text"), "embed inlines Beta's body")
+        XCTAssertFalse(resolved.contains("![[Beta]]"), "the raw embed token is consumed")
+
+        let literal = try handle.renderPreviewHtml()
+        XCTAssertFalse(literal.contains("beta body text"), "plain render leaves the embed literal")
+    }
+    
+    func testStoreAttachmentWritesFileAndReturnsRef() throws {
+        let fixture = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let pixel = Data([0x89, 0x50, 0x4E, 0x47]) // "‰PNG" header bytes
+        let ref = try storeAttachment(
+            notePath: fixture.noteA,
+            bytes: pixel,
+            suggestedName: "shot.png"
+        )
+        XCTAssertFalse(ref.isEmpty)
+        XCTAssertEqual(ImageDrop.markdown(forImageRef: ref), "![](\(ref))")
+    }
+}
+```
+
+This drives the real `WorkspaceHandle` + `OpenDocHandle` + core link/embed/attachment services end-to-end, proving resolution determinism and embed inlining correctness without a GUI.
+
 ## Test Patterns
 
 ### Rust: Arrange-Act-Assert
@@ -431,6 +527,109 @@ File watcher integration tests verify:
 3. **Self-write suppression**: Our own atomic saves don't echo back (post-write `(mtime,len)` fed to watcher)
 4. **Conflict truth table**: Open file changes on disk → clean (reload) vs dirty (preserve+mark stale)
 
+### Rust: Wiki-Link Deterministic Resolution (T095, US5)
+
+The `links.rs` integration test verifies **deterministic resolution** for duplicate basenames (FR-019a):
+
+```rust
+//! T095 — wiki-link & task extraction + resolution (US5 · FR-019/019a, FR-014).
+//!
+//! 1. **Deterministic resolution for duplicate basenames (FR-019a).**
+//!    When two notes share a basename, resolve_wikilink MUST NOT pick arbitrarily.
+//!    Tie-break:
+//!    a. a candidate in the **same directory as the source note** wins;
+//!    b. else the **shallowest** path (fewest separators) wins;
+//!    c. else the **lexicographically smallest** path string wins.
+
+#[test]
+fn duplicate_basename_resolution_same_dir_wins() {
+    // Two notes with the same basename, one in source dir, one elsewhere
+    let index = index_of(&[
+        ("/workspace/Notes/Plan.md", "Notes/Plan.md"),
+        ("/workspace/Archive/Plan.md", "Archive/Plan.md"),
+    ]);
+    
+    let resolved = resolve_wikilink(
+        &index,
+        "/workspace/Notes/Current.md",  // source in /workspace/Notes
+        "Plan"
+    );
+    
+    // The Plan.md in the same directory (Notes/) is preferred
+    assert_eq!(resolved, Some("/workspace/Notes/Plan.md".to_string()));
+}
+
+#[test]
+fn rename_leaves_old_links_unresolved() {
+    // Create index with a note
+    let mut index = Index::new();
+    index.insert("/workspace/Beta.md", "Beta.md");
+    
+    // Rename the note (simulated by removing and re-adding)
+    index.remove("/workspace/Beta.md");
+    index.insert("/workspace/BetaRenamed.md", "BetaRenamed.md");
+    
+    // Old link target no longer resolves
+    let resolved = resolve_wikilink(&index, "/workspace/Alpha.md", "Beta");
+    assert_eq!(resolved, None, "old [[Beta]] link no longer resolves");
+}
+```
+
+The tie-break order is **total and deterministic** — same workspace always resolves a link the same way (no `HashMap`-iteration leak).
+
+### Rust: Embed Expansion with Cycles & Depth (T096, US5)
+
+The `embeds.rs` integration test verifies that embed cycles terminate and depth is bounded:
+
+```rust
+//! T096 — embed resolution with cycle + depth guards (US5 · FR-021/021a).
+//!
+//! Two hazards:
+//! 1. **Cycles must terminate.** `A` embeds `B` embeds `A` must NOT loop forever.
+//! 2. **Depth is bounded.** A long acyclic chain stops at MAX_EMBED_DEPTH (8).
+
+#[test]
+fn direct_cycle_terminates() {
+    // A embeds B; B embeds A. Without a guard this recurses forever.
+    let notes = store(&[("a", "A: ![[b]]\n"), ("b", "B: ![[a]]\n")]);
+    let out = expand_embeds("![[a]]\n", &EmbedOptions::default(), &mut |name| {
+        notes.get(name).cloned()
+    });
+    
+    // Output is finite and produced; cycle was detected and degraded gracefully
+    assert!(!out.is_empty());
+    assert!(!out.contains("loop"));
+}
+
+#[test]
+fn depth_bounded_at_max_embed_depth() {
+    // Create a long chain: a embeds b embeds c ... (9 levels)
+    let notes = store(&[
+        ("1", "![[2]]\n"),
+        ("2", "![[3]]\n"),
+        ("3", "![[4]]\n"),
+        ("4", "![[5]]\n"),
+        ("5", "![[6]]\n"),
+        ("6", "![[7]]\n"),
+        ("7", "![[8]]\n"),
+        ("8", "![[9]]\n"),
+        ("9", "content9\n"),
+    ]);
+    
+    let out = expand_embeds("![[1]]\n", &EmbedOptions::default(), &mut |name| {
+        notes.get(name).cloned()
+    });
+    
+    // Depth stops at MAX_EMBED_DEPTH (8); note 9 is not expanded
+    assert!(!out.contains("content9"), "expansion stops at MAX_EMBED_DEPTH");
+}
+```
+
+**Key guarantees**:
+- `MAX_EMBED_DEPTH = 8` (a constant in the core, proven in tests)
+- Cycles degrade gracefully (visited-path tracking prevents infinite recursion)
+- Expansion terminates and produces finite output
+
 ### Rust: Panic Containment Testing
 
 The `panic_containment.rs` test (T015) verifies that forced panics in async tasks surface as `EmendError::Internal` without aborting:
@@ -454,22 +653,22 @@ The `with_silent_panic_hook` helper swaps the panic hook during the test to avoi
 
 ### Swift: Pure Transform Testing (Headless, Isolated)
 
-Edit transforms return pure `Edit` structures (range + replacement + selection) without side effects. Tests apply edits to plain strings and assert results:
+Edit transforms (including US5 link helpers) return pure `Edit` structures (range + replacement + selection) without side effects. Tests apply transforms to plain strings and assert results:
 
 ```swift
-final class SmartListsTests: XCTestCase {
-    private func applied(_ edit: SmartLists.Edit?, to text: String) -> String? {
-        guard let edit else { return nil }
-        let mutable = NSMutableString(string: text)
-        mutable.replaceCharacters(in: edit.range, with: edit.replacement)
-        return mutable as String
+final class LinkHelpersTests: XCTestCase {
+    func testPartialRangeInsideOpenLink() {
+        let text = "see [[Foo" as NSString
+        let range = WikiLink.partialRange(in: text, caret: text.length)
+        XCTAssertEqual(range, NSRange(location: 6, length: 3)) // "Foo"
     }
-
-    func testReturnContinuesBulletList() throws {
-        let text = "- hello"
-        let edit = SmartLists.newline(in: text as NSString, selection: caret(text.utf16.count))
-        XCTAssertEqual(applied(edit, to: text), "- hello\n- ")
-        XCTAssertEqual(try XCTUnwrap(edit).selectionAfter, caret(10))
+    
+    func testCheckboxRangeDetectsUncheckedItem() {
+        let text = "- [ ] todo" as NSString
+        XCTAssertEqual(
+            TaskCheckbox.checkboxRange(in: text, atLineContaining: 8),
+            NSRange(location: 2, length: 3)
+        )
     }
 }
 ```
@@ -515,6 +714,7 @@ The Rust core avoids mocking libraries (`mockall`, `proptest`) in favor of **pur
 - Pure functions (no I/O side effects) are tested directly
 - File I/O is tested with real temp files via `tempfile` crate
 - Search driver is tested with in-memory `Index` fixtures (no Rust core FFI, no tokio)
+- Link/embed resolution is tested with in-memory `Index` fixtures (T095/T096, US5)
 - AI/HTTP logic is tested with request/response fixtures (deferred to Phase 2+)
 
 ### Swift: Minimal Mocking
@@ -524,10 +724,11 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 ### Test Data
 
 **Fixtures in Rust tests**:
-- Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests)
+- Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests, `"[[Beta]]"` for link tests)
 - Temp files created by `tempfile` crate (atomic cleanup via `defer`)
 - Pre-seeded directory trees (`seededDirectory(files:folders:)`) for workspace tests
 - In-memory `Index` with `n` pre-inserted notes (search tests; no disk I/O)
+- In-memory note store (`HashMap<String, String>`) for embed tests (T096)
 
 **Fixtures in Swift tests**:
 - Simple test doubles (e.g., fake bookmarks, `makeTempDirectory()`) or hardcoded test data
@@ -535,7 +736,9 @@ Swift tests use **headless XCTest** without mocking frameworks. Smoke tests veri
 - Real file I/O via `FileManager` to verify end-to-end persistence
 - Real Rust workspace handle + SwiftUI model instances for integration tests
 - Temp workspace with pre-seeded notes for Quick Open tests
+- Temp workspace with Beta/Alpha notes for link resolution tests (T104, US5)
 - Long markdown fixture + temp PDF file for export tests (US4)
+- Temp note for attachment storage tests (T104, US5)
 
 ## Benchmarking
 
@@ -625,6 +828,7 @@ Pure, isolated tests of editor behavior without UI:
 | Smart list transforms | `app/Emend/EmendTests/SmartListsTests.swift` | Bullet continuation, number increment, task checkbox toggle, indentation preservation (T045) | Yes (per-keystroke UX) |
 | Formatting commands | `app/Emend/EmendTests/FormattingCommandsTests.swift` | Bold `**`, italic `*`, code `` ` `` wrap/unwrap (T046) | Yes (core editing) |
 | Syntax highlighting | `app/Emend/EmendTests/SyntaxAttributingTests.swift` | NSAttributedString synthesis from tree-sitter blocks (T047) | Yes (visual feedback) |
+| Wiki-link helpers | `app/Emend/EmendTests/LinkHelpersTests.swift` | Range detection for autocomplete, link/embed distinction, checkbox toggle (T103, US5) | Yes (link UX) |
 
 ### Integration Tests
 
@@ -642,11 +846,14 @@ Full-feature tests exercising public APIs and boundaries:
 | Search index | `crates/emend-core/tests/index.rs` | Incremental index, fuzzy ranking, wiki-link O(1) lookup | Yes (FR-017/FR-017a/FR-019a, US2) |
 | Search supersede | `crates/emend-core/tests/search_supersede.rs` | Cancel flag stops emission at batch boundary; pre-cancelled emits nothing; completion reported correctly | Yes (FR-017/FR-018, NFR-002, US3) |
 | Panic containment | `crates/emend-ffi/tests/panic_containment.rs` | Panics in async tasks surface as `EmendError::Internal` | Yes (NFR-003) |
+| Wiki-link resolution | `crates/emend-core/tests/links.rs` | Deterministic tie-break for duplicate basenames, rename breaks links, extraction + suggestions (T095, US5) | Yes (FR-019/FR-019a) |
+| Embed expansion | `crates/emend-core/tests/embeds.rs` | Cycles terminate, depth bounded at MAX_EMBED_DEPTH, unresolved degrade gracefully (T096, US5) | Yes (FR-021/FR-021a) |
 | Bookmark resolution | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmarks resolve to files | Yes (FR-004) |
 | Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
 | Workspace flow | `app/Emend/EmendTests/WorkspaceFlowTests.swift` | Add folder → tree → open tab → move/rename (T067, US2) | Yes (workspace UX) |
 | Quick Open flow | `app/Emend/EmendTests/QuickOpenTests.swift` | Seed index → query streams results → Return opens file (T078, US3) | Yes (Quick Open UX, FR-017/FR-018) |
 | PDF export | `app/Emend/EmendTests/PreviewExportTests.swift` | Render long doc → off-screen paginate → verify multi-page PDF (T091, US4) | Yes (FR-026/SC-010) |
+| Links flow | `app/Emend/EmendTests/LinksFlowTests.swift` | Resolve + suggest wiki-links, embed inlines content, store attachments (T104, US5) | Yes (FR-019/FR-021/FR-013a) |
 
 ## CI Integration
 
@@ -720,16 +927,18 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 - ✅ Watcher + conflict resolution deterministically tested (T057/T065, US2)
 - ✅ Incremental search index verified (T073, US2)
 - ✅ Cancellable search driver tested synchronously without tokio (T072, US3)
+- ✅ Wiki-link deterministic resolution verified for duplicate basenames (T095, US5)
+- ✅ Embed cycles and depth bounds proven (T096, US5)
 
 ### Pragmatic UI Testing
 
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
-- ✅ Pure transform tests (headless, isolated unit tests for editor behavior)
-- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export)
+- ✅ Pure transform tests (headless, isolated unit tests for editor behavior including links/tasks)
+- ✅ Critical-path integration tests (persistence, bookmark resolution, workspace flow, Quick Open end-to-end, PDF export, links end-to-end)
 - ⏳ Full-app behavior tests deferred until features land (Phase 2+)
 
-**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, and on-screen preview rendering remain manual-verification (Constitution VII).
+**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit. `NSOutlineView` rendering, drag-drop gestures, live-refresh runtime, on-screen preview rendering, and native `[[` autocomplete UI remain manual-verification (Constitution VII).
 
 ### Benchmark Philosophy
 
