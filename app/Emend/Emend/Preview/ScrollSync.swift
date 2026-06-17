@@ -71,6 +71,13 @@ final class ScrollSync: ObservableObject {
         scrollEditor(textView, toLine: max(1, line))
     }
 
+    /// Scroll the active editor so `line` (1-based) sits at the top — used by the
+    /// info-sidebar outline (US6) to jump to a heading.
+    func scrollToLine(_ line: Int) {
+        guard let textView = editorTextView else { return }
+        scrollEditor(textView, toLine: max(1, line))
+    }
+
     // MARK: - Feedback-loop guard
 
     private func mutePreviewBriefly() {

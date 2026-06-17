@@ -16,7 +16,12 @@ struct MainWindow: View {
     @StateObject private var quickOpen = QuickOpenModel()
     @StateObject private var preview = PreviewModel()
     @StateObject private var scrollSync = ScrollSync()
+    @StateObject private var info = InfoModel()
+    @StateObject private var aiConfig = AIConfigStore()
+    @StateObject private var summary = SummaryModel()
     @State private var showPreview = false
+    @State private var showSummary = false
+    @State private var showAISettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -48,6 +53,16 @@ struct MainWindow: View {
                     .help("Export the current document to a paginated PDF")
                     .disabled(tabs.active == nil)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Summarize Document", action: startSummary)
+                        .disabled(tabs.active == nil || !aiConfig.isConfigured)
+                    Button("AI Settings…") { showAISettings = true }
+                } label: {
+                    Label("AI", systemImage: "sparkles")
+                }
+                .help("BYOM AI summary")
+            }
         }
         // ⌘P opens Quick Open (US3, FR-017). A hidden button registers the
         // shortcut window-wide without occupying the toolbar.
@@ -57,6 +72,14 @@ struct MainWindow: View {
                 .hidden()
         }
         .overlay { quickOpenOverlay }
+        .sheet(isPresented: $showAISettings) { AISettingsView(store: aiConfig) }
+        .sheet(isPresented: $showSummary, onDismiss: summary.cancel) {
+            SummaryView(
+                model: summary,
+                canSummarize: tabs.active != nil && aiConfig.isConfigured,
+                onSummarize: startSummary
+            )
+        }
         // Durability (FR-009/FR-009a): flush all open tabs before the app quits or
         // the window closes, since autosave is otherwise only debounced.
         .onReceive(willTerminatePublisher) { _ in tabs.flushAll() }
@@ -64,12 +87,19 @@ struct MainWindow: View {
         .task {
             conflict.attach(tabs: tabs, workspace: workspace)
             quickOpen.attach(workspace: workspace.workspace) { url in tabs.open(url: url) }
-            tabs.onDocEdit = { [weak preview] in preview?.scheduleRefresh() }
+            tabs.onDocEdit = { [weak preview, weak info] in
+                preview?.scheduleRefresh()
+                info?.refresh()
+            }
             preview.workspace = workspace.workspace
             preview.isVisible = showPreview
             preview.setActiveDocument(tabs.active?.handle)
+            info.setActiveDocument(tabs.active?.handle)
         }
-        .onChange(of: tabs.activeID) { _, _ in preview.setActiveDocument(tabs.active?.handle) }
+        .onChange(of: tabs.activeID) { _, _ in
+            preview.setActiveDocument(tabs.active?.handle)
+            info.setActiveDocument(tabs.active?.handle)
+        }
         .onChange(of: showPreview) { _, visible in preview.isVisible = visible }
     }
 
@@ -178,22 +208,18 @@ struct MainWindow: View {
     }
 
     private var infoPane: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Info")
-                .font(.headline)
+        VStack(spacing: 0) {
+            InfoSidebarView(model: info) { line in scrollSync.scrollToLine(line) }
             if let status = tabs.status {
+                Divider()
                 Text(status)
-                    .font(.callout)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-            } else {
-                Text("Document insight appears here.")
-                    .font(.callout)
-                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
             }
-            Spacer()
         }
-        .padding()
         .frame(minWidth: 220)
     }
 
@@ -210,6 +236,15 @@ struct MainWindow: View {
         ].compactMap(\.self)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         tabs.open(url: url)
+    }
+
+    /// Present the summary sheet and start a streamed BYOM summary of the active
+    /// document (US6). The key is read from the Keychain at invocation only.
+    private func startSummary() {
+        guard let handle = tabs.active?.handle, aiConfig.isConfigured,
+              let key = aiConfig.apiKey() else { return }
+        showSummary = true
+        summary.summarize(document: handle, config: aiConfig.requestConfig(), apiKey: key)
     }
 
     /// Export the active document to a paginated PDF (US4 · FR-026). Renders the

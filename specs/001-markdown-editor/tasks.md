@@ -246,11 +246,11 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T112 [US6] Implement `crates/emend-core/src/ai.rs`: reqwest SSE streaming, `CancellationToken`, timeout, max-input guard, redacting key newtype; `summarize_document`/`test_ai_config` (research §B5) (use devs:rust-dev agent)
 - [x] T113 [US6] Export AI + derived APIs (with `AiSink`) in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [x] T114 [GIT] Commit: core derived data + AI client + FFI
-- [ ] T115 [US6] Implement `app/Emend/Emend/Info/InfoSidebarView.swift` (stats, task completion, live clickable outline → scroll)
-- [ ] T116 [US6] Implement `app/Emend/Emend/Platform/KeychainStore.swift` (SecItem wrapper) + `app/Emend/Emend/AI/AISettingsView.swift` (baseURL/model/key→Keychain, test config) (research §C5)
-- [ ] T117 [US6] Implement `app/Emend/Emend/AI/SummaryView.swift` (streamed summary, cancel/supersede, error states)
-- [ ] T118 [GIT] Commit: info sidebar, AI settings (Keychain), summary UI
-- [ ] T119 [US6] [test] `app/Emend/EmendTests/KeychainStoreTests.swift` (headless) + `app/Emend/EmendUITests/InfoSidebarTests.swift`
+- [x] T115 [US6] Implement `app/Emend/Emend/Info/InfoSidebarView.swift` (stats, task completion, live clickable outline → scroll)
+- [x] T116 [US6] Implement `app/Emend/Emend/Platform/KeychainStore.swift` (SecItem wrapper) + `app/Emend/Emend/AI/AISettingsView.swift` (baseURL/model/key→Keychain, test config) (research §C5)
+- [x] T117 [US6] Implement `app/Emend/Emend/AI/SummaryView.swift` (streamed summary, cancel/supersede, error states)
+- [x] T118 [GIT] Commit: info sidebar, AI settings (Keychain), summary UI
+- [x] T119 [US6] [test] `app/Emend/EmendTests/KeychainStoreTests.swift` (headless) + `app/Emend/EmendUITests/InfoSidebarTests.swift`
 - [ ] T120 [US6] Run `/sdd:map incremental`; review `retro/P8.md` → CLAUDE.md; [GIT] commit
 - [ ] T121 [GIT] Push; PR "US6: info sidebar + AI"; verify CI green; report PR ready status
 
