@@ -2,14 +2,14 @@ import SwiftUI
 
 /// Emend — a quiet, native macOS Markdown editor.
 ///
-/// Phase 1 establishes the app target with a minimal entry point. The real
-/// three-pane shell (sidebar | editor | info) and the security-scoped-bookmark
-/// handshake land in Phase 2 (T027/T028).
+/// Single-window app hosting the three-pane shell (`MainWindow`). The panes are
+/// skeletons in Phase 2; the editor (US1), location tree (US2), and info sidebar
+/// (US6) fill them in later phases.
 @main
 struct EmendApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainWindow()
         }
         .windowResizability(.contentMinSize)
     }

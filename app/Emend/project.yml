@@ -60,9 +60,10 @@ targets:
         INFOPLIST_KEY_NSMainStoryboardFile: ""
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
 
-  # Standalone logic-test bundle (no app host) so headless core/logic tests run
-  # fast and reliably in CI without launching a GUI app. App-hosted tests can be
-  # added later if app-internal symbols ever need `@testable import Emend`.
+  # App-hosted unit-test bundle: hosts in the Emend app so tests can
+  # `@testable import Emend` for headless app logic (bookmark resolution, FFI
+  # mapping, …) per Constitution VII. No UI automation, so it stays fast; the
+  # macos-14 CI runner has a window server to host the app process.
   EmendTests:
     type: bundle.unit-test
     platform: macOS
@@ -70,6 +71,7 @@ targets:
     sources:
       - path: EmendTests
     dependencies:
+      - target: Emend
       - package: EmendCore
     settings:
       base:
