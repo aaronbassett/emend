@@ -173,8 +173,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T073 [US3] Implement `crates/emend-core/src/search.rs` + `quick_open_query` streaming via `SearchSink`, supersede/cancel (use devs:rust-dev agent)
 - [x] T074 [US3] Export `quick_open_query`/`SearchHandle` in `crates/emend-ffi/src/lib.rs` (use devs:rust-dev agent)
 - [x] T075 [GIT] Commit: core Quick Open search + FFI
-- [ ] T076 [US3] Implement `app/Emend/Emend/QuickOpen/QuickOpenView.swift` (⌘P overlay, ranked rows + breadcrumb, Return-to-open, supersede on keystroke)
-- [ ] T077 [GIT] Commit: Quick Open overlay
+- [x] T076 [US3] Implement `app/Emend/Emend/QuickOpen/QuickOpenView.swift` (⌘P overlay, ranked rows + breadcrumb, Return-to-open, supersede on keystroke)
+- [x] T077 [GIT] Commit: Quick Open overlay
 - [ ] T078 [US3] [test] `app/Emend/EmendUITests/QuickOpenTests.swift`: ⌘P → query → open result
 - [ ] T079 [US3] Run `/sdd:map incremental`; review `retro/P5.md` → CLAUDE.md; [GIT] commit
 - [ ] T080 [GIT] Push; PR "US3: Quick Open"; verify CI green; report PR ready status
