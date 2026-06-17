@@ -44,6 +44,20 @@ tree-sitter-md.workspace = true
 # matching core; both pin a single unified `nucleo-matcher` version (see the root
 # catalog). Pure Rust, no FFI/uniffi dependency.
 nucleo-matcher.workspace = true
+# File watching (research §B3, FR-006/006a/006b/006c). `notify` is the recursive
+# FSEvents watcher; `notify-debouncer-full` coalesces bursts and correlates
+# rename/move via its `FileIdCache` (one rename event, not delete+create). Both
+# use their OWN background threads (NOT tokio), so the core stays free of an async
+# runtime (Constitution V) — `notify` posts events to a `std::sync::mpsc` channel
+# we drain on a dedicated `std::thread`. Pure Rust, no FFI/uniffi dependency.
+#
+# MSRV (verified 2026-06-17 against the resolved 8.2.0 / 0.7.0 manifests, not from
+# memory): `notify 8.2.0` declares `rust-version = "1.77"` and
+# `notify-debouncer-full 0.7.0` declares `rust-version = "1.85"` — both ≤ the
+# workspace's pinned rust-version = "1.85" (CI proves it with `cargo +1.85
+# check --all`). Stay on notify 8.x; 9.0 is RC.
+notify.workspace = true
+notify-debouncer-full.workspace = true
 
 [lints]
 workspace = true

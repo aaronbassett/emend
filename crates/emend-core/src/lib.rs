@@ -47,6 +47,18 @@ pub mod workspace;
 /// `SearchHit` later.
 pub mod index;
 
+/// Live external-change detection + the conflict model (US2): a thin
+/// `notify` + `notify-debouncer-full` wrapper ([`watcher::FsWatcher`]) over a
+/// **pure, deterministically-tested** classification core — move correlation
+/// ([`watcher::classify`], one rename event not delete+create, FR-006b),
+/// self-write suppression ([`watcher::SuppressionRegistry`], identity-keyed so
+/// our own atomic saves never echo, FR-006a), and the conflict truth table
+/// ([`watcher::resolve_conflict`], FR-006c). `notify` runs on its own threads and
+/// posts to a `std::sync::mpsc` channel; **no FFI, no async runtime**
+/// (Constitution V), shaped to project onto a foreign-trait `WatchObserver`
+/// callback later (T059).
+pub mod watcher;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;
