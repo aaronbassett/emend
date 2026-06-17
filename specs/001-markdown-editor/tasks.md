@@ -152,8 +152,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T063 [P] [US2] Implement sidebar drag-drop reorganize in `app/Emend/Emend/Sidebar/OutlineDragDrop.swift`
 - [x] T064 [US2] Implement tabs: `app/Emend/Emend/Tabs/TabModel.swift` + `TabBarView.swift` (open file in tab, per-tab state) (research §C7)
 - [x] T065 [US2] Wire live refresh + conflict UI (reload vs keep-mine) in `app/Emend/Emend/Editor/ConflictController.swift`
-- [ ] T066 [GIT] Commit: sidebar, icons, drag-drop, tabs, live refresh
-- [ ] T067 [US2] [test] `app/Emend/EmendUITests/WorkspaceFlowTests.swift`: add folder → tree → open tab → rename
+- [x] T066 [GIT] Commit: sidebar, icons, drag-drop, tabs, live refresh
+- [x] T067 [US2] [test] `app/Emend/EmendUITests/WorkspaceFlowTests.swift`: add folder → tree → open tab → rename
 - [ ] T068 [US2] Run `/sdd:map incremental`; review `retro/P4.md` → CLAUDE.md; [GIT] commit
 - [ ] T069 [GIT] Push; PR "US2: workspace"; verify CI green; report PR ready status
 
