@@ -114,8 +114,8 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
 - [x] T039 [US1] Export `open_document`/`push_edit`/`highlight_spans` in `crates/emend-ffi/src/lib.rs` per the FFI contract (use devs:rust-dev agent)
 - [x] T040 [GIT] Commit: incremental editor highlighting + FFI exports
-- [ ] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)
-- [ ] T042 [US1] Implement `app/Emend/Emend/Editor/SyntaxAttributing.swift`: map core spans → display attributes (dim markers, inline bold/italic/heading/quote/list, `==highlight==` background)
+- [x] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)
+- [x] T042 [US1] Implement `app/Emend/Emend/Editor/SyntaxAttributing.swift`: map core spans → display attributes (dim markers, inline bold/italic/heading/quote/list, `==highlight==` background)
 - [ ] T043 [US1] Implement `app/Emend/Emend/Editor/MarkdownEditorView.swift` (NSViewRepresentable over TextKit 2 `NSTextView`); apply attributes via `NSTextContentStorageDelegate` for the viewport range (research §C1)
 - [ ] T044 [GIT] Commit: TextKit 2 editor view with dimmed-syntax rendering
 - [ ] T045 [P] [US1] Implement smart lists (auto-renumber/indent/outdent) in `app/Emend/Emend/Editor/SmartLists.swift`
