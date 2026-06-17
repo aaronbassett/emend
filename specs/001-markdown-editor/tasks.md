@@ -238,7 +238,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Info sidebar shows stats/tasks/outline live; with no AI config nothing is sent externally; configure an OpenAI-compatible model → summary appears.
 
-- [ ] T107 [US6] Create `retro/P8.md`; [GIT] commit
+- [x] T107 [US6] Create `retro/P8.md`; [GIT] commit
 - [ ] T108 [P] [US6] [test] `crates/emend-core/tests/derived_stats.rs`: word/char/reading-time + N-of-M tasks + outline; live update ≤300ms (FR-029/030/031a) (use devs:rust-dev agent)
 - [ ] T109 [P] [US6] [test] `crates/emend-core/tests/ai_sse.rs`: SSE parse with `data:` split across chunks + `[DONE]`; cancel stops emission; oversized input rejected before send (FR-036a) (use devs:rust-dev agent)
 - [ ] T110 [P] [US6] [test] `crates/emend-core/tests/ai_privacy.rs`: no network when unconfigured; key never appears in captured logs (SC-008/NFR-006) (use devs:rust-dev agent)
