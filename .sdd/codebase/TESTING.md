@@ -8,7 +8,8 @@
 
 Emend follows a **test-first, strict-core** strategy (Constitution VII):
 - **Rust core** (`emend-core`): Comprehensive unit/integration tests, run in isolation via `cargo test` (no FFI toolchain required)
-- **Swift app** (`app/Emend`): Smoke/linkage tests, app-hosted, headless via XCTest
+- **Swift core package** (`swift/EmendCore`): ABI version smoke tests and AsyncStream adapter tests
+- **Swift app** (`app/Emend`): Smoke/linkage tests plus critical-path integration tests; headless XCTest (no GUI automation)
 - **Benchmarks**: Non-blocking perf tracking via Criterion (compile-checked in CI)
 
 ## Test Framework
@@ -18,7 +19,7 @@ Emend follows a **test-first, strict-core** strategy (Constitution VII):
 | Rust core (unit/integration) | cargo test (built-in) | None (standard Rust) | `cargo test` |
 | Rust benchmarks | Criterion 0.7.x | `crates/emend-bench/Cargo.toml` | `cargo bench` or `cargo bench --no-run` (CI) |
 | Swift core package | XCTest | `swift/EmendCore/Tests/` | `swift test` |
-| Swift app | XCTest | `app/Emend/EmendTests/` | `xcodebuild test` (headless) |
+| Swift app | XCTest (app-hosted) | `app/Emend/EmendTests/` (headless) | `xcodebuild test -project app/Emend/Emend.xcodeproj -scheme Emend -destination 'platform=macOS,arch=arm64' CODE_SIGNING_ALLOWED=NO` |
 
 ### Running Tests
 
@@ -29,7 +30,7 @@ Emend follows a **test-first, strict-core** strategy (Constitution VII):
 | `cargo test -p emend-core` | Tests in `emend-core` crate only | macOS or Linux |
 | `cargo test -p emend-ffi` | Tests in `emend-ffi` crate (panic containment, FFI boundary) | macOS or Linux |
 | `swift test` | Swift package tests in `swift/EmendCore/` | macOS with Xcode |
-| `just app-test` | Full app test (builds XCFramework + Xcode project + runs app tests) | macOS 14+ with Xcode 16.2 |
+| `just app-test` | Full app test (builds XCFramework + Xcode project + runs app tests headless) | macOS 14+ with Xcode 16.2, no signing |
 | `just check` | Pre-push gate: fmt + clippy + test + swift-lint (mirrors CI) | macOS with Swift tools |
 
 ## Test Organization
@@ -52,6 +53,7 @@ Tests are **co-located with source code** in two forms:
    - Examples:
      - `crates/emend-core/tests/document.rs` — UTF-16 boundary correctness (T018)
      - `crates/emend-core/tests/fs_atomic.rs` — File I/O atomicity (T011)
+     - `crates/emend-core/tests/parse_incremental.rs` — Incremental parsing + highlight (T021)
      - `crates/emend-ffi/tests/panic_containment.rs` — Panic capture across FFI (T015)
 
 #### Test Files
@@ -60,6 +62,7 @@ Tests are **co-located with source code** in two forms:
 |------|---------|-------|
 | `crates/emend-core/tests/document.rs` | UTF-16↔char conversions, line indexing, edit splicing | Per-keystroke editor hot path correctness (research §A2/A3) |
 | `crates/emend-core/tests/fs_atomic.rs` | Atomic+durable writes, tolerance to BOM/CRLF | File I/O reliability (FR-009a, research §B4) |
+| `crates/emend-core/tests/parse_incremental.rs` | Tree-sitter incremental parsing, astral chars, edge cases | Highlight synthesis (T021, research §B1) |
 | `crates/emend-ffi/tests/panic_containment.rs` | Panics routed through `contain_panic` surface as `EmendError::Internal` | FFI boundary safety (NFR-003, research §B7) |
 
 #### Lint Exceptions in Tests
@@ -85,23 +88,27 @@ Swift tests follow Xcode conventions: separate `Tests/` directories within each 
 
 | Target | Test Location | Purpose |
 |--------|---------------|---------|
-| `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper |
-| `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, app-level behavior |
+| `EmendCore` package | `swift/EmendCore/Tests/EmendCoreTests/` | Unit tests for the clean API wrapper and streaming |
+| `Emend` app | `app/Emend/EmendTests/` | Smoke + linkage tests, critical-path integration tests |
 
 #### Test Files
 
 | Path | Purpose |
 |------|---------|
 | `swift/EmendCore/Tests/EmendCoreTests/EmendCoreTests.swift` | Core ABI version smoke test |
-| `swift/EmendCore/Tests/EmendCoreTests/StreamingTests.swift` | AsyncStream adapter correctness |
+| `swift/EmendCore/Tests/EmendCoreTests/StreamingTests.swift` | AsyncStream adapter correctness (`AiStreamAdapter`, `SearchStreamAdapter`) |
 | `app/Emend/EmendTests/EmendCoreLinkageTests.swift` | App links the local `EmendCore` package; core ABI is reachable |
 | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmark → file I/O flow |
+| `app/Emend/EmendTests/SmartListsTests.swift` | Pure smart-list transforms: list continuation, empty-item termination, indentation preservation (T045, headless) |
+| `app/Emend/EmendTests/FormattingCommandsTests.swift` | Formatting transforms: bold, italic, code (T046, headless) |
+| `app/Emend/EmendTests/SyntaxAttributingTests.swift` | Syntax highlight attribute synthesis from tree-sitter (T047, headless) |
+| `app/Emend/EmendTests/EditorPersistenceTests.swift` | End-to-end persistence: `EditorCoordinator` + `AutosaveController` + disk round-trip (T049, headless integration) |
 
 #### Test Pattern (XCTest)
 
 ```swift
 import XCTest
-@testable import EmendCore  // or just the module for integration
+@testable import Emend
 
 final class MyTests: XCTestCase {
     func testSomething() {
@@ -117,7 +124,38 @@ final class MyTests: XCTestCase {
 }
 ```
 
-Tests are **headless** (no GUI launch) and run in the test bundle (`@testable` import).
+Tests are **headless** (no GUI launch) and run in the test bundle (`@testable` import). Classes annotated `@MainActor` or that touch AppKit state are marked with `@MainActor` for Swift 6 strict concurrency compliance.
+
+#### Headless Integration Testing
+
+Critical-path integration tests drive real Rust/Swift components without a GUI:
+
+**Example: EditorPersistenceTests (T049)**
+```swift
+@MainActor
+final class EditorPersistenceTests: XCTestCase {
+    func testTypedTextFlushesToDiskAndRoundTrips() throws {
+        // Create a temp file
+        let directory = try makeTempDirectory()
+        let url = directory.appendingPathComponent("note.md")
+        try "".write(to: url, atomically: true, encoding: .utf8)
+        let path = url.path(percentEncoded: false)
+        
+        // Open document in the real Rust core
+        let handle = try openDocument(path: path)
+        let editor = makeEditor(handle: handle, initialText: "")
+        
+        // Type text into NSTextView
+        type("Persisted through the Rust core", into: editor.textView, at: 0)
+        
+        // Flush autosave and verify write
+        editor.autosave.flushNow()
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), expected)
+    }
+}
+```
+
+This pattern exercises the full stack (Rust core → file I/O → disk → read-back) without launching the app GUI, making it feasible in CI with `CODE_SIGNING_ALLOWED=NO`.
 
 ## Test Patterns
 
@@ -184,22 +222,57 @@ fn forced_panic_surfaces_as_internal_error_and_process_survives() {
 
 The `with_silent_panic_hook` helper swaps the panic hook during the test to avoid stderr noise. Synchronization via `OnceLock<Mutex<()>>` ensures tests don't stomp on the global hook.
 
-### Swift: Simple XCTest Pattern
+### Swift: Pure Transform Testing (Headless, Isolated)
+
+Edit transforms return pure `Edit` structures (range + replacement + selection) without side effects. Tests apply edits to plain strings and assert results:
 
 ```swift
-import XCTest
+final class SmartListsTests: XCTestCase {
+    private func applied(_ edit: SmartLists.Edit?, to text: String) -> String? {
+        guard let edit else { return nil }
+        let mutable = NSMutableString(string: text)
+        mutable.replaceCharacters(in: edit.range, with: edit.replacement)
+        return mutable as String
+    }
 
-final class BookmarkResolutionTests: XCTestCase {
-    func testSecurityScopedBookmarkResolvesToFile() {
-        // Arrange
-        let fixture = setupTestFolder()
-        let bookmark = fixture.createBookmark()
+    func testReturnContinuesBulletList() throws {
+        let text = "- hello"
+        let edit = SmartLists.newline(in: text as NSString, selection: caret(text.utf16.count))
+        XCTAssertEqual(applied(edit, to: text), "- hello\n- ")
+        XCTAssertEqual(try XCTUnwrap(edit).selectionAfter, caret(10))
+    }
+}
+```
+
+These **unit tests require no AppKit, no window, no @MainActor**; they run in isolation and are fast.
+
+### Swift: Integration Testing with Real Components
+
+```swift
+@MainActor
+final class EditorPersistenceTests: XCTestCase {
+    func testEditingExistingDocumentPersists() throws {
+        // Create a real temp file with initial content
+        let directory = try makeTempDirectory()
+        let url = directory.appendingPathComponent("seed.md")
+        try "# Title\n".write(to: url, atomically: true, encoding: .utf8)
+        let path = url.path(percentEncoded: false)
         
-        // Act
-        let resolved = try bookmark.resolve()
+        // Open the document in the real editor model
+        let handle = try openDocument(path: path)
+        let initial = (try? readFileAt(path: path)) ?? ""
+        let editor = makeEditor(handle: handle, initialText: initial)
         
-        // Assert
-        XCTAssertTrue(resolved.exists)
+        // Edit via the real NSTextView storage
+        let end = editor.textView.textStorage?.length ?? 0
+        type("body text", into: editor.textView, at: end)
+        
+        // Flush autosave to disk
+        editor.autosave.flushNow()
+        try handle.close()
+        
+        // Verify round-trip
+        XCTAssertEqual(try readFileAt(path: path), "# Title\nbody text")
     }
 }
 ```
@@ -215,17 +288,18 @@ The Rust core avoids mocking libraries (`mockall`, `proptest`) in favor of **pur
 
 ### Swift: Minimal Mocking
 
-Swift tests use **headless XCTest** without mocking frameworks. Smoke tests verify linkage; behavior tests are deferred to Phase 2 when real logic lands.
+Swift tests use **headless XCTest** without mocking frameworks. Smoke tests verify linkage; behavior tests exercise real components or defer to Phase 2+ when new logic lands.
 
 ### Test Data
 
 **Fixtures in Rust tests**:
 - Hardcoded strings (e.g., `"hello"`, `"a😀b"` for UTF-16 tests)
-- Temp files created by `tempfile` crate (atomic cleanup)
+- Temp files created by `tempfile` crate (atomic cleanup via `defer`)
 
 **Fixtures in Swift tests**:
-- Simple test doubles (e.g., fake bookmarks) or hardcoded test data
-- Real `EmendCore` API calls (no mocking)
+- Simple test doubles (e.g., fake bookmarks, `makeTempDirectory()`) or hardcoded test data
+- Real `EmendCore` API calls and real `NSTextView` storage (no mocking)
+- Real file I/O via `FileManager` to verify end-to-end persistence
 
 ## Benchmarking
 
@@ -274,8 +348,8 @@ Coverage is **not enforced** in CI but is monitored for regressions:
 The following are not counted:
 - `crates/emend-ffi/` — Thin UniFFI shim; coverage is validated via Rust core tests + Swift linkage tests
 - `swift/EmendCore/Sources/EmendCoreFFI/` — Generated UniFFI bindings
-- `app/Emend/` — Phase 2+ (limited coverage until feature implementation)
-- `*.config.ts`, `*.yml` — Configuration files
+- `app/Emend/Emend/` — AppKit/SwiftUI glue code (tested pragmatically per Constitution VII)
+- `*.config.ts`, `*.yml`, `*.toml` — Configuration files
 
 ## Test Categories
 
@@ -286,6 +360,7 @@ Minimal, fast tests verifying the crate builds and basic APIs work:
 | Test | File | Purpose |
 |------|------|---------|
 | `u16range_end_is_start_plus_len` | `crates/emend-core/src/lib.rs` | Verify `U16Range` calculation |
+| `from_text_then_text_round_trips` | `crates/emend-core/src/document.rs` | Document round-trip text identity |
 
 ### Smoke Tests (Swift)
 
@@ -296,18 +371,30 @@ Verify linkage and ABI stability:
 | `testAbiVersionIsStable` | `swift/EmendCore/Tests/EmendCoreTests/EmendCoreTests.swift` | Core reports stable ABI version |
 | `testCoreAbiVersionIsStable` | `app/Emend/EmendTests/EmendCoreLinkageTests.swift` | App links and reaches core ABI |
 
+### Unit Tests (Editor Transforms, Headless)
+
+Pure, isolated tests of editor behavior without UI:
+
+| Test | File | Purpose | Critical |
+|------|------|---------|----------|
+| Smart list transforms | `app/Emend/EmendTests/SmartListsTests.swift` | Bullet continuation, number increment, task checkbox toggle, indentation preservation (T045) | Yes (per-keystroke UX) |
+| Formatting commands | `app/Emend/EmendTests/FormattingCommandsTests.swift` | Bold `**`, italic `*`, code `` ` `` wrap/unwrap (T046) | Yes (core editing) |
+| Syntax highlighting | `app/Emend/EmendTests/SyntaxAttributingTests.swift` | NSAttributedString synthesis from tree-sitter blocks (T047) | Yes (visual feedback) |
+
 ### Integration Tests
 
 Full-feature tests exercising public APIs and boundaries:
 
-| Test | File | Purpose | Critical Path |
-|------|------|---------|----------------|
-| UTF-16 round-trips | `crates/emend-core/tests/document.rs` | Verify UTF-16↔char conversions for per-keystroke editor | Yes (US1 hot path) |
+| Test | File | Purpose | Critical |
+|------|------|---------|----------|
+| UTF-16 round-trips | `crates/emend-core/tests/document.rs` | UTF-16↔char conversions for per-keystroke editor | Yes (US1 hot path) |
 | Astral character handling | `crates/emend-core/tests/document.rs` | Astral chars (😀) in documents splice cleanly | Yes (emoji input) |
 | CRLF tolerance | `crates/emend-core/tests/document.rs` | Mixed LF/CRLF in same document | Yes (cross-platform) |
+| Incremental parsing | `crates/emend-core/tests/parse_incremental.rs` | Tree-sitter incremental updates, edge cases | Yes (highlight synthesis) |
 | File atomicity | `crates/emend-core/tests/fs_atomic.rs` | Writes via temp+fsync+rename are atomic | Yes (FR-009a autosave) |
 | Panic containment | `crates/emend-ffi/tests/panic_containment.rs` | Panics in async tasks surface as `EmendError::Internal` | Yes (NFR-003) |
 | Bookmark resolution | `app/Emend/EmendTests/BookmarkResolutionTests.swift` | Security-scoped bookmarks resolve to files | Yes (FR-004) |
+| Editor persistence | `app/Emend/EmendTests/EditorPersistenceTests.swift` | Full stack: type → autosave → disk → re-read (T049) | Yes (FR-009) |
 
 ## CI Integration
 
@@ -341,7 +428,7 @@ jobs:
       6. SwiftLint (swiftlint lint --strict)
       7. Build XCFramework + Swift bindings
       8. Generate Xcode project (xcodegen)
-      9. Build & test app (xcodebuild test ...)
+      9. Build & test app (xcodebuild test ... CODE_SIGNING_ALLOWED=NO)
       
   commits:
     name: Conventional commits
@@ -359,8 +446,8 @@ jobs:
 | Rust tests (cargo test) | Yes |
 | Rust MSRV 1.85 | Yes |
 | Swift SwiftFormat lint | Yes |
-| Swift SwiftLint | Yes |
-| Swift app tests | Yes |
+| Swift SwiftLint (--strict) | Yes |
+| Swift app tests (headless) | Yes |
 | Conventional commits | Yes (PRs only) |
 
 Benchmark measurements (`cargo bench --no-run` compile-check) are **non-blocking**.
@@ -376,13 +463,17 @@ Per **Constitution VII** ("Testing is strict in core, pragmatic in UI"):
 - ✅ UTF-16↔char conversions have exhaustive coverage (astral chars, CRLF, boundaries)
 - ✅ Error paths are tested (timeout, cancellation, oversized input)
 - ✅ Panic containment is verified across FFI
+- ✅ Incremental parsing edge cases are covered (T021)
 
 ### Pragmatic UI Testing
 
 `app/Emend` enforces:
 - ✅ Smoke tests (linkage, ABI version)
-- ✅ Critical-path integration tests (bookmark resolution, file read/write flow)
-- ⏳ Behavior-level tests deferred until features land (Phase 2+)
+- ✅ Pure transform tests (headless, isolated unit tests for editor behavior)
+- ✅ Critical-path integration tests (persistence, bookmark resolution)
+- ⏳ Full-app behavior tests deferred until features land (Phase 2+)
+
+**Rationale**: Headless app-hosted testing (via `@testable` + real components) avoids GUI automation costs (signing, rendering, timers) while still verifying end-to-end correctness. Pure transforms are tested in isolation without AppKit.
 
 ### Benchmark Philosophy
 

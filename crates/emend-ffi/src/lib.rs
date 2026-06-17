@@ -24,6 +24,11 @@
 //! sinks, cancellation handle, and runtime accessor themselves live in
 //! [`handles`] as of T024.
 
+/// Open-document session + editor-highlight FFI projection (T039, US1):
+/// `open_document` / `push_edit` / `highlight_spans` / `close` over a handle
+/// wrapping `emend_core`'s `Document` + `Highlighter`, plus the projected value
+/// types (`U16Range`, `StyleClass`, `StyleSpan`). See `contracts/ffi-interface.md` §3.
+pub mod document;
 pub mod error;
 pub mod handles;
 pub mod panic;

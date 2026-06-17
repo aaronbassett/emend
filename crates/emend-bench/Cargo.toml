@@ -15,9 +15,16 @@ emend-core = { path = "../emend-core" }
 criterion.workspace = true
 
 # Smoke bench verifying the Criterion pipeline compiles & runs. Real benches
-# (e.g. benches/highlight.rs, benches/quick_open.rs) land in later phases.
+# (e.g. benches/quick_open.rs) land in later phases.
 [[bench]]
 name = "smoke"
+harness = false
+
+# Incremental editor-highlight perf (T037, SC-003): re-highlight one edited line
+# in a ~1 MB / ~10k-line document. Tracked, non-blocking (perf budgets are
+# tracked per the constitution).
+[[bench]]
+name = "highlight"
 harness = false
 
 [lints]

@@ -40,9 +40,27 @@ thiserror = "2"
 # count as line breaks, matching NSTextView/TextKit line semantics (see
 # crates/emend-core/Cargo.toml).
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
-# markdown: incremental editor highlight + canonical preview
-tree-sitter = "0.25"
-tree-sitter-md = "0.5"
+# markdown: incremental editor highlight + canonical preview.
+#
+# IMPORTANT — version unification (verified 2026-06-17, not from memory):
+# `tree-sitter-md` is the markdown grammar (formerly `tree-sitter-markdown`); it
+# is a SPLIT parser exposing `MarkdownParser`/`MarkdownTree` over a block + an
+# inline tree-sitter grammar. Its `MarkdownParser`/`MarkdownTree` wrapper lives
+# behind the crate's `parser` feature, which is what pulls in the `tree-sitter`
+# runtime — so `features = ["parser"]` is REQUIRED, and the two crates MUST share
+# a single semver-compatible `tree-sitter` (a 0.25-vs-0.26 split would compile
+# two runtimes whose `Node`/`Tree` types can't interoperate).
+#
+# The original pins (`tree-sitter = "0.25"` + `tree-sitter-md = "0.5"`) do NOT
+# unify: no published `tree-sitter-md 0.5.x` depends on tree-sitter 0.25
+#   - tree-sitter-md 0.5.1 -> tree-sitter 0.24
+#   - tree-sitter-md 0.5.2/0.5.3 -> tree-sitter 0.26
+# `"0.5"` resolves to 0.5.3, which requires tree-sitter 0.26, so we align the
+# runtime to 0.26 (MSRV 1.77, comfortably under the workspace's rust-version
+# 1.85; cf. 0.24=1.65, 0.25=1.76 — all fine, the constraint is unification not
+# MSRV). emend-core enables the `parser` feature on tree-sitter-md below.
+tree-sitter = "0.26"
+tree-sitter-md = { version = "0.5", features = ["parser"] }
 comrak = "0.52"
 # code highlighting
 syntect = "5.3"

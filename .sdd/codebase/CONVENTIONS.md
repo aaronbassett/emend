@@ -109,20 +109,29 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 
 | Tool | Configuration | Command |
 |------|---------------|---------|
-| SwiftFormat | `.swiftlint.yml` + CLI flags | `swiftformat app swift --lint` |
+| SwiftFormat | `.swiftformat` + CLI flags | `swiftformat app swift --lint` |
 | SwiftLint | `.swiftlint.yml` --strict | `swiftlint lint --strict` |
 
-### SwiftFormat Settings (via CLI in lefthook.yml)
+### SwiftFormat Configuration (`.swiftformat`)
 
-- **Trailing commas**: disabled (SwiftLint rules conflict; rely on SwiftFormat's default)
-- **Import ordering**: `testable-bottom` (ensures `@testable` imports appear last)
+**Key settings**:
+- `--maxwidth 100` — Line wrapping at 100 characters
+- `--indent 4` — Four-space indentation
+- `--self remove` — Remove redundant `self.` prefixes
+- `--importgrouping testable-bottom` — System/local imports first, `@testable` imports last
+- `--commas inline` — Trailing commas on multi-line constructs
+- `--trailingclosures` — Use trailing closure syntax
+- `--wraparguments before-first` — Multi-line calls wrap before first argument
+- `--disable wrapSingleLineComments` — Preserve intentional long comment lines as written
 
-### SwiftLint Configuration (.swiftlint.yml)
+**Excluded paths**: Generated UniFFI bindings (`swift/EmendCore/Sources/EmendCoreFFI/`), build output (`.build/`, `DerivedData/`)
+
+### SwiftLint Configuration (`.swiftlint.yml`)
 
 **Line length**: Warning at 100 chars, error at 140 chars (ignores comments/URLs).
 
 **Disabled rules** (conflicts with SwiftFormat):
-- `trailing_comma` — SwiftFormat controls this
+- `trailing_comma` — SwiftFormat controls this via `--commas inline`
 
 **Opt-in rules** (enforce stricter checking):
 - `force_unwrapping` — Mirrors Rust `unwrap_used` denial (no force-unwraps)
@@ -130,11 +139,38 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 - `empty_count` — Use `.isEmpty` over `.count == 0`
 - `first_where` — Prefer `first(where:)` over `filter().first`
 - `contains_over_first_not_nil` — Prefer `.contains` over `.first(where:) != nil`
+- `closure_spacing` — Enforce consistent closure syntax
+- `force_cast` — Disallow `as!` casts
+- `force_try` — Disallow `try!`
 
 **Excluded paths**:
 - `swift/EmendCore/Sources/EmendCoreFFI/` — Generated UniFFI bindings (not our code)
 - `DerivedData/` and `.build/` — Build artifacts
 - `**/*.generated.swift` — All generated files
+
+### SwiftFormat ↔ SwiftLint Interaction
+
+**Known conflict**: When SwiftFormat wraps a long multi-line `if`/`guard` condition to stay within 100 chars, it places the opening brace `{` on its own line. SwiftLint's `opening_brace` rule then rejects this (expects brace on same line as `if`/`else`).
+
+**Resolution**: Precompute a boolean `let` to keep conditions within one line, or use `guard … else { return }` where the brace follows `else` (exempt from the conflict):
+
+```swift
+// ✓ Preferred: condition on one line
+let isValid = (longConditionPart1 && longConditionPart2 && longConditionPart3)
+if isValid {
+    // ...
+}
+
+// ✓ Also acceptable: guard … else { return }
+guard let value = optionalValue,
+      value > threshold else {
+    return
+}
+```
+
+### Nesting Rules
+
+SwiftLint's `nesting` rule (severity: warning) allows types nested **at most 1 level deep**. Nested types beyond that trigger a warning.
 
 ### Naming Conventions
 
@@ -152,7 +188,7 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 | Type | Convention | Example |
 |------|------------|---------|
 | Variables | camelCase | `selectedLocation`, `isVisible`, `bookmarkData` |
-| Constants (static) | camelCase | `defaultFolderSize` (or SCREAMING_SNAKE_CASE for compile-time constants) |
+| Constants (static) | camelCase (or SCREAMING_SNAKE_CASE for compile-time constants) | `defaultFolderSize` |
 | Type names (struct/class/enum) | PascalCase | `MainWindow`, `AiStreamAdapter`, `SearchStreamAdapter` |
 | Functions/methods | camelCase, verb-prefix for state change | `addLocation()`, `openDocument()`, `onToken(_:)` |
 | Properties | camelCase | `locations`, `selection`, `abiVersion` |
@@ -161,7 +197,8 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 #### SwiftUI Conventions
 
 - **State properties**: Prefix with `@State private var` for internal state
-- **View components**: Extract into computed `var` properties for clarity (e.g., `var sidebar: some View`)
+- **Main actor**: Test classes touching `@MainActor` or AppKit are annotated `@MainActor` (Swift 6 strict concurrency)
+- **View components**: Extract into computed `var` properties or `@ViewBuilder` methods for clarity (e.g., `var sidebar: some View`)
 - **Closures**: Use trailing closure syntax and verb-based naming for callbacks (e.g., `onTerminate`, `onToken`)
 
 **Example** (from `Streaming.swift`):
@@ -222,6 +259,26 @@ public final class AiStreamAdapter: AiSink {
 
 Call sites wire an `onTerminate` hook to cancel the Rust work when the stream is torn down.
 
+### Swift: Pure Transform Functions
+
+Editor behavior transforms (e.g., `SmartLists`, `FormattingCommands`) are pure functions over `(text: String, selection: NSRange) -> Edit?`:
+
+```swift
+enum SmartLists {
+    struct Edit: Equatable {
+        let range: NSRange
+        let replacement: String
+        let selectionAfter: NSRange
+    }
+
+    static func newline(in text: NSString, selection: NSRange) -> Edit? {
+        // Pure logic: no side effects, no AppKit
+    }
+}
+```
+
+These **headless transforms are unit-tested without a window** (Constitution VII). The editor view applies the returned `Edit` to its `NSTextView` through the normal `shouldChangeText`/`didChangeText` path.
+
 ### Swift: View Composition
 
 Extract complex view logic into computed properties for readability:
@@ -233,9 +290,12 @@ var sidebar: some View {
     }
 }
 
-var editorPane: some View {
-    // Placeholder in Phase 2
-    EmptyView()
+@ViewBuilder private var editorPane: some View {
+    if let doc = openDoc {
+        MarkdownEditorView(document: doc)
+    } else {
+        EmptyView()
+    }
 }
 ```
 
@@ -273,29 +333,25 @@ test(document): add astral-char UTF-16 tests
 ci: enforce MSRV 1.85
 ```
 
-The commit-msg hook validates the subject line against this pattern and rejects non-conforming commits:
-
-```bash
-head -1 "{1}" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
-```
+The commit-msg hook validates the subject line against this pattern and rejects non-conforming commits.
 
 ## Pre-Commit Hooks (Lefthook)
 
 Run once to install: `lefthook install` (or `just hooks`).
 
-Hooks run automatically on `git commit` and validate:
+Hooks run **in parallel** on `git commit` and validate:
 
-| Hook | Languages | Commands | Parallel |
-|------|-----------|----------|----------|
-| rust-fmt | `*.rs` | `cargo fmt --check` | Yes |
-| rust-clippy | `*.rs` | `cargo clippy --all-targets --offline -- -D warnings` | Yes |
-| swift-format | `*.swift` | `swiftformat {staged_files} --lint` (graceful skip if not installed) | Yes |
-| swift-lint | `*.swift` | `swiftlint lint --quiet --strict` (graceful skip if not installed) | Yes |
-| commit-msg | (all) | Conventional Commits validation | No |
+| Hook | Glob | Command | Notes |
+|------|------|---------|-------|
+| rust-fmt | `*.rs` | `cargo fmt --check` | Rejects if unformatted |
+| rust-clippy | `*.rs` | `cargo clippy --all-targets --offline -- -D warnings` | Rejects if warnings exist |
+| swift-format | `*.swift` | `swiftformat {staged_files} --lint` | Gracefully skips if not installed |
+| swift-lint | `*.swift` | `swiftlint lint --quiet --strict` | Gracefully skips if not installed |
+| commit-msg | (all) | Conventional Commits validation | Rejects non-conforming subjects |
 
 **Pre-commit runs in parallel** for speed. If any check fails, the commit is rejected; staged changes remain staged for fixing.
 
-To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clippy && cargo test && (swift checks if tools present)`.
+To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clippy && cargo test && swift-lint`.
 
 ## Code Organization
 
@@ -314,8 +370,17 @@ To run all checks locally (mirrors CI): `just check` or `cargo fmt && cargo clip
 - **`swift/EmendCore/Sources/EmendCore/EmendCore.swift`**: Clean public API, re-exports `EmendCoreFFI`
 - **`swift/EmendCore/Sources/EmendCore/Streaming.swift`**: AsyncStream adapters over foreign-trait callbacks
 - **`swift/EmendCore/Sources/EmendCoreFFI/`** (generated): UniFFI bindings (excluded from lint)
-- **`app/Emend/Emend/`**: SwiftUI app (views, state, utilities)
-- **`app/Emend/EmendTests/`**: App-level XCTest tests
+- **`app/Emend/Emend/`**: SwiftUI app (views, state, utilities, pure transforms)
+- **`app/Emend/EmendTests/`**: App-level XCTest tests (headless, no GUI automation)
+
+### Editor Transform Organization
+
+Pure, testable transforms are organized by feature:
+- **`app/Emend/Emend/Editor/SmartLists.swift`** — List continuation + termination logic (T045)
+- **`app/Emend/Emend/Editor/FormattingCommands.swift`** — Bold, italic, code formatting (T046)
+- **`app/Emend/Emend/Editor/SyntaxAttributing.swift`** — Highlight synthesis from tree-sitter (T047)
+
+Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 
 ## Import Ordering
 

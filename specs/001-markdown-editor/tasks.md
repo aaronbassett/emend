@@ -96,7 +96,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T031 Run `/sdd:map incremental` for Phase 2 changes; commit updated `.sdd/codebase/` docs
 - [x] T032 Review `retro/P2.md`; extract only critical, project-wide learnings to `CLAUDE.md` (conservative)
 - [x] T033 [GIT] Commit: Phase 2 codebase map + retro
-- [ ] T034 [GIT] Push; create/update PR with Phase 2 summary; verify CI green; report PR ready status
+- [x] T034 [GIT] Push; create/update PR with Phase 2 summary; verify CI green; report PR ready status
 
 **Checkpoint**: Foundation ready — user stories can begin.
 
@@ -108,22 +108,22 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Open a single file, type headings/bold/italic/lists, confirm markers dim while formatting renders inline, confirm smart-list renumber, quit/reopen → on-disk Markdown is clean and correct.
 
-- [ ] T035 [US1] Create `specs/001-markdown-editor/retro/P3.md`; [GIT] commit
-- [ ] T036 [P] [US1] [test] `crates/emend-core/tests/parse_incremental.rs`: tree-sitter `changed_ranges` is edit-local; fence-toggle invalidates the tail (use devs:rust-dev agent)
-- [ ] T037 [P] [US1] [test] `crates/emend-bench/benches/highlight.rs`: re-highlight one edited line in a 1MB doc < 5ms (tracked budget, SC-003) (use devs:rust-dev agent)
-- [ ] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
-- [ ] T039 [US1] Export `open_document`/`push_edit`/`highlight_spans` in `crates/emend-ffi/src/lib.rs` per the FFI contract (use devs:rust-dev agent)
-- [ ] T040 [GIT] Commit: incremental editor highlighting + FFI exports
-- [ ] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)
-- [ ] T042 [US1] Implement `app/Emend/Emend/Editor/SyntaxAttributing.swift`: map core spans → display attributes (dim markers, inline bold/italic/heading/quote/list, `==highlight==` background)
-- [ ] T043 [US1] Implement `app/Emend/Emend/Editor/MarkdownEditorView.swift` (NSViewRepresentable over TextKit 2 `NSTextView`); apply attributes via `NSTextContentStorageDelegate` for the viewport range (research §C1)
-- [ ] T044 [GIT] Commit: TextKit 2 editor view with dimmed-syntax rendering
-- [ ] T045 [P] [US1] Implement smart lists (auto-renumber/indent/outdent) in `app/Emend/Emend/Editor/SmartLists.swift`
-- [ ] T046 [P] [US1] Implement formatting shortcuts (bold/italic/link/task) in `app/Emend/Emend/Editor/FormattingCommands.swift`
-- [ ] T047 [US1] Wire debounced atomic autosave (core `flush`) + self-write suppression in `app/Emend/Emend/Editor/AutosaveController.swift` (FR-009/FR-006a) (use devs:rust-dev agent for the core `flush` export)
-- [ ] T048 [GIT] Commit: smart lists, shortcuts, autosave
-- [ ] T049 [US1] [test] `app/Emend/EmendUITests/EditorFlowTests.swift`: type into a doc, confirm text persists round-trip
-- [ ] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
+- [x] T035 [US1] Create `specs/001-markdown-editor/retro/P3.md`; [GIT] commit
+- [x] T036 [P] [US1] [test] `crates/emend-core/tests/parse_incremental.rs`: tree-sitter `changed_ranges` is edit-local; fence-toggle invalidates the tail (use devs:rust-dev agent)
+- [x] T037 [P] [US1] [test] `crates/emend-bench/benches/highlight.rs`: re-highlight one edited line in a 1MB doc < 5ms (tracked budget, SC-003) (use devs:rust-dev agent)
+- [x] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
+- [x] T039 [US1] Export `open_document`/`push_edit`/`highlight_spans` in `crates/emend-ffi/src/lib.rs` per the FFI contract (use devs:rust-dev agent)
+- [x] T040 [GIT] Commit: incremental editor highlighting + FFI exports
+- [x] T041 [P] [US1] [test] `app/Emend/EmendTests/SyntaxAttributingTests.swift` (headless): given source + spans → assert dimmed-marker ranges + heading fonts (no window)
+- [x] T042 [US1] Implement `app/Emend/Emend/Editor/SyntaxAttributing.swift`: map core spans → display attributes (dim markers, inline bold/italic/heading/quote/list, `==highlight==` background)
+- [x] T043 [US1] Implement `app/Emend/Emend/Editor/MarkdownEditorView.swift` (NSViewRepresentable over TextKit 2 `NSTextView`); apply attributes via `NSTextContentStorageDelegate` for the viewport range (research §C1)
+- [x] T044 [GIT] Commit: TextKit 2 editor view with dimmed-syntax rendering
+- [x] T045 [P] [US1] Implement smart lists (auto-renumber/indent/outdent) in `app/Emend/Emend/Editor/SmartLists.swift`
+- [x] T046 [P] [US1] Implement formatting shortcuts (bold/italic/link/task) in `app/Emend/Emend/Editor/FormattingCommands.swift`
+- [x] T047 [US1] Wire debounced atomic autosave (core `flush`) + self-write suppression in `app/Emend/Emend/Editor/AutosaveController.swift` (FR-009/FR-006a) (use devs:rust-dev agent for the core `flush` export)
+- [x] T048 [GIT] Commit: smart lists, shortcuts, autosave
+- [x] T049 [US1] [test] `app/Emend/EmendTests/EditorPersistenceTests.swift`: drive the real editor coordinator + autosave so typed edits round-trip to disk through the core (headless app-hosted test; XCUITest dropped — its runner cannot bootstrap under CI's `CODE_SIGNING_ALLOWED=NO`, and the project's CI is GUI/signing-free by design, Constitution VII)
+- [x] T050 [US1] Run `/sdd:map incremental`; review `retro/P3.md` → CLAUDE.md (conservative); [GIT] commit
 - [ ] T051 [GIT] Push; create/update PR "US1 (MVP): live editor"; verify CI green; report PR ready status
 
 **Checkpoint**: 🎯 MVP — Emend can open, edit (dimmed syntax + smart lists + shortcuts), and autosave a Markdown file.
