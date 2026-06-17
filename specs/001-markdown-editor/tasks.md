@@ -155,7 +155,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T066 [GIT] Commit: sidebar, icons, drag-drop, tabs, live refresh
 - [x] T067 [US2] [test] `app/Emend/EmendUITests/WorkspaceFlowTests.swift`: add folder → tree → open tab → rename
 - [x] T068 [US2] Run `/sdd:map incremental`; review `retro/P4.md` → CLAUDE.md; [GIT] commit
-- [ ] T069 [GIT] Push; PR "US2: workspace"; verify CI green; report PR ready status
+- [x] T069 [GIT] Push; PR "US2: workspace"; verify CI green; report PR ready status
 
 **Checkpoint**: US1 + US2 work independently — full editing + browsing.
 
@@ -167,7 +167,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: In a large workspace, ⌘P + fuzzy query → ranked results with paths → open top hit.
 
-- [ ] T070 [US3] Create `retro/P5.md`; [GIT] commit
+- [x] T070 [US3] Create `retro/P5.md`; [GIT] commit
 - [ ] T071 [P] [US3] [test] `crates/emend-bench/benches/quick_open.rs`: p95 ≤100ms over 10k entries (warm) (SC-004) (use devs:rust-dev agent)
 - [ ] T072 [P] [US3] [test] `crates/emend-core/tests/search_supersede.rs`: superseding a query cancels prior emission (NFR-002) (use devs:rust-dev agent)
 - [ ] T073 [US3] Implement `crates/emend-core/src/search.rs` + `quick_open_query` streaming via `SearchSink`, supersede/cancel (use devs:rust-dev agent)
