@@ -177,7 +177,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T077 [GIT] Commit: Quick Open overlay
 - [x] T078 [US3] [test] `app/Emend/EmendTests/QuickOpenTests.swift`: ⌘P → query → open result (headless app-hosted; XCUITest can't bootstrap under CODE_SIGNING_ALLOWED=NO)
 - [x] T079 [US3] Run `/sdd:map incremental`; review `retro/P5.md` → CLAUDE.md; [GIT] commit
-- [ ] T080 [GIT] Push; PR "US3: Quick Open"; verify CI green; report PR ready status
+- [x] T080 [GIT] Push; PR "US3: Quick Open"; verify CI green; report PR ready status (merged as #5)
 
 **Checkpoint**: Quick Open works across the workspace.
 
@@ -189,7 +189,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Doc with code/table/Mermaid/math renders; scroll sync both ways; export → multi-page PDF matching the preview.
 
-- [ ] T081 [US4] Create `retro/P6.md`; [GIT] commit
+- [x] T081 [US4] Create `retro/P6.md`; [GIT] commit
 - [ ] T082 [P] [US4] [test] `crates/emend-core/tests/preview_render.rs`: comrak HTML has `data-line` anchors + syntect classed code; tables render (use devs:rust-dev agent)
 - [ ] T083 [P] [US4] [test] `crates/emend-core/tests/preview_offline.rs`: rendering performs zero network access (SC-008) (use devs:rust-dev agent)
 - [ ] T083a [US4] Generate & vendor the binary syntect `SyntaxSet`/`ThemeSet` dump for the 30-language v1 set (research §D) into `crates/emend-core/assets/`; assert lazy load ≤23ms at startup, never raw-YAML on the hot path (research §B6) (use devs:rust-dev agent)
