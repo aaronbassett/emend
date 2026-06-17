@@ -48,16 +48,48 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var roots: [WorkspaceNode] = []
     @Published private(set) var revision = 0
 
+    /// Path-keyed app state the core models in memory but does not persist
+    /// (favorites/pins/icons). Persisted Swift-side here and replayed into the
+    /// core on launch — the data-model envisions a core-owned store, but the core
+    /// has no persistence layer yet, so this mirrors how location bookmarks are
+    /// persisted. Favorites/pins are wired in a later slice; icons are live now.
+    struct AppState: Codable {
+        var favorites: [String] = []
+        var pinned: [String] = []
+        var icons: [String: String] = [:]
+    }
+
     private let defaults: UserDefaults
     private let bookmarksKey = "com.aaronbassett.Emend.locationBookmarks"
+    private let appStateKey = "com.aaronbassett.Emend.appState"
     /// Per-location: the bookmark (for persistence) and the held security scope.
     private var bookmarks: [UInt64: Data] = [:]
     private var heldScopes: [UInt64: URL] = [:]
+    private var appState = AppState()
 
     init(workspace: WorkspaceHandle = newWorkspace(), defaults: UserDefaults = .standard) {
         self.workspace = workspace
         self.defaults = defaults
+        loadAppState()
         restorePersistedLocations()
+    }
+
+    /// The custom icon set for `path`, if any (display source of truth — the FFI
+    /// exposes no icon getter).
+    func icon(for path: String) -> FolderIcon? {
+        FolderIcon(serialized: appState.icons[path])
+    }
+
+    /// Set or clear a folder's custom icon (FR-008). Persists Swift-side and
+    /// forwards to the core for consistency.
+    func setIcon(_ icon: FolderIcon?, for path: String) {
+        if let icon {
+            appState.icons[path] = icon.serialized
+        } else {
+            appState.icons.removeValue(forKey: path)
+        }
+        try? workspace.setFolderIcon(folderPath: path, icon: icon?.serialized)
+        saveAppState()
     }
 
     /// Prompt for a folder and add it as a location.
@@ -124,10 +156,30 @@ final class WorkspaceModel: ObservableObject {
             try? register(bookmark: data, persist: false)
         }
         persistBookmarks() // capture any stale-bookmark refreshes
+        replayAppStateToCore()
     }
 
     private func persistBookmarks() {
         defaults.set(Array(bookmarks.values), forKey: bookmarksKey)
+    }
+
+    private func loadAppState() {
+        guard let data = defaults.data(forKey: appStateKey),
+              let decoded = try? JSONDecoder().decode(AppState.self, from: data) else { return }
+        appState = decoded
+    }
+
+    private func saveAppState() {
+        guard let data = try? JSONEncoder().encode(appState) else { return }
+        defaults.set(data, forKey: appStateKey)
+    }
+
+    /// Re-apply persisted app state to the freshly-created core handle (the core
+    /// starts empty each launch). Favorites/pins are replayed once wired.
+    private func replayAppStateToCore() {
+        for (path, icon) in appState.icons {
+            try? workspace.setFolderIcon(folderPath: path, icon: icon)
+        }
     }
 
     private func listChildren(of node: WorkspaceNode) -> [WorkspaceNode] {

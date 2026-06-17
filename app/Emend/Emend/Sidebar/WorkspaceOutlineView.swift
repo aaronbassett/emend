@@ -4,9 +4,10 @@ import SwiftUI
 
 /// The workspace sidebar: a source-list `NSOutlineView` over the `WorkspaceModel`
 /// (research §C6). Locations are roots; folders expand lazily via the Rust core.
-/// Double-click opens a file (via `onOpenFile`) or toggles a folder. Top-level
-/// changes reload on `model.revision`; folder contents use targeted
-/// `reloadItem(_:reloadChildren:)`.
+/// Double-click opens a file (via `onOpenFile`) or toggles a folder. A
+/// right-click menu sets a folder's custom icon (FR-008) or removes a location.
+/// Top-level changes reload on `model.revision`; an icon change reloads just its
+/// row (`reloadItem`), preserving expansion.
 struct WorkspaceOutlineView: NSViewRepresentable {
     @ObservedObject var model: WorkspaceModel
     let onOpenFile: (URL) -> Void
@@ -32,6 +33,11 @@ struct WorkspaceOutlineView: NSViewRepresentable {
         outline.delegate = context.coordinator
         outline.target = context.coordinator
         outline.doubleAction = #selector(Coordinator.handleDoubleClick)
+
+        let menu = NSMenu()
+        menu.delegate = context.coordinator
+        outline.menu = menu
+
         context.coordinator.attach(outline)
 
         let scrollView = NSScrollView()
@@ -46,14 +52,16 @@ struct WorkspaceOutlineView: NSViewRepresentable {
     }
 }
 
-/// Data source + delegate for the workspace outline. Main-actor isolated — all
-/// `NSOutlineView` access is on the main thread.
+/// Data source + delegate + context menu for the workspace outline. Main-actor
+/// isolated — all `NSOutlineView` access is on the main thread.
 @MainActor
-final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
     private let model: WorkspaceModel
     private let onOpenFile: (URL) -> Void
     private weak var outline: NSOutlineView?
     private var lastRevision = -1
+    private var clickedNode: WorkspaceNode?
+    private var iconPopover: NSPopover?
     private let cellID = NSUserInterfaceItemIdentifier("WorkspaceCell")
 
     init(model: WorkspaceModel, onOpenFile: @escaping (URL) -> Void) {
@@ -102,7 +110,9 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         let cell = (outlineView.makeView(withIdentifier: cellID, owner: self) as? NSTableCellView)
             ?? makeCell()
         cell.textField?.stringValue = node.name
-        cell.imageView?.image = icon(for: node)
+        let (image, tint) = iconImage(for: node)
+        cell.imageView?.image = image
+        cell.imageView?.contentTintColor = tint
         return cell
     }
 
@@ -118,7 +128,79 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         }
     }
 
-    // MARK: - Cell construction
+    // MARK: - NSMenuDelegate (right-click context menu)
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard let outline, outline.clickedRow >= 0,
+              let node = outline.item(atRow: outline.clickedRow) as? WorkspaceNode
+        else {
+            clickedNode = nil
+            return
+        }
+        clickedNode = node
+
+        if node.kind != .file {
+            menu.addItem(
+                withTitle: "Set Icon…",
+                action: #selector(setIconAction),
+                keyEquivalent: ""
+            )
+            if model.icon(for: node.path) != nil {
+                menu.addItem(
+                    withTitle: "Reset Icon",
+                    action: #selector(resetIconAction),
+                    keyEquivalent: ""
+                )
+            }
+        }
+        if case .location = node.kind {
+            menu.addItem(.separator())
+            menu.addItem(
+                withTitle: "Remove Location",
+                action: #selector(removeLocationAction),
+                keyEquivalent: ""
+            )
+        }
+        for item in menu.items where item.action != nil {
+            item.target = self
+        }
+    }
+
+    @objc private func setIconAction() {
+        presentIconPicker()
+    }
+
+    @objc private func resetIconAction() {
+        guard let node = clickedNode else { return }
+        model.setIcon(nil, for: node.path)
+        outline?.reloadItem(node, reloadChildren: false)
+    }
+
+    @objc private func removeLocationAction() {
+        guard let node = clickedNode else { return }
+        model.removeLocation(node) // revision bump → reload via updateNSView
+    }
+
+    private func presentIconPicker() {
+        guard let outline, let node = clickedNode else { return }
+        let row = outline.row(forItem: node)
+        guard row >= 0 else { return }
+        let rect = outline.frameOfCell(atColumn: 0, row: row)
+        let picker = FolderIconPicker(current: model.icon(for: node.path)) { [weak self] chosen in
+            guard let self else { return }
+            model.setIcon(chosen, for: node.path)
+            outline.reloadItem(node, reloadChildren: false)
+            iconPopover?.close()
+        }
+        let popover = NSPopover()
+        popover.contentViewController = NSHostingController(rootView: picker)
+        popover.behavior = .transient
+        iconPopover = popover
+        popover.show(relativeTo: rect, of: outline, preferredEdge: .maxX)
+    }
+
+    // MARK: - Cells
 
     private func makeCell() -> NSTableCellView {
         let cell = NSTableCellView()
@@ -146,12 +228,18 @@ final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         return cell
     }
 
-    private func icon(for node: WorkspaceNode) -> NSImage? {
+    /// The icon image + optional tint for a node: a custom folder icon (FR-008)
+    /// when set, otherwise the default per kind.
+    private func iconImage(for node: WorkspaceNode) -> (NSImage?, NSColor?) {
+        if node.kind != .file, let custom = model.icon(for: node.path) {
+            let image = NSImage(systemSymbolName: custom.symbol, accessibilityDescription: nil)
+            return (image, custom.tint?.nsColor)
+        }
         let symbol = switch node.kind {
         case .location: "folder.fill"
         case .folder: "folder"
         case .file: "doc.text"
         }
-        return NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        return (NSImage(systemSymbolName: symbol, accessibilityDescription: nil), nil)
     }
 }
