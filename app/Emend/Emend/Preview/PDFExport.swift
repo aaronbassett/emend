@@ -38,14 +38,10 @@ enum PDFExport {
 /// than throttling an occluded view) for the duration of the export.
 @MainActor
 private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
-    private typealias PrintContinuation = CheckedContinuation<Bool, Error>
-
     private var webView: WKWebView?
     private var window: NSWindow?
     private var loadContinuation: CheckedContinuation<Void, Error>?
-    private var printContinuation: PrintContinuation?
-    private var loadWatchdog: Task<Void, Never>?
-    private var printWatchdog: Task<Void, Never>?
+    private var printContinuation: CheckedContinuation<Bool, Error>?
 
     func export(html: String, css: String, to url: URL) async throws {
         guard let dir = Bundle.main.url(forResource: "preview", withExtension: nil) else {
@@ -63,12 +59,6 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
         try await loadTemplate(template, baseDir: dir, into: webView)
         try await renderContent(html: html, css: css, in: webView)
         try await paginate(webView, with: printInfo)
-        // NB: do NOT assert the file exists synchronously here — `runModal`'s
-        // did-run callback fires before the print subsystem necessarily finishes
-        // flushing the PDF to disk, so an immediate check races the write on some
-        // hosts (it failed on CI while passing locally). Callers that need to use
-        // the file should confirm it themselves (the export test loads it via
-        // PDFDocument, a strictly stronger check than existence).
     }
 
     /// 1. Load the offline template (grants read access to katex/, mermaid, css).
@@ -76,8 +66,7 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
     private func loadTemplate(_ template: URL, baseDir: URL, into webView: WKWebView) async throws {
         try await withCheckedThrowingContinuation { continuation in
             loadContinuation = continuation
-            loadWatchdog = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(20))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
                 guard let self, let pending = loadContinuation else { return }
                 loadContinuation = nil
                 pending.resume(throwing: PDFExport.Failure.renderFailed("template load timed out"))
@@ -110,10 +99,12 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
         let operation = webView.printOperation(with: printInfo)
         operation.showsPrintPanel = false
         operation.showsProgressPanel = false
-        let ok = try await withCheckedThrowingContinuation { (continuation: PrintContinuation) in
+        let ok = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<
+            Bool,
+            Error
+        >) in
             printContinuation = continuation
-            printWatchdog = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(30))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
                 guard let self, let pending = printContinuation else { return }
                 printContinuation = nil
                 pending.resume(throwing: PDFExport.Failure.printFailed)
@@ -134,7 +125,6 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
         success: Bool,
         contextInfo _: UnsafeMutableRawPointer?
     ) {
-        printWatchdog?.cancel()
         printContinuation?.resume(returning: success)
         printContinuation = nil
     }
@@ -160,8 +150,6 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
     }
 
     private func cleanup() {
-        loadWatchdog?.cancel()
-        printWatchdog?.cancel()
         window?.orderOut(nil)
         window?.contentView = nil
         window = nil
@@ -172,13 +160,11 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
     // MARK: - Navigation (template load)
 
     func webView(_: WKWebView, didFinish _: WKNavigation?) {
-        loadWatchdog?.cancel()
         loadContinuation?.resume()
         loadContinuation = nil
     }
 
     func webView(_: WKWebView, didFail _: WKNavigation?, withError error: Error) {
-        loadWatchdog?.cancel()
         loadContinuation?.resume(throwing: error)
         loadContinuation = nil
     }
@@ -188,7 +174,6 @@ private final class OffscreenPrintHost: NSObject, WKNavigationDelegate {
         didFailProvisionalNavigation _: WKNavigation?,
         withError error: Error
     ) {
-        loadWatchdog?.cancel()
         loadContinuation?.resume(throwing: error)
         loadContinuation = nil
     }
