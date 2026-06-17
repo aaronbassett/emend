@@ -517,6 +517,61 @@ impl WorkspaceHandle {
         Ok(())
     }
 
+    /// Seed/rebuild the Quick Open search index from every file currently on disk
+    /// under the workspace's locations (FR-017a, FR-017), returning the number of
+    /// entries indexed.
+    ///
+    /// This is the startup seeding path the manual [`WorkspaceHandle::rebuild_index`]
+    /// only described: it walks each location with the core
+    /// [`Workspace::collect_files`](emend_core::workspace::Workspace::collect_files)
+    /// (canonical, cycle-safe, depth-bounded), maps every absolute file path to its
+    /// location-relative path via the same `rel_for` the file-op methods use, and
+    /// `rebuild`s the index in one shot — so a freshly launched workspace has a
+    /// populated haystack rather than the empty index that left Quick Open with no
+    /// results. Everyday changes still flow through the incremental file-op methods
+    /// (`create_note`/`rename`/`move_node`/`delete`), never this full rebuild.
+    ///
+    /// `max_depth` bounds the directory recursion (`root` itself is depth 0), passed
+    /// straight to `collect_files`.
+    ///
+    /// A location whose walk fails (unreadable/vanished root) is **skipped** rather
+    /// than aborting the whole reindex, so one bad root cannot leave Quick Open
+    /// empty for every other location (best-effort seeding, mirroring the index's
+    /// own "derived state, not a ledger" posture).
+    ///
+    /// Scope: `collect_files` returns **files only**, so the index seeds files only;
+    /// folder-in-results (FR-017) is deferred — Quick Open opens results into editor
+    /// tabs (only files are openable) and the testable criteria (SC-004) are
+    /// file-centric.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub fn reindex_all(&self, max_depth: u32) -> Result<u32, FfiError> {
+        let guard = self.lock()?;
+
+        // Collect every (abs_path, rel_path) pair into owned data BEFORE locking
+        // the index: `collect_files`/`rel_for` borrow `guard` immutably and
+        // `lock_index` borrows it too, so finishing all walk + rel work first
+        // avoids overlapping borrows.
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for loc in guard.workspace.list_locations() {
+            // Best-effort: a single unreadable/missing root is skipped so it can't
+            // break Quick Open for the rest of the workspace.
+            let Ok(files) = guard.workspace.collect_files(&loc.path, max_depth) else {
+                continue;
+            };
+            for abs in files {
+                let rel = guard.rel_for(&abs);
+                pairs.push((abs, rel));
+            }
+        }
+
+        let count = u32::try_from(pairs.len()).unwrap_or(u32::MAX);
+        guard.lock_index()?.rebuild(pairs);
+        Ok(count)
+    }
+
     /// Return up to `limit` ranked [`SearchHit`]s for `query`, best first (FFI
     /// contract §5; FR-017). Synchronous, in-memory; the streaming supersedable
     /// Quick Open driver (T073) layers on top later.
@@ -787,5 +842,37 @@ mod tests {
         );
         // The breadcrumb is the relative path.
         assert_eq!(hits[0].breadcrumb, "notes/beta.md");
+    }
+
+    #[test]
+    fn reindex_all_seeds_from_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `collect_files` canonicalizes paths (on macOS `/var` -> `/private/var`),
+        // so add the canonical root too — otherwise `rel_for` can't match the
+        // location prefix against the canonical file paths and falls back to the
+        // basename.
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let nested = root.join("notes").join("sub");
+        std::fs::create_dir_all(&nested).expect("create nested dirs");
+        std::fs::write(root.join("alpha.md"), b"# alpha").expect("write alpha");
+        std::fs::write(nested.join("beta.md"), b"# beta").expect("write beta");
+
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+
+        // Reindex from disk: both files are picked up.
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 2);
+
+        // A query for a file stem returns the expected hit with a sensible
+        // breadcrumb (the location-relative path).
+        let hits = ws.query("beta".to_owned(), 10).expect("query");
+        let beta_abs = nested.join("beta.md").to_string_lossy().into_owned();
+        assert_eq!(
+            hits.first().map(|h| h.path.as_str()),
+            Some(beta_abs.as_str())
+        );
+        assert_eq!(hits[0].breadcrumb, "notes/sub/beta.md");
     }
 }
