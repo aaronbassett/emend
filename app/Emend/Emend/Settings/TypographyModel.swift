@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import EmendCore
 import Foundation
@@ -18,30 +19,59 @@ final class TypographyModel: ObservableObject {
         paragraphSpacingPt: 8
     )
 
+    private static let systemSentinel = "-apple-system"
+
     private let handle: SettingsHandle
     private let defaults: UserDefaults
     private let key = "com.aaronbassett.Emend.typography"
+    /// Installed font families (+ the system sentinel) — any other family is
+    /// rejected to the sentinel, so a crafted/corrupted value can't reach the
+    /// editor font or the preview CSS (defense in depth alongside CSS escaping).
+    private let validFamilies: Set<String>
+    /// Debounces persistence so dragging a slider doesn't write to disk per tick.
+    private var saveTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        validFamilies = Set(NSFontManager.shared.availableFontFamilies)
         handle = newSettings()
-        if let stored = Self.load(from: defaults, key: key) {
+        if var stored = Self.load(from: defaults, key: key) {
+            stored.fontFamily = Self.sanitize(stored.fontFamily, valid: validFamilies)
             try? handle.setTypography(settings: stored)
         }
         settings = handle.getTypography()
     }
 
-    /// Apply new settings: the core clamps, we read the clamped result back, publish
-    /// it (so the editor/preview update), and persist.
+    /// Apply new settings: sanitize the family, let the core clamp the numbers, read
+    /// the clamped result back, publish it (editor/preview update live), and persist
+    /// (debounced).
     func apply(_ new: TypographySettings) {
-        try? handle.setTypography(settings: new)
-        let clamped = handle.getTypography()
-        settings = clamped
-        Self.save(clamped, to: defaults, key: key)
+        var sanitized = new
+        sanitized.fontFamily = Self.sanitize(new.fontFamily, valid: validFamilies)
+        try? handle.setTypography(settings: sanitized)
+        settings = handle.getTypography()
+        scheduleSave()
     }
 
     func reset() {
         apply(Self.defaultSettings)
+    }
+
+    /// Keep only the system sentinel or an installed family; anything else → system.
+    private static func sanitize(_ family: String, valid: Set<String>) -> String {
+        family == systemSentinel || valid.contains(family) ? family : systemSentinel
+    }
+
+    /// Coalesce persistence to ~200 ms after the last change (persists the current
+    /// published settings). The task is main-actor-isolated (created in a @MainActor
+    /// method), so the UserDefaults access stays confined to the main actor.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self else { return }
+            Self.save(settings, to: defaults, key: key)
+        }
     }
 
     private static func load(from defaults: UserDefaults, key: String) -> TypographySettings? {

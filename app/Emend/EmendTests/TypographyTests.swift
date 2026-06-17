@@ -13,12 +13,12 @@ final class TypographyTests: XCTestCase {
         try XCTUnwrap(UserDefaults(suiteName: "emend-typo-\(UUID().uuidString)"))
     }
 
-    func testApplyClampsAndPersists() throws {
+    func testApplyClampsAndPersists() async throws {
         let defaults = try freshDefaults()
         let model = TypographyModel(defaults: defaults)
 
         // Out-of-range values are clamped by the core (size 8...48, line 1...3,
-        // paragraph 0...64); the font family is kept.
+        // paragraph 0...64); an installed font family is kept.
         model.apply(TypographySettings(
             fontFamily: "Menlo", fontSizePt: 999, lineHeight: 99, paragraphSpacingPt: -5
         ))
@@ -27,9 +27,23 @@ final class TypographyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(model.settings.paragraphSpacingPt, 0)
         XCTAssertEqual(model.settings.fontFamily, "Menlo")
 
-        // A new model over the same defaults reads the persisted (clamped) values.
+        // Persistence is debounced (~200 ms); wait it out, then a new model over the
+        // same defaults must read the persisted (clamped) values back.
+        try await Task.sleep(for: .milliseconds(350))
         let reloaded = TypographyModel(defaults: defaults)
         XCTAssertEqual(reloaded.settings, model.settings)
+    }
+
+    func testCraftedFontFamilyIsRejectedToSystem() {
+        let model =
+            TypographyModel(defaults: UserDefaults(suiteName: "emend-typo-evil") ?? .standard)
+        model.apply(TypographySettings(
+            fontFamily: "Evil\"; } body { display: none } .x { font: \"",
+            fontSizePt: 14, lineHeight: 1.4, paragraphSpacingPt: 8
+        ))
+        // An unknown/crafted family falls back to the system sentinel, so it never
+        // reaches the editor font or the preview CSS.
+        XCTAssertEqual(model.settings.fontFamily, "-apple-system")
     }
 
     func testResolverProducesFontAndCSS() {

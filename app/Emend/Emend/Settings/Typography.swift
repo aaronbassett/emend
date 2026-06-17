@@ -12,11 +12,18 @@ enum Typography {
         if settings.fontFamily == systemSentinel || settings.fontFamily.isEmpty {
             return .systemFont(ofSize: size)
         }
-        return NSFont(name: settings.fontFamily, size: size) ?? .systemFont(ofSize: size)
+        // The picker supplies *family* names; `NSFont(name:)` matches PostScript/font
+        // names, so resolve via a family descriptor and fall back to the system font.
+        let descriptor = NSFontDescriptor(fontAttributes: [.family: settings.fontFamily])
+        return NSFont(descriptor: descriptor, size: size) ?? .systemFont(ofSize: size)
     }
 
     static func paragraphStyle(for settings: TypographySettings) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
+        // `lineHeightMultiple` scales the font's natural line height, so it stays
+        // safe for mixed font sizes (headings) — unlike a fixed point height. It
+        // only approximates CSS `line-height` (font-size × number); editor and
+        // preview line spacing are close, not pixel-identical (an accepted US7 gap).
         style.lineHeightMultiple = CGFloat(settings.lineHeight)
         style.paragraphSpacing = CGFloat(settings.paragraphSpacingPt)
         return style
@@ -25,10 +32,16 @@ enum Typography {
     /// CSS overriding the preview body typography. Injected after `theme.css`, so
     /// these equal-specificity `.markdown-body` rules win the cascade.
     static func previewCSS(for settings: TypographySettings) -> String {
-        let family = if settings.fontFamily == systemSentinel || settings.fontFamily.isEmpty {
-            "-apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+        let family: String
+        if settings.fontFamily == systemSentinel || settings.fontFamily.isEmpty {
+            family = "-apple-system, BlinkMacSystemFont, system-ui, sans-serif"
         } else {
-            "\"\(settings.fontFamily)\", -apple-system, sans-serif"
+            // CSS string-context escape: backslash-escape `\` and `"` so a crafted
+            // family name can't terminate the quoted value and inject CSS.
+            let escaped = settings.fontFamily
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            family = "\"\(escaped)\", -apple-system, sans-serif"
         }
         return """
         .markdown-body { \
