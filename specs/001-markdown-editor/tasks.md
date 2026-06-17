@@ -80,9 +80,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 ### Runtime, cancellation, streaming scaffolding
 
-- [ ] T024 Implement the tokio runtime + cancellation handle pattern (`CancellationToken`) and foreign-trait sink scaffolding (`SearchSink`, `AiSink`, `DocObserver`) in `crates/emend-ffi/src/handles.rs` (research §A1/§B7) (use devs:rust-dev agent)
-- [ ] T025 [P] Implement Swift wrappers in `swift/EmendCore/Sources/EmendCore/`: error mapping + `AsyncStream` adapters over the foreign-trait sinks
-- [ ] T026 [GIT] Commit: cancellation handles, streaming sinks, Swift adapters
+- [x] T024 Implement the tokio runtime + cancellation handle pattern (`CancellationToken`) and foreign-trait sink scaffolding (`SearchSink`, `AiSink`, `DocObserver`) in `crates/emend-ffi/src/handles.rs` (research §A1/§B7) (use devs:rust-dev agent)
+- [x] T025 [P] Implement Swift wrappers in `swift/EmendCore/Sources/EmendCore/`: error mapping + `AsyncStream` adapters over the foreign-trait sinks
+- [x] T026 [GIT] Commit: cancellation handles, streaming sinks, Swift adapters
 
 ### App shell + sandbox handshake (highest risk — prototype first)
 
