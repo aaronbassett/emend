@@ -21,6 +21,11 @@ struct MarkdownEditorView: NSViewRepresentable {
     /// Whether this editor backs the active tab — only the active editor registers
     /// as the scroll-sync source/target.
     var isActive = true
+    /// Wiki-link services (US5): the workspace index for `[[` autocomplete /
+    /// resolution, this note's path (the resolution origin), and a tab-opener.
+    var workspace: WorkspaceHandle?
+    var notePath = ""
+    var onOpenLink: ((URL) -> Void)?
 
     func makeCoordinator() -> EditorCoordinator {
         EditorCoordinator(handle: handle, autosave: autosave, isReadOnly: isReadOnly)
@@ -41,8 +46,12 @@ struct MarkdownEditorView: NSViewRepresentable {
             NSAttributedString(string: initialText, attributes: context.coordinator.baseAttributes)
         )
         textView.textStorage?.delegate = context.coordinator
+        textView.coordinator = context.coordinator
         context.coordinator.attach(textView)
         context.coordinator.scrollSync = scrollSync
+        context.coordinator.workspace = workspace
+        context.coordinator.notePath = notePath
+        context.coordinator.onOpenLink = onOpenLink
         context.coordinator.observeScrolling(in: scrollView)
         context.coordinator.reattribute()
 
@@ -52,6 +61,9 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.scrollSync = scrollSync
+        context.coordinator.workspace = workspace
+        context.coordinator.notePath = notePath
+        context.coordinator.onOpenLink = onOpenLink
         guard let textView = scrollView.documentView as? NSTextView else { return }
         // Register only the active tab's editor as the scroll-sync source/target,
         // and explicitly detach when it goes inactive so a tab switch can't leave
@@ -99,6 +111,13 @@ struct MarkdownEditorView: NSViewRepresentable {
 /// `shouldChangeText`/`didChangeText`, so they register undo and reach the Rust
 /// core through the coordinator's storage delegate exactly like typed text.
 final class MarkdownTextView: NSTextView {
+    /// Set by the representable so list/formatting keys and link/checkbox clicks
+    /// can reach the core through the coordinator (US5).
+    weak var coordinator: EditorCoordinator?
+    /// Re-entrancy guard: accepting a completion inserts text, which must not
+    /// re-trigger the completion UI.
+    private var isCompleting = false
+
     override func insertNewline(_ sender: Any?) {
         if handleNewline() { return }
         super.insertNewline(sender)
@@ -187,137 +206,89 @@ final class MarkdownTextView: NSTextView {
         didChangeText()
         setSelectedRange(selection)
     }
-}
 
-/// Owns the per-document editing loop: delta extraction → core `pushEdit` →
-/// re-attribution → autosave. `NSTextStorageDelegate` so it sees the precise
-/// edited range and length change. Main-actor isolated — all text-storage access
-/// happens on the main thread.
-@MainActor
-final class EditorCoordinator: NSObject, NSTextStorageDelegate {
-    let baseFont = NSFont.systemFont(ofSize: 14)
-    private(set) lazy var baseAttributes: [NSAttributedString.Key: Any] = [
-        .font: baseFont,
-        .foregroundColor: NSColor.textColor
-    ]
+    // MARK: - Wiki-link autocomplete + click navigation / checkboxes (US5)
 
-    private let handle: OpenDocHandle
-    private let autosave: AutosaveController
-    private let isReadOnly: Bool
-    private weak var textView: NSTextView?
-
-    /// The live preview's scroll-sync hub (US4); `nil` when no preview is wired.
-    var scrollSync: ScrollSync?
-
-    /// Guards re-entrancy: our own attribute writes also fire `didProcessEditing`.
-    private var isApplyingAttributes = false
-    private var reattributeScheduled = false
-
-    init(handle: OpenDocHandle, autosave: AutosaveController, isReadOnly: Bool) {
-        self.handle = handle
-        self.autosave = autosave
-        self.isReadOnly = isReadOnly
+    /// After typing inside an open `[[…`, surface the native completion list.
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        super.insertText(string, replacementRange: replacementRange)
+        guard !isCompleting, isEditable, let storage = textStorage else { return }
+        let caret = selectedRange().location
+        let inOpenLink = WikiLink.partialRange(in: storage.string as NSString, caret: caret) != nil
+        if inOpenLink { complete(nil) }
     }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self)
+    /// Restrict native completion to the open `[[…` target; disabled elsewhere.
+    override var rangeForUserCompletion: NSRange {
+        guard let storage = textStorage,
+              let range = WikiLink.partialRange(
+                  in: storage.string as NSString, caret: selectedRange().location
+              )
+        else { return NSRange(location: NSNotFound, length: 0) }
+        return range
     }
 
-    func attach(_ textView: NSTextView) {
-        self.textView = textView
+    override func completions(
+        forPartialWordRange charRange: NSRange,
+        indexOfSelectedItem index: UnsafeMutablePointer<Int>?
+    ) -> [String]? {
+        guard let storage = textStorage, charRange.location != NSNotFound,
+              NSMaxRange(charRange) <= storage.length else { return nil }
+        index?.pointee = 0
+        let prefix = (storage.string as NSString).substring(with: charRange)
+        return coordinator?.wikiSuggestions(prefix: prefix)
     }
 
-    /// Observe the scroll view's clip bounds so editor scrolls drive the preview
-    /// (US4 · research §C3). The clip view posts on the main thread during scroll.
-    func observeScrolling(in scrollView: NSScrollView) {
-        let clip = scrollView.contentView
-        clip.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(viewportDidScroll),
-            name: NSView.boundsDidChangeNotification,
-            object: clip
-        )
-    }
-
-    /// Clip bounds moved (a scroll): forward the editor's top line to the preview.
-    /// Posted on the main thread during scrolling.
-    @objc private func viewportDidScroll() {
-        guard let textView else { return }
-        scrollSync?.editorScrolled(from: textView)
-    }
-
-    /// NSTextStorageDelegate is not @MainActor in the SDK, but its callbacks always
-    /// fire on the main thread during editing — bounce into the main actor, passing
-    /// only Sendable values (the non-Sendable storage is re-accessed via textView).
-    nonisolated func textStorage(
-        _: NSTextStorage,
-        didProcessEditing editedMask: NSTextStorageEditActions,
-        range editedRange: NSRange,
-        changeInLength delta: Int
+    override func insertCompletion(
+        _ word: String, forPartialWordRange charRange: NSRange, movement: Int, isFinal: Bool
     ) {
-        let isCharacterEdit = editedMask.contains(.editedCharacters)
-        MainActor.assumeIsolated {
-            processEdit(isCharacterEdit: isCharacterEdit, range: editedRange, changeInLength: delta)
+        isCompleting = true
+        defer { isCompleting = false }
+        super.insertCompletion(
+            word,
+            forPartialWordRange: charRange,
+            movement: movement,
+            isFinal: isFinal
+        )
+        guard isFinal, let storage = textStorage else { return }
+        let caret = selectedRange().location
+        let text = storage.string as NSString
+        let closeBracket = UInt16(UInt8(ascii: "]"))
+        let alreadyClosed = caret + 1 < text.length
+            && text.character(at: caret) == closeBracket
+            && text.character(at: caret + 1) == closeBracket
+        if !alreadyClosed {
+            insertText("]]", replacementRange: NSRange(location: caret, length: 0))
         }
     }
 
-    private func processEdit(
-        isCharacterEdit: Bool,
-        range editedRange: NSRange,
-        changeInLength delta: Int
-    ) {
-        guard isCharacterEdit, !isApplyingAttributes, !isReadOnly else { return }
-        guard let storage = textView?.textStorage else { return }
-        let oldLength = editedRange.length - delta
-        guard oldLength >= 0, editedRange.location >= 0,
-              NSMaxRange(editedRange) <= storage.length else { return }
-
-        // Push the UTF-16 delta to the core synchronously (a non-blocking in-memory
-        // splice; it does NOT touch this NSTextStorage). A thrown error means our
-        // offset mapping is wrong (a UTF-16-contract bug) — recover, don't crash.
-        let replacement = storage.attributedSubstring(from: editedRange).string
-        let range = U16Range(start: UInt32(editedRange.location), len: UInt32(oldLength))
-        do {
-            try handle.pushEdit(range: range, replacement: replacement)
-        } catch {
+    /// Toggle a task checkbox on click; ⌘-click a `[[wiki link]]` to open the note.
+    override func mouseDown(with event: NSEvent) {
+        guard let storage = textStorage else { return super.mouseDown(with: event) }
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+        let text = storage.string as NSString
+        if isEditable, toggleCheckboxIfClicked(at: index, in: text) { return }
+        let isCommandClick = event.modifierFlags.contains(.command)
+        if isCommandClick, let link = WikiLink.enclosingLink(in: text, at: index) {
+            coordinator?.openWikiLink(rawTarget: link.raw)
             return
         }
-        autosave.noteEdit()
-        scheduleReattribute()
+        super.mouseDown(with: event)
     }
 
-    /// Coalesced re-attribution: re-query the core's spans for the whole document
-    /// and re-apply display attributes. Runs after the current edit cycle to avoid
-    /// mutating the storage mid-`processEditing`.
-    ///
-    /// NOTE: whole-document attribution is correct and simple for the MVP; viewport
-    /// windowing for very large docs is a tracked perf optimization (Principle IV /
-    /// Polish T131) — the core highlighter is already incremental.
-    private func scheduleReattribute() {
-        guard !reattributeScheduled else { return }
-        reattributeScheduled = true
-        Task { @MainActor [weak self] in
-            self?.reattributeScheduled = false
-            self?.reattribute()
-        }
-    }
-
-    func reattribute() {
-        guard let storage = textView?.textStorage else { return }
-        let length = storage.length
-        guard length >= 0 else { return }
-        let spans: [StyleSpan]
-        do {
-            spans = try handle.highlightSpans(viewport: U16Range(start: 0, len: UInt32(length)))
-        } catch {
-            return // highlighting is advisory; leave the text readable on failure
-        }
-        isApplyingAttributes = true
-        storage.beginEditing()
-        storage.setAttributes(baseAttributes, range: NSRange(location: 0, length: length))
-        SyntaxAttributing.apply(spans: spans, to: storage, baseFont: baseFont)
-        storage.endEditing()
-        isApplyingAttributes = false
+    /// If `index` lands on a task checkbox, flip it through the Edit path (Swift
+    /// owns the buffer; the core sees the delta) and return true; else false.
+    private func toggleCheckboxIfClicked(at index: Int, in text: NSString) -> Bool {
+        guard let box = TaskCheckbox.checkboxRange(in: text, atLineContaining: index),
+              index >= box.location, index <= NSMaxRange(box),
+              let edit = TaskCheckbox.toggleEdit(in: text, atLineContaining: index)
+        else { return false }
+        apply(
+            range: edit.range,
+            replacement: edit.replacement,
+            selection: NSRange(location: index, length: 0)
+        )
+        return true
     }
 }

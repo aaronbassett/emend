@@ -162,7 +162,10 @@ struct MainWindow: View {
                         isReadOnly: tab.isReadOnly,
                         autosave: tab.autosave,
                         scrollSync: scrollSync,
-                        isActive: tab.id == tabs.activeID
+                        isActive: tab.id == tabs.activeID,
+                        workspace: workspace.workspace,
+                        notePath: tab.url.path(percentEncoded: false),
+                        onOpenLink: { url in tabs.open(url: url) }
                     )
                     .id("\(tab.id)-\(tab.reloadToken)")
                     .opacity(tab.id == tabs.activeID ? 1 : 0)
