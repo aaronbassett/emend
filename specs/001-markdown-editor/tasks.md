@@ -93,9 +93,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 ### Phase close
 
-- [ ] T031 Run `/sdd:map incremental` for Phase 2 changes; commit updated `.sdd/codebase/` docs
-- [ ] T032 Review `retro/P2.md`; extract only critical, project-wide learnings to `CLAUDE.md` (conservative)
-- [ ] T033 [GIT] Commit: Phase 2 codebase map + retro
+- [x] T031 Run `/sdd:map incremental` for Phase 2 changes; commit updated `.sdd/codebase/` docs
+- [x] T032 Review `retro/P2.md`; extract only critical, project-wide learnings to `CLAUDE.md` (conservative)
+- [x] T033 [GIT] Commit: Phase 2 codebase map + retro
 - [ ] T034 [GIT] Push; create/update PR with Phase 2 summary; verify CI green; report PR ready status
 
 **Checkpoint**: Foundation ready — user stories can begin.
