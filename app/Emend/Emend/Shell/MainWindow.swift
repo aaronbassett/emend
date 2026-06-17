@@ -65,6 +65,7 @@ struct MainWindow: View {
             conflict.attach(tabs: tabs, workspace: workspace)
             quickOpen.attach(workspace: workspace.workspace) { url in tabs.open(url: url) }
             tabs.onDocEdit = { [weak preview] in preview?.scheduleRefresh() }
+            preview.workspace = workspace.workspace
             preview.isVisible = showPreview
             preview.setActiveDocument(tabs.active?.handle)
         }

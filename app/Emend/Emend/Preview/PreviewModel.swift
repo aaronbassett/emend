@@ -30,6 +30,10 @@ final class PreviewModel: ObservableObject {
         }
     }
 
+    /// The workspace index (US5): when present, the preview resolves `![[embeds]]`
+    /// to their inlined content; otherwise embeds render literally.
+    var workspace: WorkspaceHandle?
+
     private var handle: OpenDocHandle?
     private var refreshTask: Task<Void, Never>?
     private let debounce: Duration = .milliseconds(150)
@@ -49,12 +53,13 @@ final class PreviewModel: ObservableObject {
             if handle == nil { html = "" }
             return
         }
+        let workspace = workspace
         refreshTask = Task { [weak self, debounce] in
             if !immediate {
                 try? await Task.sleep(for: debounce)
             }
             if Task.isCancelled { return }
-            let rendered = await Self.render(handle)
+            let rendered = await Self.render(handle, workspace: workspace)
             if Task.isCancelled { return }
             guard let self, let rendered else { return }
             html = rendered
@@ -62,11 +67,18 @@ final class PreviewModel: ObservableObject {
         }
     }
 
-    /// Render off the main actor — `renderPreviewHtml` is whole-document comrak +
-    /// syntect work that can exceed a frame on a large doc (NFR-001).
-    private static func render(_ handle: OpenDocHandle) async -> String? {
+    /// Render off the main actor — whole-document comrak + syntect work that can
+    /// exceed a frame on a large doc (NFR-001). With a workspace, `![[embeds]]`
+    /// are resolved + inlined (US5); without one, embeds stay literal.
+    private static func render(
+        _ handle: OpenDocHandle,
+        workspace: WorkspaceHandle?
+    ) async -> String? {
         await Task.detached(priority: .userInitiated) {
-            try? handle.renderPreviewHtml()
+            if let workspace {
+                return try? handle.renderPreviewHtmlResolving(workspace: workspace)
+            }
+            return try? handle.renderPreviewHtml()
         }.value
     }
 }

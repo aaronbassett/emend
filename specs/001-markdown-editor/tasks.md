@@ -222,9 +222,9 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T099 [GIT] Commit: core links, embeds, tasks, attachments + FFI
 - [x] T100 [US5] Implement `app/Emend/Emend/Links/WikiLinkAutocomplete.swift` (live `[[` dropdown with paths) + clickable link navigation
 - [x] T101 [P] [US5] Implement clickable task checkbox attachment + toggle in `app/Emend/Emend/Editor/TaskCheckbox.swift` (FR-014); unresolved-link styling
-- [ ] T102 [P] [US5] Implement embed rendering in preview + inline image drag-drop in `app/Emend/Emend/Editor/ImageDrop.swift`
-- [ ] T103 [GIT] Commit: wiki-link autocomplete, checkboxes, embeds, image drop
-- [ ] T104 [US5] [test] `app/Emend/EmendUITests/LinksFlowTests.swift`: autocomplete → click navigate → checkbox toggle
+- [x] T102 [P] [US5] Implement embed rendering in preview + inline image drag-drop in `app/Emend/Emend/Editor/ImageDrop.swift`
+- [x] T103 [GIT] Commit: wiki-link autocomplete, checkboxes, embeds, image drop
+- [x] T104 [US5] [test] `app/Emend/EmendUITests/LinksFlowTests.swift`: autocomplete → click navigate → checkbox toggle
 - [ ] T105 [US5] Run `/sdd:map incremental`; review `retro/P7.md` → CLAUDE.md; [GIT] commit
 - [ ] T106 [GIT] Push; PR "US5: links & embeds"; verify CI green; report PR ready status
 

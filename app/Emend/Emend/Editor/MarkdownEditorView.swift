@@ -291,4 +291,34 @@ final class MarkdownTextView: NSTextView {
         )
         return true
     }
+
+    // MARK: - Image drag-drop (US5)
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if isEditable, !ImageDrop.imageFileURLs(in: sender.draggingPasteboard).isEmpty {
+            return .copy
+        }
+        return super.draggingEntered(sender)
+    }
+
+    /// Store dropped images as attachments and insert Markdown image refs at the
+    /// drop point (through the Edit path). Non-image drops fall back to NSTextView.
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = ImageDrop.imageFileURLs(in: sender.draggingPasteboard)
+        guard isEditable, !urls.isEmpty, let coordinator else {
+            return super.performDragOperation(sender)
+        }
+        let refs = coordinator.storeImageAttachments(urls)
+        guard !refs.isEmpty else { return false }
+        let markdown = refs.map { ImageDrop.markdown(forImageRef: $0) }.joined(separator: "\n")
+        let point = convert(sender.draggingLocation, from: nil)
+        let dropIndex = characterIndexForInsertion(at: point)
+        let caretAfter = dropIndex + (markdown as NSString).length
+        apply(
+            range: NSRange(location: dropIndex, length: 0),
+            replacement: markdown,
+            selection: NSRange(location: caretAfter, length: 0)
+        )
+        return true
+    }
 }

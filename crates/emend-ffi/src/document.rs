@@ -50,6 +50,7 @@
 //!   [`FfiError::Internal`] rather than panicking.
 
 use crate::error::FfiError;
+use crate::workspace::WorkspaceHandle;
 use emend_core::derived::{
     extract_links, toggle_task, LinkKind as CoreLinkKind, LinkRef as CoreLinkRef,
 };
@@ -389,8 +390,12 @@ impl OpenDocHandle {
     /// remote URLs in the source stay literal; the runtime offline guarantee for
     /// the rendered page is enforced Swift-side by the WKWebView CSP (T087).
     ///
-    /// `![[embed]]` resolution is deferred to US5 (the linking phase); embeds
-    /// render literally for now (see `emend_core::parse::preview`).
+    /// `![[embed]]` tokens render **literally** here — this variant has no
+    /// workspace to resolve them against. Callers that want embeds inlined use
+    /// [`Self::render_preview_html_resolving`] (US5), which passes a
+    /// [`WorkspaceHandle`] resolver to the embed-aware core renderer. This plain
+    /// variant stays for resolver-less callers (a standalone snippet render with no
+    /// workspace).
     ///
     /// # Errors
     ///
@@ -405,6 +410,93 @@ impl OpenDocHandle {
             &source,
             &emend_core::parse::preview::PreviewOptions::default(),
         )?;
+        Ok(html)
+    }
+
+    /// Render the document's current buffer to preview HTML **with `![[embed]]`
+    /// resolution** against `workspace` (FFI contract §6, US5 · FR-021/021a).
+    ///
+    /// The embed-aware sibling of [`Self::render_preview_html`]. Both remain: the
+    /// plain method stays for resolver-less callers (a standalone snippet render
+    /// with no workspace), and this one inlines embedded notes' content for the
+    /// live preview. `workspace` is the [`WorkspaceHandle`] that owns the search
+    /// index `resolve_wikilink` consults — passed as an `Arc<WorkspaceHandle>`
+    /// object handle across the boundary (UniFFI 0.31 supports object-handle
+    /// arguments; this is the first such method in the shim, verified to generate
+    /// cleanly).
+    ///
+    /// It snapshots the buffer **and the note's own path** under the lock, then
+    /// **releases the lock before rendering** (the comrak/expand pass below runs
+    /// off-lock — neither this handle's `Mutex` nor the workspace's index `Mutex`
+    /// is held across the render). The resolver closure maps each embed target to
+    /// the resolved note's source via
+    /// [`WorkspaceHandle::resolve_embed_source`](crate::workspace::WorkspaceHandle)
+    /// — which resolves under the index lock then reads off-lock (so the recursive
+    /// expander never serializes file ops / Quick Open against the index). The
+    /// note's own path is the `from_note` for the deterministic same-directory
+    /// tie-break (FR-019a). An unresolved / cyclic / too-deep embed degrades to a
+    /// visible placeholder (FR-021a/FR-022) — the expander owns those guards
+    /// (`MAX_EMBED_DEPTH = 8`), so this call always terminates.
+    ///
+    /// A resolver lock-poisoning is recorded and surfaced as [`FfiError::Internal`]
+    /// after the render (rather than panicking inside the `FnMut` closure, which
+    /// cannot itself return a `Result`), so a corrupt-state render fails loudly
+    /// instead of silently dropping every embed.
+    ///
+    /// Not the hot path: like [`Self::render_preview_html`] the preview is
+    /// debounced off the keystroke path (research §B1). No network access (SC-008)
+    /// — the render is pure; the only IO is the tolerant per-embed source read,
+    /// which never dereferences a URL.
+    ///
+    /// # Errors
+    ///
+    /// - [`FfiError::Internal`] if the handle is closed, this handle's lock is
+    ///   poisoned, the workspace's index lock is poisoned during resolution, or
+    ///   rendering fails unexpectedly (rendering is pure and does not normally
+    ///   fail).
+    pub fn render_preview_html_resolving(
+        &self,
+        workspace: Arc<WorkspaceHandle>,
+    ) -> Result<String, FfiError> {
+        // Snapshot the buffer AND the note's own path under the lock, then drop the
+        // guard so the (off-hot-path) render below holds neither this handle's lock
+        // nor — via the resolver — the workspace index lock across the comrak pass.
+        let (source, from_note) = {
+            let guard = self.lock()?;
+            let session = guard.as_ref().ok_or_else(closed_handle)?;
+            (
+                session.doc.text(),
+                session.path.to_string_lossy().into_owned(),
+            )
+            // `guard` drops here, releasing this handle's lock before rendering.
+        };
+
+        // The `FnMut` resolver cannot return a `Result`, so capture any
+        // lock-poisoning that surfaces during resolution and re-raise it after the
+        // render rather than swallowing it (a corrupt index lock must fail loudly,
+        // not silently drop every embed).
+        let mut resolve_error: Option<FfiError> = None;
+        let mut resolve = |raw_target: &str| -> Option<String> {
+            match workspace.resolve_embed_source(&from_note, raw_target) {
+                Ok(source) => source,
+                Err(err) => {
+                    // Keep the first error; a `None` here just renders this one
+                    // embed as a placeholder, and the error is surfaced below.
+                    resolve_error.get_or_insert(err);
+                    None
+                }
+            }
+        };
+
+        let html = emend_core::parse::preview::render_preview_html_with_embeds(
+            &source,
+            &emend_core::parse::preview::PreviewOptions::default(),
+            &mut resolve,
+        )?;
+
+        if let Some(err) = resolve_error {
+            return Err(err);
+        }
         Ok(html)
     }
 
@@ -576,6 +668,7 @@ mod tests {
 
     use super::{open_document, preview_theme_css, LinkKind, StyleClass, U16Range};
     use crate::error::FfiError;
+    use crate::workspace::new_workspace;
 
     fn u16_len(s: &str) -> u32 {
         u32::try_from(s.encode_utf16().count()).expect("fits in u32")
@@ -814,6 +907,112 @@ mod tests {
         assert!(
             matches!(err, FfiError::Internal { .. }),
             "expected Internal for render after close, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_inlines_embedded_note() {
+        // Two notes: A embeds B (`![[B]]`); B has body text. Rendering A *through
+        // the workspace resolver* must inline B's body into A's HTML (proving the
+        // FFI embed path resolves a target to real content). The plain
+        // `render_preview_html` (no resolver) must NOT inline it — embeds stay
+        // literal there.
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Canonicalize the root so `add_location`/`collect_files`'/the resolver's
+        // canonical identity all agree (NFR-007 — macOS `/var` -> `/private/var`).
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+
+        let note_a = root.join("A.md");
+        let note_b = root.join("B.md");
+        std::fs::write(&note_a, "Intro paragraph.\n\n![[B]]\n").expect("write A");
+        std::fs::write(&note_b, "## Bravo Heading\n\nThe body of note B.\n").expect("write B");
+
+        // A workspace whose index knows both notes (seed from disk).
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 2, "both notes are seeded into the index");
+
+        // Open note A and render WITH embed resolution against the workspace.
+        let handle = open_document(note_a.to_string_lossy().into_owned()).expect("open A");
+        let resolved = handle
+            .render_preview_html_resolving(ws)
+            .expect("render A with embeds");
+
+        // B's body and heading are inlined into A's preview HTML.
+        assert!(
+            resolved.contains("The body of note B."),
+            "embed must inline B's body: {resolved}"
+        );
+        assert!(
+            resolved.contains("Bravo Heading"),
+            "embed must inline B's heading: {resolved}"
+        );
+        assert!(
+            resolved.contains("<h2"),
+            "B's heading should render as an <h2> in A's context: {resolved}"
+        );
+        // A's own content is still there.
+        assert!(resolved.contains("Intro paragraph."), "{resolved}");
+        // The raw embed token is gone (it was inlined, not left literal).
+        assert!(
+            !resolved.contains("![[B]]"),
+            "raw embed token must be replaced: {resolved}"
+        );
+
+        // Contrast: the plain (resolver-less) render leaves the embed unexpanded —
+        // B's body must NOT appear.
+        let plain = handle.render_preview_html().expect("plain render");
+        assert!(
+            !plain.contains("The body of note B."),
+            "plain render must not inline embedded content: {plain}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_unresolved_embed_degrades() {
+        // An embed whose target is not in the workspace renders a visible
+        // placeholder, not an error, and the rest of the document still renders.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let note_a = root.join("A.md");
+        std::fs::write(&note_a, "Kept text.\n\n![[Missing]]\n").expect("write A");
+
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+        ws.reindex_all(16).expect("reindex");
+
+        let handle = open_document(note_a.to_string_lossy().into_owned()).expect("open A");
+        let html = handle
+            .render_preview_html_resolving(ws)
+            .expect("render with an unresolved embed must still succeed");
+
+        assert!(
+            html.contains("Kept text."),
+            "surrounding content renders: {html}"
+        );
+        assert!(
+            html.contains("unresolved embed"),
+            "an unresolved embed degrades to a visible placeholder: {html}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_after_close_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_note(&dir, "note.md", "# Hi\n");
+        let handle = open_document(path).expect("open");
+        let ws = new_workspace();
+        handle.close().expect("close");
+
+        let err = handle
+            .render_preview_html_resolving(ws)
+            .expect_err("resolving render after close must error");
+        assert!(
+            matches!(err, FfiError::Internal { .. }),
+            "expected Internal for resolving render after close, got {err:?}"
         );
     }
 

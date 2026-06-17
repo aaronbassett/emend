@@ -141,11 +141,14 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
 
     // MARK: - Wiki links (US5)
 
-    /// `[[` autocomplete candidates (note stems) for `prefix`, via the US2 index.
+    /// `[[` autocomplete candidates for `prefix`, via the US2 index. The hit name
+    /// carries its extension (e.g. `Beta.md`), but wiki-link resolution matches on
+    /// the stem, so insert the stem (`Beta`) — else the completed link won't resolve.
     func wikiSuggestions(prefix: String) -> [String]? {
         guard let workspace else { return nil }
         let hits = (try? workspace.wikilinkSuggestions(prefix: prefix, limit: 20)) ?? []
-        return hits.isEmpty ? nil : hits.map(\.name)
+        let stems = hits.map { ($0.name as NSString).deletingPathExtension }
+        return stems.isEmpty ? nil : stems
     }
 
     /// Resolve `rawTarget` against this note and open the matched file in a tab.
@@ -156,6 +159,21 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
               let path = try? workspace.resolveWikilink(fromNote: notePath, rawTarget: rawTarget)
         else { return }
         onOpenLink(URL(fileURLWithPath: path))
+    }
+
+    /// Store dropped image files as collision-safe attachments beside the note
+    /// (US5 · FR-013a) and return their note-relative refs, skipping unreadable or
+    /// failed ones. The text insertion is the caller's (it owns the buffer).
+    func storeImageAttachments(_ urls: [URL]) -> [String] {
+        let note = notePath.isEmpty ? nil : notePath
+        return urls.compactMap { url in
+            guard let bytes = try? Data(contentsOf: url) else { return nil }
+            return try? storeAttachment(
+                notePath: note,
+                bytes: bytes,
+                suggestedName: url.lastPathComponent
+            )
+        }
     }
 
     /// Mark `[[links]]` that don't resolve in the index with a distinct style so

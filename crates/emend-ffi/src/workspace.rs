@@ -251,6 +251,59 @@ impl WorkspaceHandle {
             detail: "workspace handle lock poisoned".to_owned(),
         })
     }
+
+    /// Resolve an embed target to that note's **source text**, for the embed
+    /// expander wired by
+    /// [`OpenDocHandle::render_preview_html_resolving`](crate::document::OpenDocHandle::render_preview_html_resolving)
+    /// (US5 · FR-021/021a). Returns `Some(source)` when `raw_target` resolves to a
+    /// note that reads successfully, or `None` when it is unresolved (so the
+    /// expander degrades to a visible placeholder, FR-022).
+    ///
+    /// Not `#[uniffi::export]`ed (it lives in the private `impl` block beside
+    /// [`Self::lock`]) — it is an internal building block the resolving-preview
+    /// method calls once per embed target. It deliberately resolves the path
+    /// **under the index lock, then drops the lock before the on-disk read**, so
+    /// the comrak render pass that drives the expander never holds the index
+    /// `Mutex` (and a slow/blocking read can never stall concurrent file ops or
+    /// Quick Open against the same index). Resolution is the deterministic FR-019a
+    /// policy ([`emend_core::derived::resolve_wikilink`]); the read is the tolerant
+    /// reader ([`emend_core::fs::read_tolerant`], BOM/CRLF/non-UTF-8 safe, FR-003a)
+    /// — the same gateway [`crate::document::open_document`] uses.
+    ///
+    /// An unresolved target, or a target that resolves to a path that cannot be
+    /// read (deleted between resolve and read, permissions), both degrade to `None`
+    /// rather than an error: an embed is a reading aid, and the expander shows the
+    /// placeholder. Lock poisoning is the one hard failure (mapped to
+    /// [`FfiError::Internal`]), surfaced so a corrupt-state render fails loudly
+    /// rather than silently dropping every embed.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Internal`] if the lock is poisoned.
+    pub(crate) fn resolve_embed_source(
+        &self,
+        from_note: &str,
+        raw_target: &str,
+    ) -> Result<Option<String>, FfiError> {
+        // Resolve the target to an absolute path UNDER the lock, then release it
+        // before reading from disk — the render/expand pass must never hold the
+        // index mutex across IO (or across the whole comrak render).
+        let resolved_path = {
+            let guard = self.lock()?;
+            let index = guard.lock_index()?;
+            emend_core::derived::resolve_wikilink(&index, from_note, raw_target)
+            // `index` and `guard` drop here, releasing both locks before the read.
+        };
+
+        let Some(path) = resolved_path else {
+            return Ok(None);
+        };
+
+        // Tolerant read off-lock. A read failure (vanished/forbidden) degrades to
+        // `None` (visible placeholder) rather than failing the whole preview — the
+        // embed is a reading aid, not load-bearing.
+        Ok(emend_core::fs::read_tolerant(&path).ok())
+    }
 }
 
 #[uniffi::export]
