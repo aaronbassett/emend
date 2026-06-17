@@ -96,7 +96,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 - [x] T031 Run `/sdd:map incremental` for Phase 2 changes; commit updated `.sdd/codebase/` docs
 - [x] T032 Review `retro/P2.md`; extract only critical, project-wide learnings to `CLAUDE.md` (conservative)
 - [x] T033 [GIT] Commit: Phase 2 codebase map + retro
-- [ ] T034 [GIT] Push; create/update PR with Phase 2 summary; verify CI green; report PR ready status
+- [x] T034 [GIT] Push; create/update PR with Phase 2 summary; verify CI green; report PR ready status
 
 **Checkpoint**: Foundation ready — user stories can begin.
 
@@ -108,7 +108,7 @@ The GitHub remote `origin` exists; branch `001-markdown-editor` is already creat
 
 **Independent Test**: Open a single file, type headings/bold/italic/lists, confirm markers dim while formatting renders inline, confirm smart-list renumber, quit/reopen → on-disk Markdown is clean and correct.
 
-- [ ] T035 [US1] Create `specs/001-markdown-editor/retro/P3.md`; [GIT] commit
+- [x] T035 [US1] Create `specs/001-markdown-editor/retro/P3.md`; [GIT] commit
 - [ ] T036 [P] [US1] [test] `crates/emend-core/tests/parse_incremental.rs`: tree-sitter `changed_ranges` is edit-local; fence-toggle invalidates the tail (use devs:rust-dev agent)
 - [ ] T037 [P] [US1] [test] `crates/emend-bench/benches/highlight.rs`: re-highlight one edited line in a 1MB doc < 5ms (tracked budget, SC-003) (use devs:rust-dev agent)
 - [ ] T038 [US1] Implement `crates/emend-core/src/parse/highlight.rs`: tree-sitter + tree-sitter-md incremental editor highlight; `highlight_spans(viewport)` returns `(U16Range, StyleClass)` (research §B1) (use devs:rust-dev agent)
