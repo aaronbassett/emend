@@ -172,3 +172,71 @@ fn embed_left_literal_until_us5() {
         "embed target text should survive literally (US5 will resolve it):\n{html}"
     );
 }
+
+// --- XSS / sanitization trust boundary (SC-008, FR-035, FFI contract §6) -----
+//
+// The preview is *untrusted* user Markdown rendered into the WKWebView, so the
+// comrak engine MUST neutralize active content: it runs with `unsafe_ = false`
+// (see `preview.rs::build_options`), which drops raw HTML and rewrites dangerous
+// URI schemes. These tests pin that boundary so a future flip to `unsafe_ = true`
+// (or a comrak upgrade that changes the default) can't silently reopen an XSS
+// hole — the WebView CSP (T087) is defence-in-depth, not the primary control.
+
+#[test]
+fn raw_script_html_is_stripped() {
+    // A literal <script> in the source must never reach the output verbatim.
+    // comrak with `unsafe_ = false` omits raw HTML (typically replacing the block
+    // with an `<!-- raw HTML omitted -->` comment), so no executable <script> tag
+    // survives.
+    let md = "Before\n\n<script>alert('x')</script>\n\nAfter\n";
+    let html = render(md);
+    assert!(
+        !html.contains("<script"),
+        "raw <script> must not survive into preview HTML:\n{html}"
+    );
+    // The surrounding prose is still rendered — only the raw HTML is dropped.
+    assert!(
+        html.contains("Before") && html.contains("After"),
+        "non-HTML content around the stripped block should remain:\n{html}"
+    );
+}
+
+#[test]
+fn raw_inline_event_handler_is_stripped() {
+    // A raw inline element carrying an event handler (`onerror`) is raw HTML; with
+    // `unsafe_ = false` the whole tag is dropped, so no `onerror=` attribute (and
+    // no `<img` tag from the raw source) can fire.
+    let md = "Look: <img src=x onerror=\"alert(1)\"> here\n";
+    let html = render(md);
+    assert!(
+        !html.contains("onerror="),
+        "inline event-handler attribute must not survive:\n{html}"
+    );
+    assert!(
+        !html.contains("<img"),
+        "the raw <img> tag must not survive into preview HTML:\n{html}"
+    );
+}
+
+#[test]
+fn javascript_uri_is_neutralized() {
+    // A Markdown link whose destination is a `javascript:` URI must NOT produce an
+    // `href="javascript:..."`. comrak's safe mode neutralizes dangerous schemes
+    // (it emits `href=""`), so clicking the rendered link can't execute script.
+    let md = "[click](javascript:alert(1))\n";
+    let html = render(md);
+    // The link element itself still renders (with safe link text)…
+    assert!(
+        html.contains("<a") && html.contains("click"),
+        "the link element/text should still render:\n{html}"
+    );
+    // …but the dangerous scheme must be gone from every href.
+    assert!(
+        !html.contains("href=\"javascript:"),
+        "javascript: scheme must be neutralized in the href:\n{html}"
+    );
+    assert!(
+        !html.to_ascii_lowercase().contains("javascript:"),
+        "no javascript: URI should appear anywhere in the output:\n{html}"
+    );
+}

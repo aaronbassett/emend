@@ -123,9 +123,20 @@ extension ScrollSync {
     /// `\n`-delimited and 1-based, so this matches the `data-line` anchors.
     private func lineNumber(in nsString: NSString, atUTF16Index index: Int) -> Int {
         guard index > 0 else { return 1 }
+        // Allocation-free newline count (this runs on every scroll frame — the
+        // hot path): scan with `range(of:)` rather than copying the prefix.
         var line = 1
-        for scalar in (nsString.substring(to: index)).unicodeScalars where scalar == "\n" {
+        var searchStart = 0
+        while searchStart < index {
+            let range = nsString.range(
+                of: "\n", options: [], range: NSRange(
+                    location: searchStart,
+                    length: index - searchStart
+                )
+            )
+            if range.location == NSNotFound { break }
             line += 1
+            searchStart = range.location + 1
         }
         return line
     }

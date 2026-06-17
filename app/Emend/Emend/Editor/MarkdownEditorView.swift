@@ -52,8 +52,15 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.scrollSync = scrollSync
-        if isActive, let textView = scrollView.documentView as? NSTextView {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        // Register only the active tab's editor as the scroll-sync source/target,
+        // and explicitly detach when it goes inactive so a tab switch can't leave
+        // the hub pointing at the previously-active editor (SwiftUI doesn't order
+        // the old/new editors' updateNSView calls).
+        if isActive {
             scrollSync?.attachEditor(scrollView: scrollView, textView: textView)
+        } else {
+            scrollSync?.detachEditor(textView)
         }
     }
 

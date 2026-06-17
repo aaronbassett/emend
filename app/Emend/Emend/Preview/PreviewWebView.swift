@@ -84,8 +84,17 @@ struct PreviewWebView: NSViewRepresentable {
         private func flush() {
             guard isLoaded, let webView, let payload = pending else { return }
             pending = nil
-            let js = "window.__emendRender(\(jsLiteral(payload.html)), \(jsLiteral(payload.css)));"
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            // Pass html/css as call arguments (not string interpolation): WebKit
+            // does the escaping, so arbitrary document content — including lone
+            // surrogates that would defeat a JSON round-trip — renders safely.
+            Task { @MainActor in
+                _ = try? await webView.callAsyncJavaScript(
+                    "window.__emendRender(html, css);",
+                    arguments: ["html": payload.html, "css": payload.css],
+                    in: nil,
+                    contentWorld: .page
+                )
+            }
         }
 
         func webView(_: WKWebView, didFinish _: WKNavigation?) {
@@ -130,15 +139,6 @@ struct PreviewWebView: NSViewRepresentable {
                 return
             }
             scrollSync?.previewScrolled(toLine: line)
-        }
-
-        /// Encode a Swift string as a safe JS string literal (quotes + escapes via
-        /// JSON), so arbitrary document content can't break out of the call.
-        private func jsLiteral(_ string: String) -> String {
-            guard let data = try? JSONSerialization.data(withJSONObject: [string]),
-                  let array = String(data: data, encoding: .utf8)
-            else { return "\"\"" }
-            return String(array.dropFirst().dropLast())
         }
     }
 }

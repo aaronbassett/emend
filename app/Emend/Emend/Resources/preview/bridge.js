@@ -105,10 +105,15 @@
   // forces layout synchronously, so tops are accurate right after innerHTML.
   function buildAnchorTable() {
     anchors = [];
+    // comrak's sourcepos lands data-line on inline nodes too (a <code>/<em>/<a>
+    // shares its block's line), so keep only the FIRST element per line — in
+    // document order that's the block, whose top is the line's true position.
+    var seen = {};
     var els = document.querySelectorAll("[data-line]");
     for (var i = 0; i < els.length; i++) {
       var line = parseInt(els[i].getAttribute("data-line"), 10);
-      if (!isNaN(line)) {
+      if (!isNaN(line) && !seen[line]) {
+        seen[line] = true;
         anchors.push({
           line: line,
           top: els[i].getBoundingClientRect().top + window.scrollY,
