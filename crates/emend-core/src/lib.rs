@@ -19,6 +19,12 @@ pub mod error;
 /// (research §B4, FR-003a/FR-009a). Used by the document/autosave layer.
 pub mod fs;
 
+/// Open-document model: the shadow rope + UTF-16/line index behind the editor
+/// hot path (research §A2/§A3, FFI contract §3). Backs `open_document` /
+/// `close_document` / `push_edit` and the offset↔(line,col) queries the
+/// highlight/outline layers build on.
+pub mod document;
+
 /// The crate's primary error type, re-exported at the root for ergonomic use
 /// (`emend_core::EmendError`) by the FFI shim and callers.
 pub use error::EmendError;

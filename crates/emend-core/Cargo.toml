@@ -21,6 +21,12 @@ thiserror.workspace = true
 # Pure Rust, no `unsafe` at our call sites; the macOS durability guarantee comes
 # from std `File::sync_all` → `fcntl(F_FULLFSYNC)` on Apple targets (see fs.rs).
 tempfile.workspace = true
+# Shadow rope for the document/editor hot path (research §A2/§A3). Backs the
+# `Document` model: efficient incremental splices plus the UTF-16-code-unit ↔
+# char ↔ (line, col) index the FFI boundary answers from. Pure Rust, no FFI dep.
+# `unicode_lines`/`cr_lines` are intentionally disabled (only LF + CRLF are line
+# breaks, matching NSTextView/TextKit); `simd` is kept for hot-path throughput.
+ropey.workspace = true
 
 [lints]
 workspace = true
