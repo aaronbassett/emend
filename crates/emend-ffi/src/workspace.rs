@@ -39,7 +39,8 @@
 //! handle converts at the one call site.
 
 use crate::error::FfiError;
-use crate::handles::SearchHit;
+use crate::handles::{SearchHit, SearchSink};
+use crate::search::{start_query, SearchHandle, SharedIndex};
 use emend_core::index::Index;
 use emend_core::workspace::{
     FsNode as CoreFsNode, Location as CoreLocation, LocationId, NodeKind as CoreNodeKind, Workspace,
@@ -147,18 +148,36 @@ fn search_hit(core: emend_core::index::SearchHit) -> SearchHit {
 }
 
 /// The workspace + its derived index, co-located so file ops keep the index in
-/// lock-step (FR-017a). Behind the [`WorkspaceHandle`]'s `Mutex`.
+/// lock-step (FR-017a). Behind the [`WorkspaceHandle`]'s `Mutex<Inner>`.
+///
+/// The index is itself behind an [`Arc<Mutex<Index>>`](SharedIndex) so a spawned
+/// Quick Open worker can lock *only the index* for its synchronous rank+stream
+/// without holding `Inner` (which would block file ops for the search duration —
+/// see `crate::search`'s "Concurrency" note). File-op methods take `Inner` then
+/// lock the index to maintain it incrementally (FR-017a).
 struct Inner {
     workspace: Workspace,
-    index: Index,
+    index: SharedIndex,
+    /// The in-flight Quick Open query, if any. A new `quick_open_query` cancels
+    /// this (supersede, NFR-002) before installing its own handle.
+    current_search: Option<Arc<SearchHandle>>,
 }
 
 impl Inner {
     fn new() -> Self {
         Self {
             workspace: Workspace::new(),
-            index: Index::new(),
+            index: Arc::new(Mutex::new(Index::new())),
+            current_search: None,
         }
+    }
+
+    /// Lock the shared index, mapping poisoning to [`FfiError::Internal`] (parity
+    /// with the handle's `lock`). Used by file-op methods to maintain the index.
+    fn lock_index(&self) -> Result<std::sync::MutexGuard<'_, Index>, FfiError> {
+        self.index.lock().map_err(|_| FfiError::Internal {
+            detail: "search index lock poisoned".to_owned(),
+        })
     }
 
     /// Best-effort location-relative path for `abs_path`, used as the index's
@@ -403,10 +422,10 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] / [`FfiError::PermissionDenied`] /
     /// [`FfiError::IoFailure`] if `parent` is missing or the write fails.
     pub fn create_note(&self, parent: String, name: String) -> Result<String, FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         let new_path = guard.workspace.create_note(&parent, &name)?;
         let rel = guard.rel_for(&new_path);
-        guard.index.insert(&new_path, &rel);
+        guard.lock_index()?.insert(&new_path, &rel);
         Ok(new_path)
     }
 
@@ -434,11 +453,11 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] if `path` does not exist;
     /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] on failure.
     pub fn rename(&self, path: String, new_name: String) -> Result<String, FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         let new_path = guard.workspace.rename(&path, &new_name)?;
         if new_path != path {
             let rel = guard.rel_for(&new_path);
-            guard.index.rename(&path, &new_path, &rel);
+            guard.lock_index()?.rename(&path, &new_path, &rel);
         }
         Ok(new_path)
     }
@@ -452,10 +471,10 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] if `path` or `new_parent` is missing;
     /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] on failure.
     pub fn move_node(&self, path: String, new_parent: String) -> Result<String, FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         let new_path = guard.workspace.move_node(&path, &new_parent)?;
         let rel = guard.rel_for(&new_path);
-        guard.index.rename(&path, &new_path, &rel);
+        guard.lock_index()?.rename(&path, &new_path, &rel);
         Ok(new_path)
     }
 
@@ -471,9 +490,9 @@ impl WorkspaceHandle {
     /// [`FfiError::NotFound`] if `path` does not exist;
     /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] on failure.
     pub fn delete(&self, path: String) -> Result<(), FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         guard.workspace.delete(&path)?;
-        guard.index.remove(&path);
+        guard.lock_index()?.remove(&path);
         Ok(())
     }
 
@@ -491,9 +510,9 @@ impl WorkspaceHandle {
     ///
     /// [`FfiError::Internal`] if the lock is poisoned.
     pub fn rebuild_index(&self, items: Vec<IndexEntry>) -> Result<(), FfiError> {
-        let mut guard = self.lock()?;
+        let guard = self.lock()?;
         guard
-            .index
+            .lock_index()?
             .rebuild(items.into_iter().map(|e| (e.abs_path, e.rel_path)));
         Ok(())
     }
@@ -507,7 +526,7 @@ impl WorkspaceHandle {
     /// [`FfiError::Internal`] if the lock is poisoned.
     pub fn query(&self, query: String, limit: u32) -> Result<Vec<SearchHit>, FfiError> {
         let guard = self.lock()?;
-        let hits = guard.index.query(&query, limit as usize);
+        let hits = guard.lock_index()?.query(&query, limit as usize);
         Ok(hits.into_iter().map(search_hit).collect())
     }
 
@@ -522,7 +541,47 @@ impl WorkspaceHandle {
     /// [`FfiError::Internal`] if the lock is poisoned.
     pub fn resolve_name(&self, name: String) -> Result<Vec<String>, FfiError> {
         let guard = self.lock()?;
-        Ok(guard.index.resolve_name(&name))
+        let resolved = guard.lock_index()?.resolve_name(&name);
+        Ok(resolved)
+    }
+
+    /// Start a streaming, **supersedable** Quick Open query (FFI contract §5
+    /// `quick_open_query`; FR-017, FR-018/SC-004, NFR-002).
+    ///
+    /// Ranked [`SearchHit`]s are streamed to `sink` in batches via
+    /// [`SearchSink::on_results`], terminated by exactly one
+    /// [`SearchSink::on_done`] when the query completes. The returned
+    /// [`SearchHandle`] lets Swift `cancel()` the query explicitly.
+    ///
+    /// **Supersede (NFR-002):** each call first cancels the previous in-flight
+    /// query (if any) — its worker stops emitting and fires no terminal — then
+    /// installs and spawns this one. So fast keystrokes never interleave stale
+    /// results from an older query. The spawned worker locks only the shared
+    /// index for its synchronous rank+stream, not this `Inner`, so it does not
+    /// block concurrent file ops (see `crate::search`'s "Concurrency" note).
+    ///
+    /// Infallible at the boundary (returns the handle directly, not a `Result`):
+    /// the contract gives Quick Open no error terminal (§5), and a runtime/lock
+    /// failure degrades to an empty, completed stream rather than a thrown error.
+    /// A poisoned `Inner` lock is the one exception handled internally — it
+    /// returns a fresh, already-cancellable handle and skips spawning.
+    #[must_use]
+    pub fn quick_open_query(&self, query: String, sink: Arc<dyn SearchSink>) -> Arc<SearchHandle> {
+        // Supersede the prior query and install the new handle under the lock so
+        // two rapid keystrokes can't both think they're current. If the lock is
+        // poisoned (unreachable under the no-panic posture) we still hand back a
+        // valid handle and an empty completed stream rather than panicking.
+        let Ok(mut guard) = self.inner.lock() else {
+            let handle = start_query(Arc::new(Mutex::new(Index::new())), query, sink);
+            return handle;
+        };
+        if let Some(prev) = guard.current_search.take() {
+            prev.cancel();
+        }
+        let index = Arc::clone(&guard.index);
+        let handle = start_query(index, query, sink);
+        guard.current_search = Some(Arc::clone(&handle));
+        handle
     }
 }
 

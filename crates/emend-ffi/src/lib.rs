@@ -33,6 +33,14 @@ pub mod error;
 pub mod handles;
 pub mod panic;
 
+/// Streaming, supersedable Quick Open FFI projection (T074, US3): the
+/// `SearchHandle` (`cancel()` supersedes an in-flight query, NFR-002) and the
+/// async driver that runs `emend_core::search::quick_open` on the shared `tokio`
+/// runtime, forwarding ranked batches to the foreign `SearchSink`. The exported
+/// entry point is `WorkspaceHandle::quick_open_query` (the index lives in the
+/// workspace handle). See `contracts/ffi-interface.md` §5.
+pub mod search;
+
 /// Live file-watcher + conflict-model FFI projection (T059, US2): `start_watching`
 /// returning a `WatchHandle` (drop/`stop` tears the watch down), the watcher↔
 /// `DocObserver` bridge that forwards `ChangeEvent`s, `record_self_write`
