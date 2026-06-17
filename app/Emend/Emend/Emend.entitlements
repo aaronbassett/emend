@@ -11,5 +11,13 @@
 	<!-- App-scoped security-scoped bookmarks so granted folders persist across launches -->
 	<key>com.apple.security.files.bookmarks.app-scope</key>
 	<true/>
+	<!-- Outgoing connections for the BYOM AI client only (US6). Required at the
+	     sandbox socket layer for the reqwest call to connect at all; privacy is
+	     enforced in code, not by withholding this: no request is made unless AI is
+	     configured AND invoked (SC-008, gated in summarize_document/test_ai_config
+	     before any socket), and the preview WebView still cannot reach the network
+	     (CSP connect-src 'none' + nonPersistent + navigation-blocking delegate). -->
+	<key>com.apple.security.network.client</key>
+	<true/>
 </dict>
 </plist>
