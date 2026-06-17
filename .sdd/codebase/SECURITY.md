@@ -2,11 +2,11 @@
 
 > **Purpose**: Document authentication, authorization, security controls, and vulnerability status.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US7 Phase 9 complete — typography settings with core clamping to prevent malicious layout values; zero new security concerns)
+> **Last Updated**: 2026-06-18 (Polish Phase 10 complete — Keychain integration now wired; all US1–US7 complete; zero new security concerns from Phase 9 typography or Polish review)
 
 ## Overview
 
-Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **US7 Phase 9 (complete)**: Typography settings (font family, size, line height, paragraph spacing) persisted Swift-side (UserDefaults) with all values clamped in the core to prevent a malicious/bad value from producing a broken or maliciously-large layout. **Zero new security surface**: typography is non-sensitive local preference data, no network, no secrets, clamping enforced.
+Emend is a privacy-first, offline-by-default Markdown editor governed by Constitution Principle II (Local-First & Privacy by Default) and NFR-006 (AI key handling). The app makes **zero outbound network calls unless the user explicitly configures a bring-your-own-model (BYOM) OpenAI-compatible AI endpoint AND invokes an AI action**. File access is sandboxed with app-scoped security-scoped bookmarks. Autosave is atomic and durable per Constitution Principle III. **Polish Phase 10 (complete)**: All seven user stories (US1–US7) shipped with full security controls. Keychain integration for API key custody is now **fully implemented and wired** — the key is read on-demand from Keychain in `AIConfig.apiKey()` and passed as a transient `String` to the Rust FFI boundary, where it is wrapped in a redacting `ApiKey` newtype that renders `***` in logs/errors. App Sandbox entitlement `com.apple.security.network.client` added to enable the AI client while preserving privacy guarantees via code-level gating.
 
 ---
 
@@ -20,6 +20,7 @@ Emend is a privacy-first, offline-by-default Markdown editor governed by Constit
 | **Entitlements** | `com.apple.security.app-sandbox` | ✅ |
 | | `com.apple.security.files.user-selected.read-write` | ✅ |
 | | `com.apple.security.files.bookmarks.app-scope` | ✅ |
+| | `com.apple.security.network.client` | ✅ (Polish Phase 10 — for BYOM AI client; privacy code-gated) |
 
 ### Security-Scoped Bookmarks (User-Granted Folders)
 
@@ -253,9 +254,16 @@ US6 introduces the first outbound-network feature: **summarize_document** (FFI c
 
 | Aspect | Design | Status |
 |--------|--------|--------|
-| **macOS Keychain** | API key stored via Security framework `SecItem` (generic password class, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`). Only the user running the app can read it; locked when the device is locked. | **Design specified** (research §B5); implementation not yet wired to the FFI boundary (Phase 1 task T112). |
-| **Swift owns custody** | Keychain read happens in Swift before each request; key passed as transient `String` to Rust, wrapped + redacted, used once, dropped (never returned to Swift or persisted). | Coordination between `KeychainStore` (not yet implemented) + `summarize_document()` boundary. |
+| **macOS Keychain** | API key stored via Security framework `SecItem` (generic password class, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`). Only the user running the app can read it; locked when the device is locked. | **✅ Fully implemented and wired (Polish Phase 10)** |
+| **Swift owns custody** | Keychain read happens in Swift before each request; key passed as transient `String` to Rust, wrapped + redacted, used once, dropped (never returned to Swift or persisted). | `AIConfig.apiKey()` reads from Keychain via `KeychainStore.read()` and passes to `summarizeDocument()` FFI |
 | **Redaction at boundary** | Rust layer ensures redaction via `ApiKey` newtype; Swift layer respects key transience (pass-once, never cache). | Double layer: Rust redaction + transient boundary passing. |
+
+**Implementation details**:
+- **Keychain storage**: `app/Emend/Emend/Platform/KeychainStore.swift` (lines 28–35) implements secure save with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+- **Read on-demand**: `AIConfig.apiKey()` calls `KeychainStore.read()` immediately before `startSummary()` invocation
+- **Transient passing**: Key is passed to `summarizeDocument(h:cfg:apiKey:sink:)` FFI function in `SummaryModel.summarize()` and dropped after request completes
+- **No caching**: Key is never stored in `AIConfig` state; each invocation reads fresh from Keychain
+- **Testing**: `KeychainStoreTests.swift` verifies round-trip save/read; tests gracefully skip when Keychain is unavailable (unsigned CI builds)
 
 ---
 
@@ -482,6 +490,7 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 | **PDF export offline** | Off-screen export uses same isolation (CSP + nonPersistent + bundled assets) as on-screen preview | `app/Emend/EmendTests/PreviewExportTests.swift` | ✅ US4 (implemented) |
 | **AI privacy (offline)** | No network with AI unconfigured (blank key → AiNotConfigured synchronously, no socket) | `crates/emend-core/tests/ai_privacy.rs` | ✅ US6 T110 (implemented) |
 | **AI key redaction** | API key never appears in logs, error messages, or Debug/Display output; exposed only via explicit `expose()` method | `crates/emend-core/tests/ai_privacy.rs` (redaction assertions) | ✅ US6 T110 (implemented) |
+| **AI key custody** | Keychain storage verified; key read on-demand via `KeychainStore` and passed transient to FFI | `app/Emend/EmendTests/KeychainStoreTests.swift` | ✅ Polish Phase 10 (implemented) |
 | **AI max-input guard** | Document exceeding `max_input_bytes` rejected locally with `AiOversizedInput`, no request sent | `crates/emend-core/tests/ai_privacy.rs` + `crates/emend-ffi/tests/ai.rs` | ✅ US6 T110 (implemented) |
 | **AI cancellation** | Cancelling in-flight request yields `AiCancelled` terminal, no tokens or success | `crates/emend-ffi/tests/ai.rs::test_ai::cancel_before_send_resolves_as_cancelled` | ✅ US6 (implemented) |
 | **AI error redaction** | HTTP errors carry status + reason phrase only (never URL, header, or key); transport errors use generic descriptions | `crates/emend-ffi/src/ai.rs::transport_error()` (lines 467–477) | ✅ US6 (code review verified) |
@@ -500,7 +509,6 @@ This is intentional (Phase 0 planning resolved technical unknowns; Phase 1 impor
 6. **Preview scroll-sync runtime path** (Section §C3): the pure core logic for data-line anchors is tested; the runtime integration (editor↔preview scroll sync) requires manual UI verification in the signed app.
 7. **Relative image preview** for drag-dropped attachments: relative refs stored correctly; preview display deferred to Phase 1 (local-image preview).
 8. **Wiki-link ambiguity resolution** is deterministic (shortest path wins) but may surprise users; a future UI enhancement could disambiguate.
-9. **Keychain integration for API key custody** is specified (research §B5) but wiring to the FFI boundary is deferred to Phase 1 task T112.
 
 ---
 

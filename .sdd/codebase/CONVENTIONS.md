@@ -2,11 +2,11 @@
 
 > **Purpose**: Document code style, naming conventions, error handling, and common patterns.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US7 Phase 9)
+> **Last Updated**: 2026-06-17 (US7 Phase 9 + Phase 10 Polish)
 
 ## Overview
 
-Emend enforces strict code conventions across Rust and Swift, with automated enforcement via `lefthook` pre-commit hooks. The guiding principle is **no panics across FFI boundaries** (NFR-003) and **Conventional Commits** enforced at the commit stage (DS-007).
+Emend enforces strict code conventions across Rust and Swift, with automated enforcement via `lefthook` pre-commit hooks. The guiding principle is **no panics across FFI boundaries** (NFR-003) and **Conventional Commits** enforced at the commit stage (DS-007). Phase 10 added quality/performance verification without changing core conventions.
 
 ## Rust Code Style
 
@@ -44,6 +44,35 @@ missing_debug_implementations = "warn"
 **Rationale**: NFR-003 requires no panics unwind across FFI. Every fallible operation returns `Result<_, EmendError>`; errors surface as normal Swift `Error`s via the UniFFI boundary. The denial is inherited by all crates via `[lints] workspace = true` in their `Cargo.toml`.
 
 **Exception**: Integration tests co-located in `crates/emend-core/tests/` and `crates/emend-ffi/tests/` are scoped to allow these (see [Test Patterns](#test-patterns) below); their fixtures and assertions depend on `unwrap`/`expect` for clarity.
+
+### Benchmarking Policy (Phase 10)
+
+Performance budgets are **tracked but non-blocking** (Constitution IV). Criterion benches live in `crates/emend-bench/`:
+
+- **Benchmarks must stay panic-free** — use `black_box` to prevent optimizer deletion and fallible `.ok()` instead of `.unwrap()` for any operations that might fail.
+- **Setup/cleanup are excluded from timing** via `iter_batched` — the measured work is precisely what the user experiences.
+- **Numbers are recorded in implementation reports**, not enforced in CI — regressions surface as documented deviations, not gate failures.
+
+Example (`crates/emend-bench/benches/highlight.rs`, SC-003):
+```rust
+use std::hint::black_box;
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+
+fn highlight_bench(c: &mut Criterion) {
+    c.bench_function("incremental_reparse_1mb", |b| {
+        b.iter_batched(
+            || build_doc(1_000_000),  // Setup: per-iteration, excluded from timing
+            |doc| {
+                let mut h = Highlighter::new(&doc);
+                // Measured: one keystroke reparse + viewport highlight query
+                h.apply_edit(U16Range { start: 500_000, len: 1 });
+                black_box(h.highlight_spans(U16Range { start: 499_900, len: 200 }))
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+```
 
 ### Error Handling
 
@@ -118,6 +147,16 @@ Doc comments use the standard Rust triple-slash (`///`) and are applied liberall
 //! T123 — failing-first integration tests for the typography settings store
 //! (`emend_core::settings`), the global editor/preview typography preferences
 //! (US7 · FR-038/FR-039; FFI contract §8).
+```
+
+**Example** (from `tests/large_file.rs`, Phase 10):
+```rust
+//! T133 — the dedicated **FR-027a** integration test: max-note-size cap +
+//! incremental re-parse on a large document.
+//!
+//! FR-027a: *"System MUST define a maximum supported note size; beyond it,
+//! behavior MUST be graceful (open read-only or refuse with a clear message)
+//! rather than hang or exhaust memory."*
 ```
 
 ## Swift Code Style
@@ -453,6 +492,25 @@ deinit {
 ```
 
 **Rationale**: Selector-based observers automatically post on the main thread for main-thread-posting notifications (e.g., `NSView.boundsDidChangeNotification`), avoiding the need for `Task { @MainActor in … }` wrappers that complicate `@Sendable` closure constraints.
+
+## Accessibility Identifiers (Phase 10)
+
+Even though the app has no XCUITest by design (Constitution VII), **accessibility identifiers** are set for VoiceOver support and to enable future UI-test lanes if needed:
+
+```swift
+// Editor view
+editor.textView.accessibilityIdentifier = "editor.textView"
+
+// Sidebar
+outlineView.accessibilityIdentifier = "sidebar.outline"
+
+// Quick Open palette
+searchField.accessibilityIdentifier = "quickOpen.searchField"
+results.accessibilityIdentifier = "quickOpen.results"
+results.accessibilityIdentifier = "quickOpen.result.\(hit.name)"  // Per-result
+```
+
+These cost nothing, aid VoiceOver navigation, and document the UI structure without imposing XCUITest maintenance burden.
 
 ## Typography Settings Patterns (US7)
 
@@ -1040,6 +1098,7 @@ feat(preview): add PDF export via NSPrintOperation (US4)
 feat(links): add wiki-link resolution + embed inlining (US5)
 feat(ai): implement BYOM AI client with SSE streaming (US6)
 feat(typography): add editor/preview font & spacing settings (US7)
+test(quality): add large-file + preview-offline verify tests (Phase 10)
 ci: enforce MSRV 1.85
 ```
 
@@ -1168,6 +1227,14 @@ Each transform is pure and unit-tested headlessly in `app/Emend/EmendTests/`.
 - **`app/Emend/Emend/Preview/PreviewWebView.swift`**: On-screen live preview rendering + scroll-sync
 - **`app/Emend/Emend/Preview/PDFExport.swift`**: Off-screen PDF export (`OffscreenPrintHost`, async printOp)
 - **`app/Emend/EmendTests/PreviewExportTests.swift`**: PDF export tests (multi-page pagination verification)
+
+### Quality & Verification Organization (Phase 10)
+
+- **`crates/emend-core/tests/large_file.rs`**: Max-note-size cap + incremental re-parse on ~1 MiB doc (T133, FR-027a)
+- **`crates/emend-core/tests/preview_offline.rs`**: Preview rendering stays offline (no network access) (T083, SC-008)
+- **`crates/emend-bench/benches/highlight.rs`**: Per-keystroke incremental reparse on large doc (SC-003, T037)
+- **`crates/emend-bench/benches/quick_open.rs`**: Fuzzy search 10k-entry index performance (SC-004, T071)
+- **`crates/emend-bench/benches/open_doc.rs`**: Core open + initial parse (SC-002, T030)
 
 ## Import Ordering
 

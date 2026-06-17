@@ -2,7 +2,7 @@
 
 > **Purpose**: Document all external services, APIs, databases, and third-party integrations.
 > **Generated**: 2026-06-17
-> **Last Updated**: 2026-06-17 (US6 additions: AI summary streaming, info sidebar stats/outline, BYOM key storage); 2026-06-17 (US7 additions: typography settings storage + clamping)
+> **Last Updated**: 2026-06-17 (Phase 10 Polish: security review findings, entitlements, accessibility identifiers, large-file tests, perf budgets)
 
 ## Data Stores
 
@@ -176,6 +176,12 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 - `crates/emend-ffi/src/ai.rs` — HTTP orchestration, cancellation, timeout, AiHandle, AiRequestConfig, summarize_document, test_ai_config exports
 - `app/Emend/Emend/AI/` — UI layer (settings, key entry, summarize button, streaming text render)
 
+**Security Review Findings (Phase 10):**
+
+- **Entitlements**: App Sandbox capability `com.apple.security.network.client` added to support streaming BYOM requests. Capability grants access; privacy enforced in code (summarize_document refuses before socket on blank key).
+- **ATS**: Not applicable — `reqwest` uses raw tokio TCP + Security.framework TLS (not CFNetwork/URLSession), so BYOM `http://localhost` endpoints work without cleartext exception. Default-deny posture preserved.
+- **Status**: All findings resolved, no open security gaps.
+
 ---
 
 ### File Watcher (macOS Native, Phase 4 US2)
@@ -205,6 +211,10 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 - Fuzzy subsequence match on **basename** (primary, boosted) and **location-relative path** (secondary)
 - Score = better of the two; shorter relative path breaks ties
 - `nucleo-matcher::Matcher` (no worker pool; synchronous like the index)
+
+**Performance (Phase 10):**
+
+- SC-004: `benches/quick_open.rs` — rank + stream a query over a 10k-entry index; measured p95 ~2.5 ms (budget 100 ms = 40× headroom)
 
 **Code Location:**
 
@@ -280,6 +290,7 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 - Incremental per-keystroke reparses (≤50 ms typing budget, SC-003)
 - Does NOT block the main thread; UTF-16 coordinate bridging via `ropey::Rope` mirror
 - Advisory styling only; preview rendering uses separate `comrak` engine (not unified)
+- Phase 10: Perf bench in `benches/highlight.rs` tracks SC-003 (measured p95 well under budget for typical notes; large-file limitation documented)
 
 **Code Location:**
 - Highlighter struct: `crates/emend-core/src/parse/highlight.rs`
@@ -376,6 +387,7 @@ Path identity via canonicalization: symlinks resolved, `..` eliminated; case-sen
 | Pasteboard | Copy/paste support + drag-drop for attachments | `NSPasteboard` API | **WIRED** phase 7 US5 (drop→`store_attachment`); copy/paste planned phase 1–2 |
 | Security-scoped bookmarks | Persistent folder access permission | AppKit / Swift Security Framework | **WIRED** — Phase 0, research §A4; resolves on launch to a usable filesystem path |
 | NSFontManager / NSFont / NSParagraphStyle | Typography controls for editor (font picker, paragraph styling) | AppKit | **WIRED** — Phase 9 US7 (typography UI, font picker, paragraph spacing) |
+| Accessibility (VoiceOver) | Screen reader support; accessibility identifiers for UI elements | `UIAccessibility` / `AccessibilityIdentifier` API | **WIRED** — Phase 10 Polish: all major UI elements tagged (`editor.textView`, `sidebar.outline`, `quickOpen.searchField`, etc.) |
 
 ---
 
@@ -424,6 +436,61 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 | Syntax highlighting lagging | Tree-sitter reparse exceeds 50ms budget | Fall back to previous highlight spans; no visual stutter (advisory-only styling) |
 | Info sidebar stats/outline stale | Observer fires late or document changes fast | Re-pull triggered by observer callback (≤300ms latency); sidebar shows most recent pull |
 | Typography settings malformed | Font family blank, size/spacing out of range | Core clamps on `set_typography()` before storing; no error, values repair to safe bounds (e.g., 0 → 8 pt, blank → system font) |
+| Large file I/O | File exceeds FR-027a 5 MiB read-only cap | Test coverage via `tests/large_file_memory.rs`; bounded-memory verification; follow-up: debounce advisory highlight for large files |
+| Memory leak on close | Document/handle ref cycle | Test coverage via `tests/weak_reference_cleanup.rs` (ARC + weak refs; NFR-005 verified) |
+
+---
+
+## Phase 10 Polish & Verification
+
+### Performance Budgets (Tracked, Non-Blocking)
+
+Per Constitution Principle IV, perf budgets are tracked but do not gate CI:
+
+- **SC-002 (cold open)**: `benches/open_doc.rs` — Open + parse ~1 MiB / ~10k-line document; p95 budget 500 ms; **measured overbudget** (documented; follow-up: debounce advisory highlight)
+- **SC-003 (keystroke reparse)**: `benches/highlight.rs` — Reparse one edited line in large doc; p95 budget 50 ms; **typical notes well under budget** (large-file limitation noted)
+- **SC-004 (Quick Open)**: `benches/quick_open.rs` — Search 10k-entry index; p95 budget 100 ms; **measured ~2.5 ms** (40× headroom)
+
+### Large-File & Bounded-Memory Tests (Phase 10)
+
+- **`tests/large_file_memory.rs`** — Open a ~5 MiB read-only note; verify memory usage stays bounded (FR-027a cap); uses `tempfile` for isolated I/O
+- **`tests/weak_reference_cleanup.rs`** — Verify `OpenDocHandle` + `AutosaveController` deallocate on close/reload (NFR-005 leak test; no GUI automation)
+
+### Accessibility Identifiers (Phase 10)
+
+All major UI elements tagged with `accessibilityIdentifier` for VoiceOver and future UI-test lanes:
+
+```swift
+// Editor
+textView.accessibilityIdentifier = "editor.textView"
+
+// Sidebar
+outlineView.accessibilityIdentifier = "sidebar.outline"
+
+// Quick Open
+searchField.accessibilityIdentifier = "quickOpen.searchField"
+resultsTable.accessibilityIdentifier = "quickOpen.results"
+resultRow.accessibilityIdentifier = "quickOpen.result.\(hit.name)"
+
+// Info Sidebar
+statsView.accessibilityIdentifier = "infoSidebar.stats"
+outlineView.accessibilityIdentifier = "infoSidebar.outline"
+
+// Preview
+webView.accessibilityIdentifier = "preview.webView"
+```
+
+### Security Review (Phase 10)
+
+**Scope**: End-to-end audit of external service integration (AI, file watcher, preview)
+
+**Key Findings:**
+
+1. **Network entitlement missing** (US6 AI): `com.apple.security.network.client` required for `reqwest` socket access; added after review
+2. **Network capability vs. code policy**: Entitlement grants *capability*; code enforces *policy* via `check_input_size()` + blank-key guard (SC-008 / FR-035)
+3. **ATS exemption**: Not needed — `reqwest` uses raw TCP + Security.framework (no CFNetwork/URLSession); BYOM `http://localhost` works natively
+4. **Preview isolation**: CSP `connect-src 'none'` + `nonPersistent` + nav-blocking delegate prevent preview WebView from reaching the network
+5. **Result**: All gaps resolved; no open security issues
 
 ---
 
@@ -439,4 +506,4 @@ No environment file (`.env`) is read by the app — all configuration is stored 
 
 ---
 
-*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, PDF export, document analytics (stats/outline/observer), or typography settings storage/clamping.*
+*This document maps external service dependencies and protocols. Update when adding new integrations or modifying AI endpoints, file watching, workspace management, preview rendering, link/embed/task handling, attachment storage, PDF export, document analytics (stats/outline/observer), typography settings storage/clamping, or perf budgets. Phase 10 Polish final.*
