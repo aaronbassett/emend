@@ -428,15 +428,20 @@ impl OpenDocHandle {
     /// It snapshots the buffer **and the note's own path** under the lock, then
     /// **releases the lock before rendering** (the comrak/expand pass below runs
     /// off-lock — neither this handle's `Mutex` nor the workspace's index `Mutex`
-    /// is held across the render). The resolver closure maps each embed target to
-    /// the resolved note's source via
+    /// is held across the render). The resolver closure maps each embed target
+    /// *plus the path of the note it was written in* to the resolved note's source
+    /// **and resolved path** via
     /// [`WorkspaceHandle::resolve_embed_source`](crate::workspace::WorkspaceHandle)
     /// — which resolves under the index lock then reads off-lock (so the recursive
     /// expander never serializes file ops / Quick Open against the index). The
     /// note's own path is the `from_note` for the deterministic same-directory
-    /// tie-break (FR-019a). An unresolved / cyclic / too-deep embed degrades to a
-    /// visible placeholder (FR-021a/FR-022) — the expander owns those guards
-    /// (`MAX_EMBED_DEPTH = 8`), so this call always terminates.
+    /// tie-break (FR-019a). Crucially the expander threads each embedded note's
+    /// *returned resolved path* as the `from_note` for ITS nested embeds, so a
+    /// `![[C]]` inside an embedded note B resolves relative to **B's** directory,
+    /// not the top document's (FR-019a per-parent anchoring). An unresolved /
+    /// cyclic / too-deep embed degrades to a visible placeholder (FR-021a/FR-022) —
+    /// the expander owns those guards (`MAX_EMBED_DEPTH = 8`), so this call always
+    /// terminates.
     ///
     /// A resolver lock-poisoning is recorded and surfaced as [`FfiError::Internal`]
     /// after the render (rather than panicking inside the `FnMut` closure, which
@@ -474,11 +479,13 @@ impl OpenDocHandle {
         // The `FnMut` resolver cannot return a `Result`, so capture any
         // lock-poisoning that surfaces during resolution and re-raise it after the
         // render rather than swallowing it (a corrupt index lock must fail loudly,
-        // not silently drop every embed).
+        // not silently drop every embed). The expander supplies the path of the
+        // note each embed was written in as `embed_from`, so nested embeds anchor
+        // on their immediate parent (FR-019a); we forward it to `resolve_embed_source`.
         let mut resolve_error: Option<FfiError> = None;
-        let mut resolve = |raw_target: &str| -> Option<String> {
-            match workspace.resolve_embed_source(&from_note, raw_target) {
-                Ok(source) => source,
+        let mut resolve = |raw_target: &str, embed_from: &str| -> Option<(String, String)> {
+            match workspace.resolve_embed_source(embed_from, raw_target) {
+                Ok(resolved) => resolved,
                 Err(err) => {
                     // Keep the first error; a `None` here just renders this one
                     // embed as a placeholder, and the error is surfaced below.
@@ -490,6 +497,7 @@ impl OpenDocHandle {
 
         let html = emend_core::parse::preview::render_preview_html_with_embeds(
             &source,
+            &from_note,
             &emend_core::parse::preview::PreviewOptions::default(),
             &mut resolve,
         )?;
@@ -967,6 +975,65 @@ mod tests {
         assert!(
             !plain.contains("The body of note B."),
             "plain render must not inline embedded content: {plain}"
+        );
+    }
+
+    #[test]
+    fn render_preview_html_resolving_nested_embed_anchors_on_immediate_parent() {
+        // FR-019a per-parent anchoring through the full FFI resolver wiring (M1).
+        //
+        // Layout (two sibling dirs, each with a note named `C` but distinct bodies):
+        //   dir1/A.md   embeds  ![[B]]
+        //   dir2/B.md   embeds  ![[C]]
+        //   dir1/C.md   body: "C lives in dir1"
+        //   dir2/C.md   body: "C lives in dir2"
+        //
+        // The `![[C]]` is written inside B (in dir2), so the FR-019a same-directory
+        // tie-break must pick B's sibling dir2/C — NOT A's sibling dir1/C. This is
+        // only correct if the expander threads B's resolved path as the `from_note`
+        // for B's own embeds. Before the M1 fix it anchored every nested embed on
+        // the TOP document A, so it would have inlined "C lives in dir1".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+        let dir1 = root.join("dir1");
+        let dir2 = root.join("dir2");
+        std::fs::create_dir_all(&dir1).expect("mkdir dir1");
+        std::fs::create_dir_all(&dir2).expect("mkdir dir2");
+
+        let note_a = dir1.join("A.md");
+        let note_b = dir2.join("B.md");
+        std::fs::write(&note_a, "Intro of A.\n\n![[B]]\n").expect("write A");
+        std::fs::write(&note_b, "Body of B.\n\n![[C]]\n").expect("write B");
+        // Two duplicate-basename C notes, one per directory, with distinct bodies.
+        std::fs::write(dir1.join("C.md"), "C lives in dir1\n").expect("write dir1/C");
+        std::fs::write(dir2.join("C.md"), "C lives in dir2\n").expect("write dir2/C");
+
+        // A workspace whose index knows every note (seed from disk).
+        let ws = new_workspace();
+        ws.add_location(root.to_string_lossy().into_owned(), Vec::new())
+            .expect("add location");
+        let count = ws.reindex_all(16).expect("reindex");
+        assert_eq!(count, 4, "all four notes are seeded into the index");
+
+        // Open A (in dir1) and render WITH embed resolution.
+        let handle = open_document(note_a.to_string_lossy().into_owned()).expect("open A");
+        let resolved = handle
+            .render_preview_html_resolving(ws)
+            .expect("render A with nested embeds");
+
+        // B was inlined, and B's nested `![[C]]` resolved to B's SIBLING (dir2/C),
+        // proving nested resolution anchored on the immediate parent B's directory.
+        assert!(
+            resolved.contains("Body of B."),
+            "B should inline: {resolved}"
+        );
+        assert!(
+            resolved.contains("C lives in dir2"),
+            "nested embed must resolve to B's sibling (dir2/C): {resolved}"
+        );
+        assert!(
+            !resolved.contains("C lives in dir1"),
+            "nested embed must NOT anchor on the top document A's directory (dir1/C): {resolved}"
         );
     }
 

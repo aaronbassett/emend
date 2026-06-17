@@ -61,7 +61,7 @@ fn create_folder(parent: String, name: String) -> Result<String>
 fn rename(path: String, new_name: String) -> Result<String>        // NameCollision-safe; keeps open tab pointed (FR-004a)
 fn move_node(path: String, new_parent: String) -> Result<String>
 fn delete(path: String) -> Result<()>
-fn store_attachment(note_path: Option<String>, bytes: Vec<u8>, suggested_name: String) -> Result<String>  // FR-013a; returns relative ref
+fn store_attachment(note_path: Option<String>, bytes: Vec<u8>, suggested_name: String) -> Result<String>  // FR-013a; returns relative ref. note_path == None is unsupported in v1 (attachment needs a saved note) → InvalidConfig; caller saves the note first.
 ```
 
 ## 3. Document session & editing  (US1 · FR-009/009a, FR-010..015, FR-027a, FR-031a)

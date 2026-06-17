@@ -176,6 +176,16 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
         }
     }
 
+    /// Delete attachments (note-relative `refs`) — used to undo a stored drop whose
+    /// text insertion was vetoed, so no orphaned file is left behind.
+    func removeAttachments(_ refs: [String]) {
+        guard !notePath.isEmpty else { return }
+        let dir = (notePath as NSString).deletingLastPathComponent as NSString
+        for ref in refs {
+            try? FileManager.default.removeItem(atPath: dir.appendingPathComponent(ref))
+        }
+    }
+
     /// Mark `[[links]]` that don't resolve in the index with a distinct style so
     /// broken links are visible (US5). Skipped when no workspace is wired. Runs
     /// inside the `reattribute` edit batch (attribute-only — never a char edit).
@@ -183,14 +193,20 @@ final class EditorCoordinator: NSObject, NSTextStorageDelegate {
         guard let workspace, !notePath.isEmpty else { return }
         let text = storage.string as NSString
         let underline = NSUnderlineStyle.single.rawValue | NSUnderlineStyle.patternDot.rawValue
+        let bang = UInt16(UInt8(ascii: "!"))
         for link in WikiLink.allLinks(in: text) where NSMaxRange(link.span) <= storage.length {
             let resolved = (try? workspace.resolveWikilink(
                 fromNote: notePath,
                 rawTarget: link.raw
             )) ?? nil
             guard resolved == nil else { continue }
-            storage.addAttribute(.foregroundColor, value: NSColor.systemRed, range: link.span)
-            storage.addAttribute(.underlineStyle, value: underline, range: link.span)
+            // Include a leading `!` so an unresolved embed's token isn't split.
+            var span = link.span
+            if span.location > 0, text.character(at: span.location - 1) == bang {
+                span = NSRange(location: span.location - 1, length: span.length + 1)
+            }
+            storage.addAttribute(.foregroundColor, value: NSColor.systemRed, range: span)
+            storage.addAttribute(.underlineStyle, value: underline, range: span)
         }
     }
 }

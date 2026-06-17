@@ -200,11 +200,13 @@ final class MarkdownTextView: NSTextView {
 
     // MARK: - Apply
 
-    private func apply(range: NSRange, replacement: String, selection: NSRange) {
-        guard shouldChangeText(in: range, replacementString: replacement) else { return }
+    @discardableResult
+    private func apply(range: NSRange, replacement: String, selection: NSRange) -> Bool {
+        guard shouldChangeText(in: range, replacementString: replacement) else { return false }
         textStorage?.replaceCharacters(in: range, with: replacement)
         didChangeText()
         setSelectedRange(selection)
+        return true
     }
 
     // MARK: - Wiki-link autocomplete + click navigation / checkboxes (US5)
@@ -314,11 +316,13 @@ final class MarkdownTextView: NSTextView {
         let point = convert(sender.draggingLocation, from: nil)
         let dropIndex = characterIndexForInsertion(at: point)
         let caretAfter = dropIndex + (markdown as NSString).length
-        apply(
+        let inserted = apply(
             range: NSRange(location: dropIndex, length: 0),
             replacement: markdown,
             selection: NSRange(location: caretAfter, length: 0)
         )
-        return true
+        // If the insert was vetoed, don't leave the just-written files orphaned.
+        if !inserted { coordinator.removeAttachments(refs) }
+        return inserted
     }
 }

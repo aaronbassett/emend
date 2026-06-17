@@ -143,17 +143,27 @@ pub fn write_atomic_bytes(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), Em
 /// Store a dropped media attachment beside a note, returning the **note-relative**
 /// reference to insert into the Markdown (FR-013/FR-013a).
 ///
-/// `note_path` is the note the media was dropped into, or `None` when the note is
-/// still **untitled/unsaved** (FR-013a). `bytes` is the media payload;
-/// `suggested_name` is the dropped file's name (used for the basename + extension).
+/// `note_path` is the note the media was dropped into. `bytes` is the media
+/// payload; `suggested_name` is the dropped file's name (used for the basename +
+/// extension).
+///
+/// ## `note_path == None` is unsupported in v1
+///
+/// An attachment is stored in an `attachments/` directory *beside its note*, so
+/// it needs a saved note to anchor on. When `note_path` is `None` (the note is
+/// still untitled/unsaved) there is no such anchor, and this returns
+/// [`EmendError::InvalidConfig`] rather than degrading. (The previous behaviour
+/// fell back to the process's current working directory — which is `/` for a
+/// sandboxed app, yielding an opaque `PermissionDenied`, and is process-global
+/// mutable state besides.) The Swift caller already guards against this by
+/// requiring the note to be saved first, so the `None` case is never hit on the
+/// happy path; v1 simply makes the unsupported case an explicit, descriptive
+/// error instead of a misleading IO failure.
 ///
 /// ## Where it lands
 ///
 /// The attachment is written into an [`ATTACHMENTS_DIR`] (`attachments/`)
-/// subdirectory of the note's own folder, created if absent. For an **untitled**
-/// note (`note_path == None`), the fallback target is `attachments/` under the
-/// process's current directory — the caller (Swift) is expected to relocate it
-/// once the note is first saved, but the bytes are never lost in the meantime.
+/// subdirectory of the note's own folder, created if absent.
 ///
 /// ## Collision-safe naming (FR-013a)
 ///
@@ -171,21 +181,31 @@ pub fn write_atomic_bytes(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), Em
 ///
 /// # Errors
 ///
-/// [`EmendError::PermissionDenied`] / [`EmendError::IoFailure`] if the attachments
-/// directory cannot be created or the atomic write fails. Never panics.
+/// [`EmendError::InvalidConfig`] if `note_path` is `None` (an attachment requires
+/// a saved note in v1; see above). [`EmendError::PermissionDenied`] /
+/// [`EmendError::IoFailure`] if the attachments directory cannot be created or the
+/// atomic write fails. Never panics.
 pub fn store_attachment(
     note_path: Option<&str>,
     bytes: &[u8],
     suggested_name: &str,
 ) -> Result<String, EmendError> {
-    // The note's own folder (its parent dir), or the current dir for an untitled
-    // note (FR-013a fallback).
-    let note_dir: PathBuf = match note_path {
-        Some(p) => Path::new(p)
-            .parent()
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
-        None => PathBuf::from("."),
+    // An attachment lands beside its note, so it needs a saved note to anchor on.
+    // An untitled/unsaved note (`note_path == None`) is unsupported in v1: rather
+    // than writing into the process CWD (which is `/` under the app sandbox, and
+    // is process-global mutable state regardless), return a clear error. The Swift
+    // caller guards against this, so it is never reached on the happy path.
+    let Some(note_path) = note_path else {
+        return Err(EmendError::InvalidConfig {
+            detail: "cannot store an attachment for an unsaved note: save the note first"
+                .to_owned(),
+        });
     };
+
+    // The note's own folder (its parent dir).
+    let note_dir: PathBuf = Path::new(note_path)
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
 
     let attach_dir = note_dir.join(ATTACHMENTS_DIR);
     std::fs::create_dir_all(&attach_dir).map_err(|e| map_io(&attach_dir, &e))?;
@@ -395,24 +415,15 @@ mod tests {
     }
 
     #[test]
-    fn store_attachment_untitled_note_uses_fallback_dir() {
-        // No note path → the attachment lands under ./attachments. Run in a temp
-        // CWD so the test doesn't pollute the repo.
-        let dir = tempfile::tempdir().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let result = store_attachment(None, b"data", "drop.bin");
-
-        // Restore the CWD before asserting so a failure can't leave the process
-        // in the temp dir (which is about to be deleted).
-        std::env::set_current_dir(&prev).unwrap();
-
-        let rel = result.unwrap();
-        assert_eq!(rel, "attachments/drop.bin");
-        assert_eq!(
-            std::fs::read(dir.path().join(ATTACHMENTS_DIR).join("drop.bin")).unwrap(),
-            b"data"
+    fn store_attachment_untitled_note_is_unsupported() {
+        // No note path → unsupported in v1 (M2): an attachment needs a saved note
+        // to anchor on. The previous behaviour wrote into the process CWD (which is
+        // `/` under the app sandbox); now it returns a clear error and never
+        // touches the filesystem or process-global CWD.
+        let err = store_attachment(None, b"data", "drop.bin").unwrap_err();
+        assert!(
+            matches!(err, EmendError::InvalidConfig { .. }),
+            "expected InvalidConfig for an unsaved note, got {err:?}"
         );
     }
 

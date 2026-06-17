@@ -252,12 +252,19 @@ impl WorkspaceHandle {
         })
     }
 
-    /// Resolve an embed target to that note's **source text**, for the embed
-    /// expander wired by
+    /// Resolve an embed target to that note's **source text and its resolved
+    /// path**, for the embed expander wired by
     /// [`OpenDocHandle::render_preview_html_resolving`](crate::document::OpenDocHandle::render_preview_html_resolving)
-    /// (US5 · FR-021/021a). Returns `Some(source)` when `raw_target` resolves to a
-    /// note that reads successfully, or `None` when it is unresolved (so the
-    /// expander degrades to a visible placeholder, FR-022).
+    /// (US5 · FR-021/021a, FR-019a). Returns `Some((source, resolved_path))` when
+    /// `raw_target` resolves to a note that reads successfully, or `None` when it
+    /// is unresolved (so the expander degrades to a visible placeholder, FR-022).
+    ///
+    /// The `resolved_path` is returned alongside the source because the expander
+    /// uses it as the `from_note` for the embedded note's **own** nested embeds —
+    /// so a `![[…]]` inside the embedded note resolves relative to the embedded
+    /// note's directory, not the top document's (FR-019a per-parent anchoring; see
+    /// [`emend_core::parse::embed`]). `from_note` here is the path of the note the
+    /// *current* embed was written in (the FR-019a anchor for this resolution).
     ///
     /// Not `#[uniffi::export]`ed (it lives in the private `impl` block beside
     /// [`Self::lock`]) — it is an internal building block the resolving-preview
@@ -284,7 +291,7 @@ impl WorkspaceHandle {
         &self,
         from_note: &str,
         raw_target: &str,
-    ) -> Result<Option<String>, FfiError> {
+    ) -> Result<Option<(String, String)>, FfiError> {
         // Resolve the target to an absolute path UNDER the lock, then release it
         // before reading from disk — the render/expand pass must never hold the
         // index mutex across IO (or across the whole comrak render).
@@ -301,8 +308,12 @@ impl WorkspaceHandle {
 
         // Tolerant read off-lock. A read failure (vanished/forbidden) degrades to
         // `None` (visible placeholder) rather than failing the whole preview — the
-        // embed is a reading aid, not load-bearing.
-        Ok(emend_core::fs::read_tolerant(&path).ok())
+        // embed is a reading aid, not load-bearing. On success, return the source
+        // PAIRED with its resolved path so the expander can anchor the embedded
+        // note's own nested embeds on the embedded note's directory (FR-019a).
+        Ok(emend_core::fs::read_tolerant(&path)
+            .ok()
+            .map(|source| (source, path)))
     }
 }
 
@@ -819,14 +830,17 @@ pub fn new_workspace() -> Arc<WorkspaceHandle> {
 /// A free function (not a [`WorkspaceHandle`] method): the core
 /// [`emend_core::fs::store_attachment`] keys entirely off the note's path on
 /// disk, needing none of the workspace's in-memory state. `note_path` is the
-/// target note, or `None` when it is still untitled/unsaved (a defined fallback
-/// dir is used; FR-013a). The attachment is written atomically + durably (an
-/// observer never sees a partial file, FR-009a) into an `attachments/`
-/// subdirectory beside the note, with a collision-safe name (`img.png` →
-/// `img 2.png`).
+/// target note; it **must** be a saved note in v1. `None` (an untitled/unsaved
+/// note) is **unsupported** and returns [`FfiError::InvalidConfig`] — an
+/// attachment lands in an `attachments/` directory beside its note, so it needs a
+/// saved note to anchor on (the Swift caller guards by requiring a save first).
+/// On success the attachment is written atomically + durably (an observer never
+/// sees a partial file, FR-009a) into that `attachments/` subdirectory beside the
+/// note, with a collision-safe name (`img.png` → `img 2.png`).
 ///
 /// # Errors
 ///
+/// [`FfiError::InvalidConfig`] if `note_path` is `None` (unsupported in v1).
 /// [`FfiError::PermissionDenied`] / [`FfiError::IoFailure`] if the attachments
 /// directory cannot be created or the write fails.
 #[uniffi::export]
@@ -1058,6 +1072,19 @@ mod tests {
         )
         .expect("store 2");
         assert_eq!(rel2, "attachments/image 2.png");
+    }
+
+    #[test]
+    fn store_attachment_unsaved_note_maps_to_invalid_config() {
+        // M2: `note_path == None` (an unsaved note) is unsupported in v1 and must
+        // surface as a clear `FfiError::InvalidConfig` at the boundary, not write
+        // to the process CWD. Confirms the `EmendError -> FfiError` mapping too.
+        let err = store_attachment(None, b"data".to_vec(), "drop.bin".to_owned())
+            .expect_err("an unsaved note must not store an attachment");
+        assert!(
+            matches!(err, FfiError::InvalidConfig { .. }),
+            "expected InvalidConfig for an unsaved note, got {err:?}"
+        );
     }
 
     #[test]

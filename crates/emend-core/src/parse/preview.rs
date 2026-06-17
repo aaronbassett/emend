@@ -110,9 +110,13 @@ pub fn render_preview_html(source: &str, options: &PreviewOptions) -> Result<Str
 /// Runs the bespoke embed **source pass** ([`expand_embeds`]) first — inlining
 /// each resolved note's Markdown, with cycle detection and the depth bound from
 /// [`PreviewOptions::embed`] (FR-021a) — then renders the spliced document with
-/// the same comrak pipeline as [`render_preview_html`]. `resolve` maps an embed
-/// target (as typed) to that note's source, or `None` if unresolved (the FFI
-/// layer wires it to the workspace index + a tolerant on-disk read).
+/// the same comrak pipeline as [`render_preview_html`]. `from_note` is the
+/// resolved path of `source`'s own note (the FR-019a anchor for its top-level
+/// embeds); `resolve` maps `(target, from_note)` to that note's source **and its
+/// resolved path**, or `None` if unresolved (the FFI layer wires it to the
+/// workspace index + a tolerant on-disk read). The returned resolved path anchors
+/// *nested* embeds on their immediate parent note, not the top document (FR-019a;
+/// see [`crate::parse::embed`]).
 ///
 /// An unresolved/cyclic/too-deep embed degrades to a visible placeholder rather
 /// than looping (FR-021a/FR-022); see [`crate::parse::embed`].
@@ -123,16 +127,19 @@ pub fn render_preview_html(source: &str, options: &PreviewOptions) -> Result<Str
 /// and does not normally fail).
 pub fn render_preview_html_with_embeds<R>(
     source: &str,
+    from_note: &str,
     options: &PreviewOptions,
     resolve: &mut R,
 ) -> Result<String, EmendError>
 where
-    R: FnMut(&str) -> Option<String>,
+    R: FnMut(&str, &str) -> Option<(String, String)>,
 {
     // US5: splice embedded note sources in BEFORE comrak parses, so headings,
     // code fences, tables, and nested embeds in the embedded note render in the
-    // surrounding document's context. Cycle + depth guards live in `expand_embeds`.
-    let expanded = expand_embeds(source, &options.embed, resolve);
+    // surrounding document's context. Cycle + depth guards live in `expand_embeds`,
+    // which also threads each note's resolved path as the `from_note` for ITS
+    // nested embeds (FR-019a per-parent anchoring).
+    let expanded = expand_embeds(source, from_note, &options.embed, resolve);
     render_html(&expanded, options)
 }
 
@@ -365,8 +372,12 @@ mod tests {
         // document renders that heading as an <h2> (proving source-level splice).
         let html = render_preview_html_with_embeds(
             "intro\n\n![[child]]\n",
+            "/parent.md",
             &PreviewOptions::default(),
-            &mut |name| (name == "child").then(|| "## Embedded Heading\n".to_owned()),
+            &mut |name, _from| {
+                (name == "child")
+                    .then(|| ("## Embedded Heading\n".to_owned(), "/child.md".to_owned()))
+            },
         )
         .unwrap();
         assert!(
@@ -391,15 +402,17 @@ mod tests {
     #[test]
     fn embed_cycle_terminates_in_preview_path() {
         // A↔B cycle through the full preview render must terminate (FR-021a).
-        let html =
-            render_preview_html_with_embeds("![[a]]\n", &PreviewOptions::default(), &mut |name| {
-                match name {
-                    "a" => Some("A ![[b]]\n".to_owned()),
-                    "b" => Some("B ![[a]]\n".to_owned()),
-                    _ => None,
-                }
-            })
-            .unwrap();
+        let html = render_preview_html_with_embeds(
+            "![[a]]\n",
+            "/a.md",
+            &PreviewOptions::default(),
+            &mut |name, _from| match name {
+                "a" => Some(("A ![[b]]\n".to_owned(), "/a.md".to_owned())),
+                "b" => Some(("B ![[a]]\n".to_owned(), "/b.md".to_owned())),
+                _ => None,
+            },
+        )
+        .unwrap();
         assert!(
             html.len() < 20_000,
             "cyclic embed output bounded: {}",

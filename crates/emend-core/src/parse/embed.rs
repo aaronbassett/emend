@@ -33,14 +33,26 @@
 //!    acyclic chain `A`→`B`→`C`→… is cut off at the bound; the token at the bound
 //!    is left as an unresolved placeholder.
 //!
+//! ## Nested resolution anchors on the immediate parent (FR-019a)
+//!
+//! Resolution of `![[Target]]` uses the FR-019a same-directory tie-break, which
+//! is anchored on the **note the embed was written in** (`from_note`). For nested
+//! embeds this must be the *immediately enclosing* note, not the top document:
+//! when `A` embeds `B` and `B`'s source contains `![[C]]`, `C` must resolve
+//! relative to `B`'s directory (its sibling), not `A`'s — otherwise duplicate
+//! basenames across folders pick the wrong note. To make that possible the
+//! resolver returns **both** the embedded note's source text *and* its resolved
+//! path; the expander then recurses with that resolved path as the `from_note`
+//! for the note's own embeds.
+//!
 //! ## Purity (no IO, no async)
 //!
 //! [`expand_embeds`] is a pure `&str -> String` transform parameterized by a
-//! caller-supplied **resolver closure** (`note name -> Option<source>`). It does
-//! no IO and pulls in **no `tokio`/`uniffi`** (Constitution V): the FFI/preview
-//! layer supplies a resolver that consults the workspace index + reads the file,
-//! but the recursion/guard logic is unit-testable with a plain `HashMap`
-//! resolver (`tests/embeds.rs`).
+//! caller-supplied **resolver closure** (`(target, from_note) -> Option<(source,
+//! resolved_path)>`). It does no IO and pulls in **no `tokio`/`uniffi`**
+//! (Constitution V): the FFI/preview layer supplies a resolver that consults the
+//! workspace index + reads the file, but the recursion/guard logic is
+//! unit-testable with a plain `HashMap` resolver (`tests/embeds.rs`).
 
 /// Maximum embed nesting depth before the chain is cut off (FR-021a; research §D
 /// fixes the v1 default at 8). `![[a]]` at the top level is depth 0; the embed it
@@ -83,11 +95,18 @@ impl EmbedOptions {
 /// Expand every `![[Target]]` in `source` by inlining the resolved note's source,
 /// recursively, with cycle + depth guards (FR-021a).
 ///
-/// `resolve` maps a (raw, as-typed) embed target — e.g. `Daily Note` or
-/// `notes/daily` — to that note's Markdown source, or `None` if it does not
-/// resolve. The caller owns resolution policy (the preview wires it to the
-/// workspace index + a tolerant on-disk read); this function owns only the
-/// recursion and its termination guards.
+/// `from_note` is the resolved path of the note `source` itself came from — the
+/// anchor for the FR-019a same-directory tie-break of `source`'s own (top-level)
+/// embeds. `resolve` maps an embed target *plus the current note's path* —
+/// `(raw_target, from_note)` — to that target note's Markdown source **and its
+/// resolved path**, or `None` if it does not resolve. The caller owns resolution
+/// policy (the preview wires it to the workspace index + a tolerant on-disk
+/// read); this function owns only the recursion and its termination guards.
+///
+/// The returned `resolved_path` is what anchors *nested* resolution: when the
+/// embedded note's own source contains `![[…]]`, the expander recurses with that
+/// path as the new `from_note`, so each note's embeds resolve relative to **its
+/// own** directory — not the top document's (FR-019a; see the module docs).
 ///
 /// ## Behaviour
 ///
@@ -100,26 +119,33 @@ impl EmbedOptions {
 ///   embed did not expand (FR-022 graceful degradation), never an infinite loop.
 /// * `[[wikilinks]]` (no `!` prefix) are left untouched — comrak renders those.
 #[must_use]
-pub fn expand_embeds<R>(source: &str, options: &EmbedOptions, resolve: &mut R) -> String
+pub fn expand_embeds<R>(
+    source: &str,
+    from_note: &str,
+    options: &EmbedOptions,
+    resolve: &mut R,
+) -> String
 where
-    R: FnMut(&str) -> Option<String>,
+    R: FnMut(&str, &str) -> Option<(String, String)>,
 {
     let mut on_stack: Vec<String> = Vec::new();
-    expand_inner(source, options, resolve, &mut on_stack, 0)
+    expand_inner(source, from_note, options, resolve, &mut on_stack, 0)
 }
 
-/// Recursive worker for [`expand_embeds`]. `on_stack` holds the normalized
-/// targets currently being expanded along this path (cycle guard); `depth` is the
-/// current nesting level (depth guard).
+/// Recursive worker for [`expand_embeds`]. `from_note` is the resolved path of
+/// the note `source` came from (the FR-019a anchor for the embeds *in* `source`);
+/// `on_stack` holds the normalized targets currently being expanded along this
+/// path (cycle guard); `depth` is the current nesting level (depth guard).
 fn expand_inner<R>(
     source: &str,
+    from_note: &str,
     options: &EmbedOptions,
     resolve: &mut R,
     on_stack: &mut Vec<String>,
     depth: usize,
 ) -> String
 where
-    R: FnMut(&str) -> Option<String>,
+    R: FnMut(&str, &str) -> Option<(String, String)>,
 {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
@@ -149,11 +175,22 @@ where
         } else if on_stack.iter().any(|t| t == &key) {
             // Cycle (FR-021a): this note is already being expanded on this path.
             out.push_str(&unresolved_placeholder(target));
-        } else if let Some(embedded) = resolve(target) {
+        } else if let Some((embedded, resolved_path)) = resolve(target, from_note) {
             // Resolved: recurse into the embedded note's source one level deeper,
-            // with this target pushed on the cycle stack.
+            // with this target pushed on the cycle stack. The embedded note's own
+            // (nested) embeds anchor on ITS resolved path — `resolved_path` becomes
+            // the `from_note` for the recursion — so a `![[C]]` inside the embedded
+            // note resolves relative to the embedded note's directory, not the top
+            // document's (FR-019a; see the module docs).
             on_stack.push(key);
-            let expanded = expand_inner(&embedded, options, resolve, on_stack, depth + 1);
+            let expanded = expand_inner(
+                &embedded,
+                &resolved_path,
+                options,
+                resolve,
+                on_stack,
+                depth + 1,
+            );
             on_stack.pop();
             out.push_str(&expanded);
         } else {
@@ -214,6 +251,20 @@ mod tests {
             .collect()
     }
 
+    /// A resolver over a name→source map that mirrors the new `(target,
+    /// from_note) -> Option<(source, resolved_path)>` contract. These unit tests
+    /// don't exercise per-parent anchoring (see `tests/embeds.rs` for that), so
+    /// the resolved path is simply the target name — enough to recurse and bound.
+    fn resolver(
+        notes: &HashMap<String, String>,
+    ) -> impl FnMut(&str, &str) -> Option<(String, String)> + '_ {
+        move |target: &str, _from_note: &str| {
+            notes
+                .get(target)
+                .map(|src| (src.clone(), target.to_owned()))
+        }
+    }
+
     #[test]
     fn embed_target_strips_pipe_alias_and_whitespace() {
         assert_eq!(embed_target(" Daily Note "), "Daily Note");
@@ -229,9 +280,12 @@ mod tests {
     #[test]
     fn wikilink_without_bang_is_left_alone() {
         let notes = store(&[("x", "expanded")]);
-        let out = expand_embeds("a [[x]] b\n", &EmbedOptions::default(), &mut |n| {
-            notes.get(n).cloned()
-        });
+        let out = expand_embeds(
+            "a [[x]] b\n",
+            "/note.md",
+            &EmbedOptions::default(),
+            &mut resolver(&notes),
+        );
         // No `!` prefix → not an embed; comrak handles `[[x]]`, we don't touch it.
         assert_eq!(out, "a [[x]] b\n");
     }
@@ -239,9 +293,12 @@ mod tests {
     #[test]
     fn malformed_unclosed_embed_is_emitted_literally() {
         let notes = store(&[]);
-        let out = expand_embeds("![[unterminated\n", &EmbedOptions::default(), &mut |n| {
-            notes.get(n).cloned()
-        });
+        let out = expand_embeds(
+            "![[unterminated\n",
+            "/note.md",
+            &EmbedOptions::default(),
+            &mut resolver(&notes),
+        );
         assert!(out.contains("![["), "unclosed embed stays literal: {out}");
     }
 
@@ -249,7 +306,7 @@ mod tests {
     fn depth_zero_expands_nothing() {
         let notes = store(&[("x", "body")]);
         let opts = EmbedOptions::new(0);
-        let out = expand_embeds("![[x]]\n", &opts, &mut |n| notes.get(n).cloned());
+        let out = expand_embeds("![[x]]\n", "/note.md", &opts, &mut resolver(&notes));
         assert!(!out.contains("body"), "max_depth 0 expands nothing: {out}");
         assert!(out.contains("unresolved embed"), "placeholder shown: {out}");
     }
